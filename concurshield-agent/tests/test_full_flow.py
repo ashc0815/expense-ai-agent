@@ -1,6 +1,7 @@
-"""端到端流程测试。"""
+"""端到端流程测试 + CityNormalizer / PolicyEngine 单元测试。"""
 
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 # 将项目根目录加入 sys.path
@@ -11,18 +12,26 @@ import unittest
 from config import ConfigLoader
 from agent.controller import AgentController
 from mock_data.sample_reports import create_sample_report, create_over_limit_report
-from models.enums import ReportStatus
+from models.enums import ComplianceLevel, EmployeeLevel, InvoiceType, ReportStatus
+from models.expense import Employee, Invoice
 from rules.city_normalizer import CityNormalizer
 from rules.policy_engine import PolicyEngine
 
 
-class TestConfigLoader(unittest.TestCase):
-    def setUp(self):
-        ConfigLoader.reset()
+def _make_loader() -> ConfigLoader:
+    ConfigLoader.reset()
+    loader = ConfigLoader()
+    loader.load()
+    return loader
 
+
+# ======================================================================
+# ConfigLoader
+# ======================================================================
+
+class TestConfigLoader(unittest.TestCase):
     def test_load_all_configs(self):
-        loader = ConfigLoader()
-        loader.load()
+        loader = _make_loader()
         self.assertIn("employee_levels", loader.get("policy"))
         self.assertIn("mappings", loader.get("city_mapping"))
         self.assertIn("approval_rules", loader.get("approval_flow"))
@@ -30,84 +39,344 @@ class TestConfigLoader(unittest.TestCase):
         self.assertIn("pipeline", loader.get("workflow"))
 
 
+# ======================================================================
+# CityNormalizer
+# ======================================================================
+
 class TestCityNormalizer(unittest.TestCase):
     def setUp(self):
-        ConfigLoader.reset()
-        loader = ConfigLoader()
-        loader.load()
-        self._normalizer = CityNormalizer(loader.get("city_mapping"))
+        loader = _make_loader()
+        self._normalizer = CityNormalizer(
+            loader.get("city_mapping"),
+            loader.get("policy").get("city_tiers", {}),
+        )
+
+    # --- normalize ---
 
     def test_normalize_english(self):
-        name, matched = self._normalizer.normalize("Shanghai")
-        self.assertEqual(name, "上海")
-        self.assertTrue(matched)
+        self.assertEqual(self._normalizer.normalize("Shanghai"), "上海")
+
+    def test_normalize_english_lowercase(self):
+        self.assertEqual(self._normalizer.normalize("shanghai"), "上海")
 
     def test_normalize_abbreviation(self):
-        name, matched = self._normalizer.normalize("SH")
-        self.assertEqual(name, "上海")
-        self.assertTrue(matched)
+        self.assertEqual(self._normalizer.normalize("SH"), "上海")
 
-    def test_normalize_chinese(self):
-        name, matched = self._normalizer.normalize("上海")
-        self.assertEqual(name, "上海")
-        self.assertTrue(matched)
+    def test_normalize_chinese_standard(self):
+        self.assertEqual(self._normalizer.normalize("上海"), "上海")
 
-    def test_normalize_case_insensitive(self):
-        name, matched = self._normalizer.normalize("shanghai")
-        self.assertEqual(name, "上海")
-        self.assertTrue(matched)
+    def test_normalize_chinese_alias(self):
+        self.assertEqual(self._normalizer.normalize("沪"), "上海")
 
-    def test_unmapped_city(self):
-        name, matched = self._normalizer.normalize("UnknownCity")
-        self.assertEqual(name, "UnknownCity")
-        self.assertFalse(matched)
+    def test_normalize_beijing(self):
+        self.assertEqual(self._normalizer.normalize("Beijing"), "北京")
+        self.assertEqual(self._normalizer.normalize("BJ"), "北京")
+        self.assertEqual(self._normalizer.normalize("京"), "北京")
 
-    def test_needs_review(self):
+    def test_normalize_chengdu_alias(self):
+        self.assertEqual(self._normalizer.normalize("蓉"), "成都")
+
+    def test_normalize_shenzhen(self):
+        self.assertEqual(self._normalizer.normalize("鹏城"), "深圳")
+
+    def test_normalize_unknown_passthrough(self):
+        self.assertEqual(self._normalizer.normalize("UnknownCity"), "UnknownCity")
+
+    # --- get_tier ---
+
+    def test_tier_1_chinese(self):
+        self.assertEqual(self._normalizer.get_tier("上海"), "tier_1")
+
+    def test_tier_1_english(self):
+        self.assertEqual(self._normalizer.get_tier("Shanghai"), "tier_1")
+
+    def test_tier_1_abbreviation(self):
+        self.assertEqual(self._normalizer.get_tier("SH"), "tier_1")
+
+    def test_tier_1_lowercase(self):
+        self.assertEqual(self._normalizer.get_tier("shanghai"), "tier_1")
+
+    def test_tier_2_city(self):
+        self.assertEqual(self._normalizer.get_tier("成都"), "tier_2")
+        self.assertEqual(self._normalizer.get_tier("Chengdu"), "tier_2")
+        self.assertEqual(self._normalizer.get_tier("蓉"), "tier_2")
+
+    def test_tier_3_unknown(self):
+        self.assertEqual(self._normalizer.get_tier("UnknownCity"), "tier_3")
+
+    def test_all_tier_1_cities(self):
+        for city in ["北京", "上海", "广州", "深圳", "杭州"]:
+            self.assertEqual(self._normalizer.get_tier(city), "tier_1", f"{city} should be tier_1")
+
+    def test_all_tier_2_cities(self):
+        for city in ["成都", "武汉", "南京", "重庆", "西安", "苏州", "长沙", "郑州"]:
+            self.assertEqual(self._normalizer.get_tier(city), "tier_2", f"{city} should be tier_2")
+
+    # --- is_known ---
+
+    def test_is_known_standard(self):
+        self.assertTrue(self._normalizer.is_known("上海"))
+
+    def test_is_known_alias(self):
+        self.assertTrue(self._normalizer.is_known("Shanghai"))
+        self.assertTrue(self._normalizer.is_known("SH"))
+        self.assertTrue(self._normalizer.is_known("沪"))
+
+    def test_is_known_false(self):
+        self.assertFalse(self._normalizer.is_known("UnknownCity"))
+
+    # --- needs_review ---
+
+    def test_needs_review_unknown(self):
         self.assertTrue(self._normalizer.needs_review("UnknownCity"))
+
+    def test_needs_review_known(self):
         self.assertFalse(self._normalizer.needs_review("Shanghai"))
 
 
-class TestPolicyEngine(unittest.TestCase):
+# ======================================================================
+# PolicyEngine — 费用限额
+# ======================================================================
+
+class TestPolicyEngineLimits(unittest.TestCase):
     def setUp(self):
-        ConfigLoader.reset()
-        loader = ConfigLoader()
-        loader.load()
-        normalizer = CityNormalizer(loader.get("city_mapping"))
-        self._engine = PolicyEngine(loader.get("policy"), normalizer)
+        self._engine = PolicyEngine(_make_loader())
 
-    def test_city_tier(self):
-        self.assertEqual(self._engine.get_city_tier("上海"), "tier_1")
-        self.assertEqual(self._engine.get_city_tier("Shanghai"), "tier_1")
-        self.assertEqual(self._engine.get_city_tier("成都"), "tier_2")
-        self.assertEqual(self._engine.get_city_tier("UnknownCity"), "tier_3")
+    def test_limit_accommodation_tier1_L1(self):
+        self.assertEqual(self._engine.get_limit("accommodation_per_night", "上海", "L1"), 500.0)
 
-    def test_get_limit(self):
-        limit = self._engine.get_limit("accommodation_per_night", "上海", "L1")
-        self.assertEqual(limit, 500.0)
-        limit = self._engine.get_limit("accommodation_per_night", "上海", "L4")
-        self.assertIsNone(limit)  # 不限
+    def test_limit_via_english_city(self):
+        self.assertEqual(self._engine.get_limit("accommodation_per_night", "Shanghai", "L1"), 500.0)
 
-    def test_compliance_pass(self):
-        from models.enums import ComplianceLevel
-        result = self._engine.check_compliance(400, 500)
-        self.assertEqual(result, ComplianceLevel.A)
+    def test_limit_via_abbreviation(self):
+        self.assertEqual(self._engine.get_limit("accommodation_per_night", "SH", "L1"), 500.0)
 
-    def test_compliance_warning(self):
-        from models.enums import ComplianceLevel
-        result = self._engine.check_compliance(530, 500)  # 超标30，在50以内
-        self.assertEqual(result, ComplianceLevel.B)
+    def test_limit_tier2(self):
+        self.assertEqual(self._engine.get_limit("accommodation_per_night", "成都", "L1"), 350.0)
 
-    def test_compliance_reject(self):
-        from models.enums import ComplianceLevel
-        result = self._engine.check_compliance(600, 500)  # 超标100，超过50
-        self.assertEqual(result, ComplianceLevel.C)
+    def test_limit_tier3(self):
+        self.assertEqual(self._engine.get_limit("accommodation_per_night", "UnknownCity", "L1"), 250.0)
 
+    def test_limit_unlimited(self):
+        self.assertIsNone(self._engine.get_limit("accommodation_per_night", "上海", "L4"))
+
+    def test_limit_meals(self):
+        self.assertEqual(self._engine.get_limit("meals_per_person", "上海", "L1"), 100.0)
+        self.assertEqual(self._engine.get_limit("meals_per_person", "成都", "L2"), 100.0)
+
+    def test_limit_transport(self):
+        self.assertEqual(self._engine.get_limit("local_transport_per_day", "上海", "L1"), 200.0)
+        self.assertIsNone(self._engine.get_limit("local_transport_per_day", "上海", "L3"))
+
+    def test_limit_nonexistent_type(self):
+        self.assertIsNone(self._engine.get_limit("nonexistent_type", "上海", "L1"))
+
+
+# ======================================================================
+# PolicyEngine — 合规判定
+# ======================================================================
+
+class TestPolicyEngineTolerance(unittest.TestCase):
+    def setUp(self):
+        self._engine = PolicyEngine(_make_loader())
+
+    def test_under_limit(self):
+        self.assertEqual(self._engine.check_tolerance(400, 500), ComplianceLevel.A)
+
+    def test_at_limit(self):
+        self.assertEqual(self._engine.check_tolerance(500, 500), ComplianceLevel.A)
+
+    def test_over_within_tolerance(self):
+        # 超标 30，容忍度 50 → B
+        self.assertEqual(self._engine.check_tolerance(530, 500), ComplianceLevel.B)
+
+    def test_over_at_tolerance_boundary(self):
+        # 超标 50，容忍度 50 → B（≤ threshold）
+        self.assertEqual(self._engine.check_tolerance(550, 500), ComplianceLevel.B)
+
+    def test_over_beyond_tolerance(self):
+        # 超标 51 → C
+        self.assertEqual(self._engine.check_tolerance(551, 500), ComplianceLevel.C)
+
+    def test_over_way_beyond(self):
+        self.assertEqual(self._engine.check_tolerance(1000, 500), ComplianceLevel.C)
+
+
+# ======================================================================
+# PolicyEngine — 审批链
+# ======================================================================
+
+class TestPolicyEngineApprovalChain(unittest.TestCase):
+    def setUp(self):
+        self._engine = PolicyEngine(_make_loader())
+
+    def test_travel_small_amount_L1(self):
+        # ≤2000 → [direct_manager]
+        chain = self._engine.get_approval_chain("travel", 1500, "L1")
+        self.assertEqual(len(chain), 1)
+        self.assertEqual(chain[0].approver_role, "direct_manager")
+        self.assertFalse(chain[0].is_auto_approved)
+
+    def test_travel_medium_amount_L1(self):
+        # ≤10000 → [direct_manager, department_head]
+        chain = self._engine.get_approval_chain("travel", 5000, "L1")
+        self.assertEqual(len(chain), 2)
+        self.assertEqual(chain[0].approver_role, "direct_manager")
+        self.assertEqual(chain[1].approver_role, "department_head")
+
+    def test_travel_large_amount_L1(self):
+        # >10000 → [direct_manager, department_head, vp]
+        chain = self._engine.get_approval_chain("travel", 15000, "L1")
+        self.assertEqual(len(chain), 3)
+        self.assertEqual(chain[2].approver_role, "vp")
+        self.assertEqual(chain[2].time_limit_hours, 48)
+
+    def test_L3_skip_direct_manager(self):
+        # L3 跳过 direct_manager
+        chain = self._engine.get_approval_chain("travel", 5000, "L3")
+        roles = [s.approver_role for s in chain]
+        self.assertNotIn("direct_manager", roles)
+        self.assertIn("department_head", roles)
+
+    def test_L4_auto_approve_below_threshold(self):
+        # L4 5000以下自动通过
+        chain = self._engine.get_approval_chain("travel", 3000, "L4")
+        self.assertEqual(len(chain), 1)
+        self.assertTrue(chain[0].is_auto_approved)
+        self.assertEqual(chain[0].approver_role, "auto")
+
+    def test_L4_above_threshold_needs_approval(self):
+        # L4 ≥5000 走正常审批（但跳过 direct_manager — L4 没有 skip 配置所以不跳）
+        chain = self._engine.get_approval_chain("travel", 8000, "L4")
+        self.assertTrue(len(chain) >= 1)
+        self.assertFalse(any(s.is_auto_approved for s in chain))
+
+    def test_entertainment(self):
+        # 招待费 ≤5000 → department_head
+        chain = self._engine.get_approval_chain("entertainment", 3000, "L1")
+        self.assertEqual(len(chain), 1)
+        self.assertEqual(chain[0].approver_role, "department_head")
+
+    def test_subtype_resolves_to_parent(self):
+        # "accommodation" → "travel"
+        chain = self._engine.get_approval_chain("accommodation", 1500, "L1")
+        self.assertEqual(len(chain), 1)
+        self.assertEqual(chain[0].approver_role, "direct_manager")
+
+    def test_unknown_expense_type(self):
+        chain = self._engine.get_approval_chain("unknown_type", 1000, "L1")
+        self.assertEqual(chain, [])
+
+
+# ======================================================================
+# PolicyEngine — 发票校验
+# ======================================================================
+
+class TestPolicyEngineInvoiceValidation(unittest.TestCase):
+    def setUp(self):
+        self._engine = PolicyEngine(_make_loader())
+        self._employee = Employee(
+            name="李四", id="EMP-002", department="研发部",
+            city="北京", hire_date=date(2023, 1, 1),
+            bank_account="6222-0000-0002-3456", level=EmployeeLevel.L2,
+        )
+
+    def _make_invoice(self, **overrides) -> Invoice:
+        defaults = dict(
+            invoice_code="031001900300",
+            invoice_number="99990001",
+            invoice_type=InvoiceType.NORMAL,
+            amount=200.0,
+            tax_amount=0.0,
+            date=date(2025, 6, 1),
+            vendor="测试商户",
+            city="北京",
+            items=["测试项"],
+        )
+        defaults.update(overrides)
+        return Invoice(**defaults)
+
+    def test_valid_invoice_all_pass(self):
+        inv = self._make_invoice()
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        failed = [r for r in results if not r.passed]
+        self.assertEqual(failed, [])
+
+    def test_zero_amount_fails(self):
+        inv = self._make_invoice(amount=0)
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        r = next(r for r in results if r.rule_name == "amount_positive")
+        self.assertFalse(r.passed)
+
+    def test_negative_amount_fails(self):
+        inv = self._make_invoice(amount=-100)
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        r = next(r for r in results if r.rule_name == "amount_positive")
+        self.assertFalse(r.passed)
+
+    def test_future_date_fails(self):
+        inv = self._make_invoice(date=date.today() + timedelta(days=30))
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        r = next(r for r in results if r.rule_name == "date_not_future")
+        self.assertFalse(r.passed)
+
+    def test_expired_date_fails(self):
+        inv = self._make_invoice(date=date.today() - timedelta(days=400))
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        r = next(r for r in results if r.rule_name == "date_not_expired")
+        self.assertFalse(r.passed)
+
+    def test_duplicate_invoice_fails(self):
+        inv = self._make_invoice()
+        history = [self._make_invoice()]  # 同一张发票
+        results = self._engine.validate_invoice(inv, self._employee, history)
+        r = next(r for r in results if r.rule_name == "no_duplicate")
+        self.assertFalse(r.passed)
+
+    def test_no_duplicate_different_number(self):
+        inv = self._make_invoice()
+        history = [self._make_invoice(invoice_number="88880001")]
+        results = self._engine.validate_invoice(inv, self._employee, history)
+        r = next(r for r in results if r.rule_name == "no_duplicate")
+        self.assertTrue(r.passed)
+
+    def test_vat_special_valid(self):
+        inv = self._make_invoice(
+            invoice_type=InvoiceType.SPECIAL, amount=500, tax_amount=30,
+        )
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        r = next(r for r in results if r.rule_name == "vat_tax_valid")
+        self.assertTrue(r.passed)
+
+    def test_vat_special_zero_tax_fails(self):
+        inv = self._make_invoice(
+            invoice_type=InvoiceType.SPECIAL, amount=500, tax_amount=0,
+        )
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        r = next(r for r in results if r.rule_name == "vat_tax_valid")
+        self.assertFalse(r.passed)
+
+    def test_unknown_city_warning(self):
+        inv = self._make_invoice(city="SomeRandomPlace")
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        r = next(r for r in results if r.rule_name == "city_recognized")
+        self.assertFalse(r.passed)
+        self.assertEqual(r.severity, "warning")
+
+    def test_known_city_alias_passes(self):
+        inv = self._make_invoice(city="Shanghai")
+        results = self._engine.validate_invoice(inv, self._employee, [])
+        r = next(r for r in results if r.rule_name == "city_recognized")
+        self.assertTrue(r.passed)
+
+
+# ======================================================================
+# 端到端流程
+# ======================================================================
 
 class TestFullFlow(unittest.TestCase):
     def setUp(self):
-        ConfigLoader.reset()
-        self._loader = ConfigLoader()
-        self._loader.load()
+        self._loader = _make_loader()
 
     def test_normal_report_flow(self):
         report = create_sample_report()

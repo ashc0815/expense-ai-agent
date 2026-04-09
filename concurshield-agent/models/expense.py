@@ -8,6 +8,23 @@ from models.enums import EmployeeLevel, InvoiceType, ReportStatus
 
 
 @dataclass
+class ApprovalStep:
+    """审批链中的一个步骤。"""
+    approver_role: str
+    time_limit_hours: int
+    is_auto_approved: bool = False
+
+
+@dataclass
+class RuleResult:
+    """规则校验结果。"""
+    rule_name: str
+    passed: bool
+    message: str
+    severity: str = "error"  # "error" | "warning" | "info"
+
+
+@dataclass
 class Employee:
     name: str
     id: str
