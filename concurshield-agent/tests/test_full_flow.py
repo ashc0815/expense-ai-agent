@@ -485,5 +485,74 @@ class TestControllerWorkflowDriven(unittest.TestCase):
         self.assertEqual(v.fail_action, "reject")
 
 
+class TestLLMReviewIntegration(unittest.TestCase):
+    """LLM 审核集成测试（无 API key → fallback 模式）。"""
+
+    def setUp(self):
+        self._loader = _loader()
+        self._detector = AmbiguityDetector(self._loader)
+        self._employee = make_employee()
+
+    def test_score_above_50_triggers_llm(self):
+        """score > 50 时 llm_review 字段非空。"""
+        report = case5_shield_ambiguity()
+        item = report.line_items[0]
+        result = self._detector.evaluate(item, self._employee, [], [])
+        self.assertGreater(result.score, 50)
+        self.assertIsNotNone(result.llm_review)
+
+    def test_score_below_50_no_llm(self):
+        """score ≤ 50 时 llm_review 为 None。"""
+        item = LineItem(
+            expense_type="accommodation", amount=300.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="上海出差住宿一晚标准间合规清晰",
+        )
+        result = self._detector.evaluate(item, self._employee, [], [])
+        self.assertLess(result.score, 50)
+        self.assertIsNone(result.llm_review)
+
+    def test_fallback_has_risk_points(self):
+        """fallback 模型根据触发因素生成具体风险点。"""
+        report = case5_shield_ambiguity()
+        item = report.line_items[0]
+        result = self._detector.evaluate(item, self._employee, [], [])
+        llm = result.llm_review
+        self.assertEqual(llm.source, "fallback")
+        self.assertTrue(len(llm.risk_points) > 0)
+        self.assertIn(llm.risk_level, ("高", "中", "低"))
+
+    def test_fallback_required_materials(self):
+        """fallback 对招待费缺参会人名单给出补充材料建议。"""
+        report = case5_shield_ambiguity()
+        item = report.line_items[0]
+        result = self._detector.evaluate(item, self._employee, [], [])
+        llm = result.llm_review
+        self.assertTrue(any("参会" in m for m in llm.required_materials))
+
+    def test_shield_report_includes_llm(self):
+        """Shield 报告中包含 LLM 分析结果。"""
+        loader = _loader()
+        ctrl = ExpenseController(loader)
+        report = case5_shield_ambiguity()
+        result = ctrl.process_report(report)
+        self.assertIsNotNone(result.shield_report)
+        item = result.shield_report["flagged_items"][0]
+        self.assertIn("llm_review", item)
+        self.assertIn("risk_level", item["llm_review"])
+        self.assertIn("risk_points", item["llm_review"])
+
+    def test_high_score_with_history_gets_reject(self):
+        """score > 70 + 4因素 → fallback 判定为高风险/reject。"""
+        report = case5_shield_ambiguity()
+        history = case5_with_history()
+        item = report.line_items[0]
+        result = self._detector.evaluate(item, self._employee, [], history)
+        llm = result.llm_review
+        self.assertIsNotNone(llm)
+        self.assertEqual(llm.risk_level, "高")
+        self.assertEqual(llm.recommendation, "reject")
+
+
 if __name__ == "__main__":
     unittest.main()

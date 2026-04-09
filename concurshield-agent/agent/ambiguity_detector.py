@@ -11,10 +11,16 @@ ambiguity_score:
   <30  → auto_pass（自动通过，附低风险标签）
   30-70 → human_review（标记待人工复核）
   >70  → suggest_reject（建议拒绝）
+
+当 score > 50 时，调用 Claude API 做深度语义分析。
+无 ANTHROPIC_API_KEY 时自动 fallback 到规则评分模型。
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 from datetime import timedelta
 from typing import Optional
 
@@ -22,6 +28,8 @@ from config import ConfigLoader
 from models.expense import AmbiguityResult, Employee, LLMReviewResult, LineItem, RuleResult
 from rules.policy_engine import PolicyEngine
 
+
+logger = logging.getLogger(__name__)
 
 # 泛化词列表——描述中出现这些词视为模糊
 _VAGUE_WORDS: list[str] = [
@@ -37,6 +45,9 @@ _WEIGHTS = {
     "time_anomaly":      0.15,
     "city_mismatch":     0.15,
 }
+
+# LLM 触发阈值
+_LLM_TRIGGER_THRESHOLD = 50
 
 
 class AmbiguityDetector:
@@ -67,6 +78,7 @@ class AmbiguityDetector:
 
         Returns:
             AmbiguityResult，含 0-100 评分、触发因素列表、建议和中文解释。
+            当 score > 50 时额外包含 llm_review 结果。
         """
         factors: dict[str, float] = {}
         triggered: list[str] = []
@@ -131,25 +143,204 @@ class AmbiguityDetector:
 
         explanation = "; ".join(explanations) if explanations else "未发现异常"
 
+        # ---- LLM 深度分析（score > 50 触发） ----
+        llm_result: Optional[LLMReviewResult] = None
+        if total_score > _LLM_TRIGGER_THRESHOLD:
+            llm_result = self._run_llm_review(
+                line_item, employee, rule_results, triggered, explanation,
+            )
+            # LLM 结果可能升级 recommendation
+            if llm_result and llm_result.recommendation == "reject" and recommendation != "suggest_reject":
+                recommendation = "suggest_reject"
+
         return AmbiguityResult(
             score=total_score,
             triggered_factors=triggered,
             recommendation=recommendation,
             explanation=explanation,
+            llm_review=llm_result,
         )
 
-    async def llm_review(
-        self, line_item: LineItem, context: dict,
-    ) -> LLMReviewResult:
-        """生产环境调用 LLM 做深度语义分析。
+    # ------------------------------------------------------------------
+    # LLM 审核
+    # ------------------------------------------------------------------
 
-        当前版本使用规则评分模型，此接口预留给 Phase 2。
-        触发条件：ambiguity_score > 50。
-        """
+    def _run_llm_review(
+        self,
+        line_item: LineItem,
+        employee: Employee,
+        rule_results: list[RuleResult],
+        triggered_factors: list[str],
+        explanation: str,
+    ) -> LLMReviewResult:
+        """调用 Claude API 做深度语义分析，无 API key 时 fallback 到规则模型。"""
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            logger.info("ANTHROPIC_API_KEY 未设置，使用 fallback 规则评分模型")
+            return self._fallback_llm_review(
+                line_item, employee, triggered_factors, explanation,
+            )
+
+        # ---- 构建上下文 ----
+        normalizer = self._engine.city_normalizer
+        normalized_city = normalizer.normalize(line_item.city)
+        city_tier = normalizer.get_tier(line_item.city)
+        subtype_cfg = self._engine.get_subtype_config(line_item.expense_type)
+        limit_key = subtype_cfg.get("limit_key", "")
+        limit = self._engine.get_limit(limit_key, line_item.city, employee.level.value) if limit_key else None
+        limit_display = f"¥{limit:.0f}" if limit else "不限"
+
+        rule_summary = "; ".join(
+            f"{r.rule_name}: {'通过' if r.passed else '未通过'} - {r.message}"
+            for r in rule_results
+        ) if rule_results else "无前序规则结果"
+
+        prompt = f"""你是企业财务合规审计专家。以下费用明细触发了模糊判定。
+
+员工信息：{employee.name}（等级：{employee.level.value}，部门：{employee.department}）
+费用明细：
+  - 类型: {line_item.expense_type}
+  - 金额: ¥{line_item.amount}
+  - 城市: {line_item.city} → {normalized_city}
+  - 日期: {line_item.date}
+  - 描述: {line_item.description}
+  - 参会人: {', '.join(line_item.attendees) if line_item.attendees else '未提供'}
+适用限额：{limit_display}（城市等级：{city_tier}，员工等级：{employee.level.value}）
+规则引擎结果：{rule_summary}
+模糊触发因素：{', '.join(triggered_factors)}（{explanation}）
+
+请分析：
+1. 合规风险等级：高/中/低
+2. 具体风险点
+3. 建议：通过 / 退回补充材料 / 拒绝
+4. 退回时需补充的材料清单
+
+严格按以下JSON格式返回，不要包含其他文本：
+{{"risk_level": "高/中/低", "risk_points": ["风险点1", "风险点2"], "recommendation": "approve/review/reject", "reasoning": "分析说明", "required_materials": ["材料1", "材料2"]}}"""
+
+        # ---- 调用 Claude API ----
+        try:
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            raw_text = message.content[0].text.strip()
+            return self._parse_llm_response(raw_text)
+
+        except ImportError:
+            logger.warning("anthropic 包未安装，使用 fallback 规则评分模型")
+            return self._fallback_llm_review(
+                line_item, employee, triggered_factors, explanation,
+            )
+        except Exception as e:
+            logger.error(f"Claude API 调用失败: {e}，使用 fallback 规则评分模型")
+            return self._fallback_llm_review(
+                line_item, employee, triggered_factors, explanation,
+            )
+
+    def _parse_llm_response(self, raw_text: str) -> LLMReviewResult:
+        """解析 Claude API 返回的 JSON。"""
+        try:
+            # 处理可能包含 markdown 代码块的情况
+            text = raw_text
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+
+            data = json.loads(text.strip())
+
+            rec_map = {"approve": "approve", "review": "review", "reject": "reject"}
+            recommendation = rec_map.get(data.get("recommendation", "review"), "review")
+
+            return LLMReviewResult(
+                confidence=0.9,
+                recommendation=recommendation,
+                reasoning=data.get("reasoning", ""),
+                risk_level=data.get("risk_level", "中"),
+                risk_points=data.get("risk_points", []),
+                required_materials=data.get("required_materials", []),
+                raw_response=raw_text,
+                source="claude",
+            )
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            logger.error(f"LLM 返回解析失败: {e}")
+            return LLMReviewResult(
+                confidence=0.5,
+                recommendation="review",
+                reasoning=f"LLM 返回解析失败，原始内容: {raw_text[:200]}",
+                risk_level="中",
+                raw_response=raw_text,
+                source="claude",
+            )
+
+    def _fallback_llm_review(
+        self,
+        line_item: LineItem,
+        employee: Employee,
+        triggered_factors: list[str],
+        explanation: str,
+    ) -> LLMReviewResult:
+        """无 API key 时的 fallback 规则评分模型。"""
+        risk_points: list[str] = []
+        required_materials: list[str] = []
+
+        if "description_vague" in triggered_factors:
+            risk_points.append("费用描述不清晰，无法确认业务合理性")
+            required_materials.append("详细的费用用途说明")
+
+        if "amount_boundary" in triggered_factors:
+            risk_points.append("金额接近限额边界，存在凑额度嫌疑")
+
+        if "pattern_anomaly" in triggered_factors:
+            risk_points.append("短期内多笔相似金额，存在拆单报销嫌疑")
+            required_materials.append("每笔费用的独立业务说明")
+
+        if "time_anomaly" in triggered_factors:
+            risk_points.append("非工作时间产生的费用，需确认业务必要性")
+            required_materials.append("加班/周末工作审批记录")
+
+        if "city_mismatch" in triggered_factors:
+            risk_points.append("城市信息不一致或无法识别")
+            required_materials.append("出差行程单或机票/车票凭证")
+
+        # 检查招待费特殊要求
+        subtype_cfg = self._engine.get_subtype_config(line_item.expense_type)
+        if subtype_cfg.get("requires_attendee_list") and not line_item.attendees:
+            risk_points.append("招待费缺少参会人员名单")
+            required_materials.append("参会人员名单（含公司及职务）")
+
+        n_factors = len(triggered_factors)
+        if n_factors >= 4:
+            risk_level = "高"
+            recommendation = "reject"
+        elif n_factors >= 2:
+            risk_level = "中"
+            recommendation = "review"
+        else:
+            risk_level = "低"
+            recommendation = "approve"
+
+        reasoning = (
+            f"基于规则评分模型分析: 共触发{n_factors}个模糊因素"
+            f"({', '.join(triggered_factors)}), "
+            f"风险等级判定为{risk_level}。{explanation}"
+        )
+
         return LLMReviewResult(
-            confidence=0.0,
-            recommendation="review",
-            reasoning="Phase 2 预留接口，当前版本未实现 LLM 分析",
+            confidence=0.7,
+            recommendation=recommendation,
+            reasoning=reasoning,
+            risk_level=risk_level,
+            risk_points=risk_points,
+            required_materials=required_materials,
+            raw_response="",
+            source="fallback",
         )
 
     # ------------------------------------------------------------------

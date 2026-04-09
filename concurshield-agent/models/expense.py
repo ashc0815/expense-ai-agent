@@ -38,20 +38,26 @@ class ApprovalResult:
 
 
 @dataclass
+class LLMReviewResult:
+    """LLM 深度语义分析结果。"""
+    confidence: float               # 0.0-1.0
+    recommendation: str             # "approve" | "reject" | "review"
+    reasoning: str
+    risk_level: str = ""            # "高" | "中" | "低"
+    risk_points: list[str] = field(default_factory=list)
+    required_materials: list[str] = field(default_factory=list)
+    raw_response: str = ""          # LLM 原始返回（调试用）
+    source: str = "fallback"        # "claude" | "fallback"
+
+
+@dataclass
 class AmbiguityResult:
     """模糊/歧义检测结果。"""
     score: float                    # 0-100
     triggered_factors: list[str]    # 哪些因素触发了
     recommendation: str             # "auto_pass" | "human_review" | "suggest_reject"
     explanation: str                # 中文解释
-
-
-@dataclass
-class LLMReviewResult:
-    """Phase 2 预留：LLM 深度语义分析结果。"""
-    confidence: float       # 0.0-1.0
-    recommendation: str     # "approve" | "reject" | "review"
-    reasoning: str
+    llm_review: Optional["LLMReviewResult"] = None  # score>50 时填充
 
 
 @dataclass

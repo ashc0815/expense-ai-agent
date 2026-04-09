@@ -240,12 +240,12 @@ class ExpenseController:
 
     @staticmethod
     def _build_shield_report(compliance_result: Any) -> dict:
-        """从合规结果中提取模糊检测报告。"""
+        """从合规结果中提取模糊检测报告（含 LLM 分析）。"""
         flagged_items: list[dict] = []
         for detail in getattr(compliance_result, "line_details", []):
             ambiguity = getattr(detail, "ambiguity", None)
             if ambiguity and ambiguity.recommendation != "auto_pass":
-                flagged_items.append({
+                item_dict: dict = {
                     "expense_type": detail.line_item.expense_type,
                     "amount": detail.line_item.amount,
                     "description": detail.line_item.description,
@@ -253,7 +253,17 @@ class ExpenseController:
                     "recommendation": ambiguity.recommendation,
                     "triggered_factors": ambiguity.triggered_factors,
                     "explanation": ambiguity.explanation,
-                })
+                }
+                if ambiguity.llm_review:
+                    item_dict["llm_review"] = {
+                        "source": ambiguity.llm_review.source,
+                        "risk_level": ambiguity.llm_review.risk_level,
+                        "risk_points": ambiguity.llm_review.risk_points,
+                        "recommendation": ambiguity.llm_review.recommendation,
+                        "reasoning": ambiguity.llm_review.reasoning,
+                        "required_materials": ambiguity.llm_review.required_materials,
+                    }
+                flagged_items.append(item_dict)
         return {
             "shield_triggered": True,
             "overall_level": compliance_result.overall_level.value,
