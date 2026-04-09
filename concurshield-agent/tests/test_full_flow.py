@@ -13,11 +13,16 @@ from config import ConfigLoader
 from agent.controller import AgentController
 from mock_data.sample_reports import create_sample_report, create_over_limit_report
 from models.enums import ComplianceLevel, EmployeeLevel, InvoiceType, ReportStatus
-from models.expense import ApprovalResult, Employee, ExpenseReport, Invoice, LineItem, ReceiptResult
+from models.expense import (
+    AmbiguityResult, ApprovalResult, ComplianceResult, Employee,
+    ExpenseReport, Invoice, LineItem, LineItemComplianceDetail, ReceiptResult,
+)
 from rules.city_normalizer import CityNormalizer
 from rules.policy_engine import PolicyEngine
+from agent.ambiguity_detector import AmbiguityDetector
 from skills.skill_01_receipt import process as receipt_process
 from skills.skill_02_approval import process as approval_process
+from skills.skill_03_compliance import process as compliance_process
 
 
 def _make_loader() -> ConfigLoader:
@@ -794,6 +799,384 @@ class TestSkill02SimulatedResults(TestSkill02ApprovalBase):
         result = approval_process(report)
         self.assertEqual(result.approval_chain[0].actual_hours, 0.0)
         self.assertEqual(result.approval_chain[0].status, "approved")
+
+
+# ======================================================================
+# AmbiguityDetector
+# ======================================================================
+
+class TestAmbiguityDetectorBase(unittest.TestCase):
+    def setUp(self):
+        self._loader = _make_loader()
+        self._detector = AmbiguityDetector(self._loader)
+        self._employee = Employee(
+            name="测试员工", id="EMP-T01", department="测试部",
+            city="上海", hire_date=date(2022, 1, 1),
+            bank_account="6222-0000-0000-0001", level=EmployeeLevel.L1,
+        )
+
+    def _item(self, **overrides) -> LineItem:
+        defaults = dict(
+            expense_type="accommodation", amount=400.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3),  # Tuesday
+            invoice=None, description="上海出差住宿一晚标准间",
+        )
+        defaults.update(overrides)
+        return LineItem(**defaults)
+
+
+class TestAmbiguityDescriptionVague(TestAmbiguityDetectorBase):
+    def test_clear_description_zero(self):
+        item = self._item(description="上海出差住宿一晚标准间")
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertNotIn("description_vague", r.triggered_factors)
+
+    def test_short_description_triggers(self):
+        item = self._item(description="住宿")
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertIn("description_vague", r.triggered_factors)
+
+    def test_vague_word_triggers(self):
+        item = self._item(description="差旅相关费用补贴报销处理")
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertIn("description_vague", r.triggered_factors)
+
+    def test_empty_description_triggers(self):
+        item = self._item(description="")
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertIn("description_vague", r.triggered_factors)
+
+
+class TestAmbiguityAmountBoundary(TestAmbiguityDetectorBase):
+    def test_well_under_limit_no_trigger(self):
+        # L1 上海 accommodation limit = 500, amount=300 → well under
+        item = self._item(amount=300.0)
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertNotIn("amount_boundary", r.triggered_factors)
+
+    def test_at_boundary_triggers(self):
+        # limit=500, amount=480 → 96% of limit, in 90-110% range
+        item = self._item(amount=480.0)
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertIn("amount_boundary", r.triggered_factors)
+
+    def test_at_110_percent_triggers(self):
+        # limit=500, amount=540 → 108%, in range
+        item = self._item(amount=540.0)
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertIn("amount_boundary", r.triggered_factors)
+
+    def test_way_over_no_boundary_trigger(self):
+        # limit=500, amount=800 → 160%, not in 90-110%
+        item = self._item(amount=800.0)
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertNotIn("amount_boundary", r.triggered_factors)
+
+
+class TestAmbiguityPatternAnomaly(TestAmbiguityDetectorBase):
+    def test_no_history_no_trigger(self):
+        item = self._item()
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertNotIn("pattern_anomaly", r.triggered_factors)
+
+    def test_three_similar_amounts_triggers(self):
+        # 3 similar amounts (±15%) in 7 days
+        base = date(2025, 6, 3)
+        history = [
+            self._item(amount=410.0, date=base - timedelta(days=1)),
+            self._item(amount=390.0, date=base - timedelta(days=2)),
+            self._item(amount=420.0, date=base - timedelta(days=3)),
+        ]
+        item = self._item(amount=400.0, date=base)
+        r = self._detector.evaluate(item, self._employee, [], history)
+        self.assertIn("pattern_anomaly", r.triggered_factors)
+
+    def test_different_types_no_trigger(self):
+        base = date(2025, 6, 3)
+        history = [
+            self._item(expense_type="meals", amount=400.0, date=base - timedelta(days=1)),
+            self._item(expense_type="meals", amount=400.0, date=base - timedelta(days=2)),
+            self._item(expense_type="meals", amount=400.0, date=base - timedelta(days=3)),
+        ]
+        item = self._item(amount=400.0, date=base)  # accommodation ≠ meals
+        r = self._detector.evaluate(item, self._employee, [], history)
+        self.assertNotIn("pattern_anomaly", r.triggered_factors)
+
+
+class TestAmbiguityTimeAnomaly(TestAmbiguityDetectorBase):
+    def test_weekday_no_trigger(self):
+        # 2025-06-03 is Tuesday
+        item = self._item(expense_type="meals", date=date(2025, 6, 3))
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertNotIn("time_anomaly", r.triggered_factors)
+
+    def test_weekend_meals_triggers(self):
+        # 2025-06-07 is Saturday
+        item = self._item(expense_type="meals", date=date(2025, 6, 7))
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertIn("time_anomaly", r.triggered_factors)
+
+    def test_weekend_accommodation_no_trigger(self):
+        # accommodation on weekend is normal (checking out)
+        item = self._item(expense_type="accommodation", date=date(2025, 6, 7))
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertNotIn("time_anomaly", r.triggered_factors)
+
+
+class TestAmbiguityCityMismatch(TestAmbiguityDetectorBase):
+    def test_standard_chinese_no_trigger(self):
+        item = self._item(city="上海")
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertNotIn("city_mismatch", r.triggered_factors)
+
+    def test_english_name_triggers_mismatch(self):
+        # "Shanghai" is known but differs from "上海"
+        item = self._item(city="Shanghai")
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertIn("city_mismatch", r.triggered_factors)
+
+    def test_unknown_city_triggers(self):
+        item = self._item(city="RandomPlace")
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertIn("city_mismatch", r.triggered_factors)
+
+
+class TestAmbiguityScoring(TestAmbiguityDetectorBase):
+    def test_clean_item_auto_pass(self):
+        item = self._item(
+            description="上海出差住宿一晚标准间",
+            amount=300.0, city="上海", date=date(2025, 6, 3),
+        )
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertLess(r.score, 30)
+        self.assertEqual(r.recommendation, "auto_pass")
+
+    def test_multiple_triggers_high_score(self):
+        # short desc + boundary amount + weekend meals + unknown city
+        item = self._item(
+            expense_type="meals", description="餐费",
+            amount=95.0,  # L1 上海 meals limit=100, 95% in boundary
+            city="RandomPlace", date=date(2025, 6, 7),  # Saturday
+        )
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertGreater(r.score, 30)
+        self.assertIn(r.recommendation, ("human_review", "suggest_reject"))
+        self.assertTrue(len(r.triggered_factors) >= 3)
+
+    def test_explanation_is_chinese(self):
+        item = self._item(description="杂项")
+        r = self._detector.evaluate(item, self._employee, [], [])
+        self.assertTrue(len(r.explanation) > 0)
+
+
+# ======================================================================
+# Skill 03: 合规检查
+# ======================================================================
+
+class TestSkill03ComplianceBase(unittest.TestCase):
+    def setUp(self):
+        _make_loader()
+        self._employee_l1 = Employee(
+            name="测试员工", id="EMP-T01", department="测试部",
+            city="上海", hire_date=date(2022, 1, 1),
+            bank_account="6222-0000-0000-0001", level=EmployeeLevel.L1,
+        )
+
+    def _make_report(self, items, employee=None) -> ExpenseReport:
+        emp = employee or self._employee_l1
+        return ExpenseReport(
+            report_id="RPT-CMP", employee=emp, line_items=items,
+            total_amount=sum(i.amount for i in items),
+            submit_date=datetime(2025, 6, 2, 9, 0),
+        )
+
+
+class TestSkill03LevelA(TestSkill03ComplianceBase):
+    def test_under_limit_is_A(self):
+        items = [LineItem(
+            expense_type="accommodation", amount=400.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="上海出差住宿一晚标准间",
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertIsInstance(result, ComplianceResult)
+        self.assertEqual(result.overall_level, ComplianceLevel.A)
+        self.assertEqual(result.line_details[0].compliance_level, ComplianceLevel.A)
+        self.assertEqual(result.line_details[0].normalized_city, "上海")
+        self.assertEqual(result.line_details[0].city_tier, "tier_1")
+
+    def test_unlimited_is_A(self):
+        # L4 不限
+        emp = Employee(
+            name="VP", id="EMP-VP", department="管理层", city="上海",
+            hire_date=date(2020, 1, 1), bank_account="6222-VP",
+            level=EmployeeLevel.L4,
+        )
+        items = [LineItem(
+            expense_type="accommodation", amount=5000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="上海出差住宿一晚总统套房",
+        )]
+        report = self._make_report(items, employee=emp)
+        result = compliance_process(report, employee=emp)
+        self.assertEqual(result.overall_level, ComplianceLevel.A)
+        self.assertIsNone(result.line_details[0].limit)
+
+    def test_no_limit_key_is_A(self):
+        # transport_intercity has no limit_key
+        items = [LineItem(
+            expense_type="transport_intercity", amount=2000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="上海至北京高铁二等座",
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertEqual(result.overall_level, ComplianceLevel.A)
+
+
+class TestSkill03LevelB(TestSkill03ComplianceBase):
+    def test_over_within_tolerance_is_B(self):
+        # L1 上海 accommodation limit=500, 530 → B (超30, ≤50)
+        items = [LineItem(
+            expense_type="accommodation", amount=530.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="上海出差住宿一晚标准间略超标",
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertEqual(result.overall_level, ComplianceLevel.B)
+        self.assertEqual(result.line_details[0].limit, 500.0)
+
+
+class TestSkill03LevelC(TestSkill03ComplianceBase):
+    def test_way_over_is_C(self):
+        # L1 上海 accommodation limit=500, 800 → C (超300, >50)
+        items = [LineItem(
+            expense_type="accommodation", amount=800.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="上海出差住宿一晚高档酒店严重超标",
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertEqual(result.overall_level, ComplianceLevel.C)
+
+
+class TestSkill03Overall(TestSkill03ComplianceBase):
+    def test_mixed_A_and_B_gives_B(self):
+        items = [
+            LineItem(
+                expense_type="accommodation", amount=400.0, currency="CNY",
+                city="上海", date=date(2025, 6, 3), invoice=None,
+                description="上海出差住宿一晚标准间合规",
+            ),
+            LineItem(
+                expense_type="meals", amount=130.0, currency="CNY",
+                city="上海", date=date(2025, 6, 3), invoice=None,
+                description="上海出差午餐工作餐略超标",  # L1 meals limit=100, 130→B
+            ),
+        ]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertEqual(result.overall_level, ComplianceLevel.B)
+
+    def test_one_C_overrides_all(self):
+        items = [
+            LineItem(
+                expense_type="accommodation", amount=400.0, currency="CNY",
+                city="上海", date=date(2025, 6, 3), invoice=None,
+                description="上海出差住宿一晚标准间合规",
+            ),
+            LineItem(
+                expense_type="accommodation", amount=800.0, currency="CNY",
+                city="上海", date=date(2025, 6, 4), invoice=None,
+                description="上海出差住宿一晚高档酒店严重超标",
+            ),
+        ]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertEqual(result.overall_level, ComplianceLevel.C)
+
+
+class TestSkill03ExtraChecks(TestSkill03ComplianceBase):
+    def test_client_meal_without_attendees_fails(self):
+        items = [LineItem(
+            expense_type="client_meal", amount=500.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="客户宴请商务晚宴正式活动",
+            attendees=[],
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        detail = result.line_details[0]
+        attendee_checks = [c for c in detail.extra_checks if c.rule_name == "attendee_list_required"]
+        self.assertEqual(len(attendee_checks), 1)
+        self.assertFalse(attendee_checks[0].passed)
+
+    def test_client_meal_with_attendees_passes(self):
+        items = [LineItem(
+            expense_type="client_meal", amount=500.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="客户宴请商务晚宴正式活动",
+            attendees=["客户A", "客户B", "员工C"],
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        detail = result.line_details[0]
+        attendee_checks = [c for c in detail.extra_checks if c.rule_name == "attendee_list_required"]
+        self.assertEqual(len(attendee_checks), 1)
+        self.assertTrue(attendee_checks[0].passed)
+
+
+class TestSkill03CityNormalization(TestSkill03ComplianceBase):
+    def test_english_city_normalized(self):
+        items = [LineItem(
+            expense_type="accommodation", amount=400.0, currency="CNY",
+            city="Shanghai", date=date(2025, 6, 3), invoice=None,
+            description="上海出差住宿一晚标准间合规",
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertEqual(result.line_details[0].normalized_city, "上海")
+        self.assertEqual(result.line_details[0].city_tier, "tier_1")
+
+    def test_tier2_city_correct(self):
+        items = [LineItem(
+            expense_type="accommodation", amount=300.0, currency="CNY",
+            city="Chengdu", date=date(2025, 6, 3), invoice=None,
+            description="成都出差住宿一晚标准间合规",
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertEqual(result.line_details[0].normalized_city, "成都")
+        self.assertEqual(result.line_details[0].city_tier, "tier_2")
+        self.assertEqual(result.line_details[0].limit, 350.0)
+
+
+class TestSkill03ShieldTriggered(TestSkill03ComplianceBase):
+    def test_ambiguous_item_triggers_shield(self):
+        # Multiple ambiguity factors: short desc + unknown city + weekend
+        items = [LineItem(
+            expense_type="meals", amount=95.0, currency="CNY",
+            city="RandomPlace", date=date(2025, 6, 7),  # Saturday
+            invoice=None, description="餐费",
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertTrue(result.shield_triggered)
+        detail = result.line_details[0]
+        self.assertIsNotNone(detail.ambiguity)
+        self.assertNotEqual(detail.ambiguity.recommendation, "auto_pass")
+
+    def test_clean_item_no_shield(self):
+        items = [LineItem(
+            expense_type="accommodation", amount=300.0, currency="CNY",
+            city="上海", date=date(2025, 6, 3), invoice=None,
+            description="上海出差住宿一晚标准间合规清晰",
+        )]
+        report = self._make_report(items)
+        result = compliance_process(report)
+        self.assertFalse(result.shield_triggered)
 
 
 # ======================================================================

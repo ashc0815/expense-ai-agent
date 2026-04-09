@@ -36,6 +36,44 @@ class ApprovalResult:
 
 
 @dataclass
+class AmbiguityResult:
+    """模糊/歧义检测结果。"""
+    score: float                    # 0-100
+    triggered_factors: list[str]    # 哪些因素触发了
+    recommendation: str             # "auto_pass" | "human_review" | "suggest_reject"
+    explanation: str                # 中文解释
+
+
+@dataclass
+class LLMReviewResult:
+    """Phase 2 预留：LLM 深度语义分析结果。"""
+    confidence: float       # 0.0-1.0
+    recommendation: str     # "approve" | "reject" | "review"
+    reasoning: str
+
+
+@dataclass
+class LineItemComplianceDetail:
+    """单行项目的合规检查明细。"""
+    line_item: "LineItem"
+    normalized_city: str
+    city_tier: str
+    limit: Optional[float]                    # None = 不限
+    compliance_level: "ComplianceLevel"       # A/B/C (forward ref for enum)
+    extra_checks: list[RuleResult]            # 附加校验结果（如参会人名单）
+    ambiguity: Optional[AmbiguityResult]      # None = 未触发模糊检测
+
+
+@dataclass
+class ComplianceResult:
+    """整单合规检查结果。"""
+    overall_level: "ComplianceLevel"
+    line_details: list[LineItemComplianceDetail]
+    shield_triggered: bool        # 有 AMBIGUOUS 项
+    issues: list[str]
+
+
+@dataclass
 class ReceiptResult:
     """单张发票的收据验证结果。"""
     invoice: "Invoice"

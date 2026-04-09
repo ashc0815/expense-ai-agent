@@ -50,6 +50,10 @@ class PolicyEngine:
     def city_normalizer(self) -> CityNormalizer:
         return self._city_normalizer
 
+    def get_subtype_config(self, subtype_id: str) -> dict:
+        """获取子类型的配置（如 limit_key, requires_attendee_list 等）。"""
+        return self._subtype_config.get(subtype_id, {})
+
     # ------------------------------------------------------------------
     # 费用限额
     # ------------------------------------------------------------------

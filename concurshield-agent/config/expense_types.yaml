@@ -10,14 +10,17 @@ expense_types:
       - id: transport_local
         name_zh: 市内交通
         requires_invoice: true
+        limit_key: local_transport_per_day
         accounting_debit: 管理费用-差旅费
       - id: accommodation
         name_zh: 住宿
         requires_invoice: true
+        limit_key: accommodation_per_night
         accounting_debit: 管理费用-差旅费
       - id: meals
         name_zh: 餐费
         requires_invoice: true
+        limit_key: meals_per_person
         accounting_debit: 管理费用-差旅费
   entertainment:
     name_zh: 业务招待费
@@ -26,6 +29,7 @@ expense_types:
         name_zh: 客户宴请
         requires_invoice: true
         requires_attendee_list: true    # 招待费必须附参会人员名单
+        limit_key: meals_per_person
         accounting_debit: 管理费用-招待费
   office:
     name_zh: 办公费
