@@ -1,97 +1,135 @@
-"""ConcurShield Agent 入口——费用报销智能审核系统。"""
+"""ConcurShield Agent 入口——跑通全部7个测试场景，输出中文日志。"""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-# 确保项目根目录在 sys.path 中
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import ConfigLoader
 from agent.controller import ExpenseController
-from mock_data.sample_reports import create_sample_report, create_over_limit_report
+from agent.ambiguity_detector import AmbiguityDetector
 from models.enums import FinalStatus
-from rules.policy_engine import PolicyEngine
+from skills.skill_03_compliance import process as compliance_process
+from skills.skill_04_voucher import reset_voucher_seq
+from mock_data.sample_reports import (
+    case1_normal_report,
+    case2_duplicate_invoice,
+    case3_over_limit_reject,
+    case4_warning_pass,
+    case5_shield_ambiguity,
+    case5_with_history,
+    case6_pattern_anomaly,
+    case7_level_comparison,
+)
+
+
+def _print_result(report, result, extra_info: str = "") -> None:
+    status_emoji = {
+        FinalStatus.COMPLETED: "✅",
+        FinalStatus.REJECTED: "❌",
+        FinalStatus.PENDING_REVIEW: "⚠️",
+        FinalStatus.PAYMENT_FAILED: "💳",
+    }
+    emoji = status_emoji.get(result.final_status, "?")
+    print(f"  报销单: {report.report_id}")
+    print(f"  员工: {report.employee.name} ({report.employee.level.value})")
+    print(f"  金额: ¥{report.total_amount:.2f}")
+    print(f"  结果: {emoji} {result.final_status.value}")
+    print(f"  耗时: {result.total_processing_time.total_seconds():.3f}s")
+    if extra_info:
+        print(f"  备注: {extra_info}")
+    print(f"  时间线:")
+    for step in result.timeline:
+        mark = "✓" if step.passed else ("⊘" if step.skipped else "✗")
+        print(f"    {mark} {step.message}")
+    if result.shield_report:
+        for item in result.shield_report.get("flagged_items", []):
+            print(f"  Shield: score={item['ambiguity_score']:.0f}, "
+                  f"建议={item['recommendation']}, "
+                  f"因素={item['triggered_factors']}")
+            print(f"          {item['explanation']}")
 
 
 def main() -> None:
-    # 1. 加载全局配置
     ConfigLoader.reset()
     loader = ConfigLoader()
     loader.load()
 
-    print("=" * 60)
-    print("ConcurShield Agent — 费用报销智能审核系统")
-    print("=" * 60)
+    print("=" * 70)
+    print("  ConcurShield Agent — 费用报销智能审核系统")
+    print("  配置驱动 · 城市标准化 · 模糊检测")
+    print("=" * 70)
 
-    # 2. 初始化策略引擎（内部自动创建 CityNormalizer）
-    engine = PolicyEngine(loader)
-    normalizer = engine.city_normalizer
+    ctrl = ExpenseController(loader)
 
-    # 3. 演示：城市名标准化
-    print("\n--- 城市名标准化演示 ---")
-    test_cities = ["Shanghai", "SH", "沪", "beijing", "BJ", "蓉", "UnknownCity"]
-    for city in test_cities:
-        normalized = normalizer.normalize(city)
-        tier = normalizer.get_tier(city)
-        known = normalizer.is_known(city)
-        status = f"✓ {tier}" if known else "✗ 需人工复核"
-        print(f"  {city:15s} → {normalized:4s} {status}")
+    # ---- Case 1: 正常报销 ----
+    print("\n━━━ Case 1: 正常报销（预期：全A通过）━━━")
+    reset_voucher_seq()
+    r1 = case1_normal_report()
+    _print_result(r1, ctrl.process_report(r1))
 
-    # 4. 演示：费用限额查询
-    print("\n--- 费用限额查询演示 ---")
-    for level in ["L1", "L2", "L3", "L4"]:
-        limit = engine.get_limit("accommodation_per_night", "上海", level)
-        display = f"{limit:.0f}" if limit is not None else "不限"
-        print(f"  住宿(上海) {level}: {display} 元/晚")
+    # ---- Case 2: 重复发票 ----
+    print("\n━━━ Case 2: 重复发票（预期：Skill-01拦截）━━━")
+    r2 = case2_duplicate_invoice()
+    _print_result(r2, ctrl.process_report(r2))
 
-    # 5. 演示：审批链计算
-    print("\n--- 审批链计算演示 ---")
-    for level, amount in [("L1", 1500), ("L1", 5000), ("L3", 8000), ("L4", 3000)]:
-        chain = engine.get_approval_chain("travel", amount, level)
-        roles = " → ".join(
-            f"{s.approver_role}({'自动' if s.is_auto_approved else f'{s.time_limit_hours}h'})"
-            for s in chain
-        )
-        print(f"  差旅 ¥{amount} {level}: {roles}")
+    # ---- Case 3: 超标拒绝 ----
+    print("\n━━━ Case 3: 超标拒绝（预期：C级，成都住宿420>限额350）━━━")
+    r3 = case3_over_limit_reject()
+    _print_result(r3, ctrl.process_report(r3))
 
-    # 6. 新版 ExpenseController 流程编排
-    controller = ExpenseController(loader)
+    # ---- Case 4: 警告通过 ----
+    print("\n━━━ Case 4: 警告通过（预期：B级，成都住宿380超标30≤50）━━━")
+    reset_voucher_seq()
+    r4 = case4_warning_pass()
+    _print_result(r4, ctrl.process_report(r4))
 
-    # ---- 标准报销单 ----
-    print("\n--- 标准报销单流程（ExpenseController） ---")
-    report1 = create_sample_report()
-    result1 = controller.process_report(report1)
+    # ---- Case 5: ConcurShield 核心 showcase ----
+    print("\n━━━ Case 5: ConcurShield — 城市+描述模糊（核心showcase）━━━")
+    print("  场景: city='Shanghai', 描述='商务活动费用', 周六, 无参会人名单")
+    r5 = case5_shield_ambiguity()
+    res5 = ctrl.process_report(r5)
+    _print_result(r5, res5, "CityNormalizer: Shanghai→上海(tier_1)")
 
-    print(f"  报销单: {report1.report_id}")
-    print(f"  员工: {report1.employee.name} ({report1.employee.level.value})")
-    print(f"  金额: ¥{report1.total_amount:.2f}")
-    print(f"  最终状态: {result1.final_status.value}")
-    print(f"  总耗时: {result1.total_processing_time.total_seconds():.3f}s")
-    print(f"  时间线:")
-    for step in result1.timeline:
-        mark = "✓" if step.passed else ("⊘" if step.skipped else "✗")
-        print(f"    {mark} {step.message}")
+    # 注入历史后 score 超过 70
+    print("\n  [注入历史数据后]")
+    history = case5_with_history()
+    detector = AmbiguityDetector(loader)
+    item5 = case5_shield_ambiguity().line_items[0]
+    emp5 = case5_shield_ambiguity().employee
+    amb = detector.evaluate(item5, emp5, [], history)
+    print(f"  模糊评分: {amb.score:.1f} → {amb.recommendation}")
+    print(f"  触发因素: {amb.triggered_factors}")
+    print(f"  解释: {amb.explanation}")
 
-    # ---- 超标报销单 ----
-    print("\n--- 超标报销单流程（ExpenseController） ---")
-    report2 = create_over_limit_report()
-    result2 = controller.process_report(report2)
+    # ---- Case 6: ConcurShield — 模式异常 ----
+    print("\n━━━ Case 6: ConcurShield — 模式异常（5天内3笔相似餐费）━━━")
+    r6, history6 = case6_pattern_anomaly()
+    # 规则引擎看不出问题
+    cmp6 = compliance_process(r6)
+    print(f"  规则引擎: {cmp6.overall_level.value}级（金额在限额内）")
+    # AmbiguityDetector 检测到模式
+    amb6 = detector.evaluate(r6.line_items[0], r6.employee, [], history6)
+    print(f"  模糊评分: {amb6.score:.1f} → {amb6.recommendation}")
+    print(f"  触发因素: {amb6.triggered_factors}")
+    print(f"  解释: {amb6.explanation}")
 
-    print(f"  报销单: {report2.report_id}")
-    print(f"  金额: ¥{report2.total_amount:.2f}")
-    print(f"  最终状态: {result2.final_status.value}")
-    print(f"  时间线:")
-    for step in result2.timeline:
-        mark = "✓" if step.passed else ("⊘" if step.skipped else "✗")
-        print(f"    {mark} {step.message}")
-    if result2.shield_report:
-        print(f"  Shield 报告: {result2.shield_report}")
+    # ---- Case 7: 员工等级差异 ----
+    print("\n━━━ Case 7: 员工等级差异（同一笔¥500住宿，成都）━━━")
+    r7_l1, r7_l2 = case7_level_comparison()
+    reset_voucher_seq()
+    res7_l1 = ctrl.process_report(r7_l1)
+    print(f"  L1(限额350): {res7_l1.final_status.value}")
+    reset_voucher_seq()
+    res7_l2 = ctrl.process_report(r7_l2)
+    print(f"  L2(限额500): {res7_l2.final_status.value}")
+    print(f"  → 同样¥500，L1拒绝/L2通过——纯配置驱动，零代码改动")
 
-    print("\n" + "=" * 60)
-    print("流程执行完毕")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("  全部7个场景执行完毕")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
