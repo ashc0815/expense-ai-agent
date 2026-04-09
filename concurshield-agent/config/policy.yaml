@@ -1,3 +1,7 @@
+# 企业信息（用于发票抬头校验）
+company_info:
+  name: 示例科技有限公司
+
 # 员工等级定义
 employee_levels:
   - id: L1

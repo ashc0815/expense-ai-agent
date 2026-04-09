@@ -62,9 +62,11 @@ class AgentController:
             module = importlib.import_module(module_path)
 
             # 执行 skill（支持重试）
+            # 优先使用 process_report（新接口），回退到 process（旧接口）
+            skill_fn = getattr(module, "process_report", None) or module.process
             result = None
             for attempt in range(max_retries):
-                result = module.process(report, self._full_config)
+                result = skill_fn(report, self._full_config)
                 if result.get("passed", False):
                     break
 

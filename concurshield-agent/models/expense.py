@@ -25,6 +25,15 @@ class RuleResult:
 
 
 @dataclass
+class ReceiptResult:
+    """单张发票的收据验证结果。"""
+    invoice: "Invoice"
+    passed: bool
+    checks: list[RuleResult]
+    normalized_city: str
+
+
+@dataclass
 class Employee:
     name: str
     id: str
@@ -46,6 +55,7 @@ class Invoice:
     vendor: str
     city: str
     items: list[str] = field(default_factory=list)
+    buyer_name: str = ""  # 购买方名称（用于抬头校验）
 
 
 @dataclass

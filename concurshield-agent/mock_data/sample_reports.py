@@ -32,6 +32,7 @@ def create_sample_report() -> ExpenseReport:
         vendor="如家酒店",
         city="Shanghai",  # 故意用英文名，测试城市标准化
         items=["住宿费"],
+        buyer_name="示例科技有限公司",
     )
 
     invoice_meal = Invoice(
@@ -44,6 +45,7 @@ def create_sample_report() -> ExpenseReport:
         vendor="餐厅A",
         city="SH",  # 故意用缩写，测试城市标准化
         items=["餐费"],
+        buyer_name="示例科技有限公司",
     )
 
     line_items = [
@@ -91,6 +93,7 @@ def create_over_limit_report() -> ExpenseReport:
         vendor="五星酒店",
         city="北京",
         items=["住宿费"],
+        buyer_name="示例科技有限公司",
     )
 
     line_items = [
