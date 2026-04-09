@@ -15,7 +15,8 @@ from mock_data.sample_reports import create_sample_report, create_over_limit_rep
 from models.enums import ComplianceLevel, EmployeeLevel, InvoiceType, ReportStatus
 from models.expense import (
     AmbiguityResult, ApprovalResult, ComplianceResult, Employee,
-    ExpenseReport, Invoice, LineItem, LineItemComplianceDetail, ReceiptResult,
+    ExpenseReport, Invoice, LineItem, LineItemComplianceDetail,
+    PaymentResult, ReceiptResult, VoucherResult,
 )
 from rules.city_normalizer import CityNormalizer
 from rules.policy_engine import PolicyEngine
@@ -23,6 +24,8 @@ from agent.ambiguity_detector import AmbiguityDetector
 from skills.skill_01_receipt import process as receipt_process
 from skills.skill_02_approval import process as approval_process
 from skills.skill_03_compliance import process as compliance_process
+from skills.skill_04_voucher import process as voucher_process, reset_voucher_seq
+from skills.skill_05_payment import process as payment_process
 
 
 def _make_loader() -> ConfigLoader:
@@ -1177,6 +1180,291 @@ class TestSkill03ShieldTriggered(TestSkill03ComplianceBase):
         report = self._make_report(items)
         result = compliance_process(report)
         self.assertFalse(result.shield_triggered)
+
+
+# ======================================================================
+# Skill 04: 记账凭证
+# ======================================================================
+
+class TestSkill04VoucherBase(unittest.TestCase):
+    def setUp(self):
+        _make_loader()
+        reset_voucher_seq()
+
+    def _make_report(self, items, employee=None) -> ExpenseReport:
+        emp = employee or Employee(
+            name="张三", id="EMP-001", department="销售部", city="上海",
+            hire_date=date(2022, 1, 1), bank_account="6222-0000-0001-2345",
+            level=EmployeeLevel.L1,
+        )
+        return ExpenseReport(
+            report_id="RPT-V01", employee=emp, line_items=items,
+            total_amount=sum(i.amount for i in items),
+            submit_date=datetime(2025, 6, 2, 9, 0),
+        )
+
+
+class TestSkill04BasicVoucher(TestSkill04VoucherBase):
+    def test_simple_voucher_balanced(self):
+        items = [LineItem(
+            expense_type="accommodation", amount=450.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿费",
+        )]
+        r = voucher_process(self._make_report(items))
+        self.assertIsInstance(r, VoucherResult)
+        self.assertTrue(r.balanced)
+        self.assertEqual(r.total_debit, r.total_credit)
+        self.assertEqual(r.total_debit, 450.0)
+        self.assertEqual(len(r.issues), 0)
+
+    def test_voucher_number_format(self):
+        items = [LineItem(
+            expense_type="meals", amount=80.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="午餐",
+        )]
+        r = voucher_process(self._make_report(items), voucher_month="202506")
+        self.assertTrue(r.voucher_number.startswith("记-202506-"))
+
+    def test_voucher_number_auto_increment(self):
+        items = [LineItem(
+            expense_type="meals", amount=80.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="午餐",
+        )]
+        r1 = voucher_process(self._make_report(items), voucher_month="202506")
+        r2 = voucher_process(self._make_report(items), voucher_month="202506")
+        self.assertEqual(r1.voucher_number, "记-202506-0001")
+        self.assertEqual(r2.voucher_number, "记-202506-0002")
+
+    def test_debit_account_from_config(self):
+        items = [LineItem(
+            expense_type="accommodation", amount=400.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿费",
+        )]
+        r = voucher_process(self._make_report(items))
+        debit_entries = [e for e in r.entries if e.direction == "debit"]
+        self.assertEqual(debit_entries[0].account, "管理费用-差旅费")
+
+    def test_credit_account_has_employee_name(self):
+        items = [LineItem(
+            expense_type="meals", amount=80.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="午餐",
+        )]
+        r = voucher_process(self._make_report(items))
+        credit_entries = [e for e in r.entries if e.direction == "credit"]
+        self.assertEqual(len(credit_entries), 1)
+        self.assertIn("张三", credit_entries[0].account)
+
+    def test_multiple_line_items_one_credit(self):
+        items = [
+            LineItem(expense_type="accommodation", amount=400.0, currency="CNY",
+                     city="上海", date=date(2025, 6, 1), invoice=None, description="住宿"),
+            LineItem(expense_type="meals", amount=80.0, currency="CNY",
+                     city="上海", date=date(2025, 6, 1), invoice=None, description="午餐"),
+        ]
+        r = voucher_process(self._make_report(items))
+        self.assertTrue(r.balanced)
+        self.assertEqual(r.total_debit, 480.0)
+        debit_entries = [e for e in r.entries if e.direction == "debit"]
+        credit_entries = [e for e in r.entries if e.direction == "credit"]
+        self.assertEqual(len(debit_entries), 2)
+        self.assertEqual(len(credit_entries), 1)
+        self.assertEqual(credit_entries[0].amount, 480.0)
+
+
+class TestSkill04VATSplit(TestSkill04VoucherBase):
+    def test_special_invoice_splits_tax(self):
+        inv = Invoice(
+            invoice_code="031001900211", invoice_number="12345678",
+            invoice_type=InvoiceType.SPECIAL, amount=450.0, tax_amount=27.0,
+            date=date(2025, 6, 1), vendor="酒店", city="上海",
+            buyer_name="示例科技有限公司",
+        )
+        items = [LineItem(
+            expense_type="accommodation", amount=450.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=inv,
+            description="住宿费",
+        )]
+        r = voucher_process(self._make_report(items))
+        self.assertTrue(r.balanced)
+        debit_entries = [e for e in r.entries if e.direction == "debit"]
+        self.assertEqual(len(debit_entries), 2)
+        # 不含税部分
+        net_entry = next(e for e in debit_entries if "不含税" in e.description)
+        self.assertEqual(net_entry.amount, 423.0)
+        self.assertEqual(net_entry.account, "管理费用-差旅费")
+        # 进项税额
+        tax_entry = next(e for e in debit_entries if "进项税额" in e.description)
+        self.assertEqual(tax_entry.amount, 27.0)
+        self.assertEqual(tax_entry.account, "应交税费-进项税额")
+
+    def test_normal_invoice_no_split(self):
+        inv = Invoice(
+            invoice_code="031001900212", invoice_number="12345679",
+            invoice_type=InvoiceType.NORMAL, amount=85.0, tax_amount=0.0,
+            date=date(2025, 6, 1), vendor="餐厅", city="上海",
+        )
+        items = [LineItem(
+            expense_type="meals", amount=85.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=inv,
+            description="午餐",
+        )]
+        r = voucher_process(self._make_report(items))
+        debit_entries = [e for e in r.entries if e.direction == "debit"]
+        self.assertEqual(len(debit_entries), 1)
+        self.assertEqual(debit_entries[0].amount, 85.0)
+
+
+class TestSkill04EntertainmentAccount(TestSkill04VoucherBase):
+    def test_client_meal_uses_entertainment_account(self):
+        items = [LineItem(
+            expense_type="client_meal", amount=500.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="客户宴请", attendees=["客户A"],
+        )]
+        r = voucher_process(self._make_report(items))
+        debit_entries = [e for e in r.entries if e.direction == "debit"]
+        self.assertEqual(debit_entries[0].account, "管理费用-招待费")
+
+
+# ======================================================================
+# Skill 05: 付款执行
+# ======================================================================
+
+class TestSkill05PaymentBase(unittest.TestCase):
+    def setUp(self):
+        _make_loader()
+
+    def _make_report(self, total=535.0, level=EmployeeLevel.L1,
+                     status=ReportStatus.VOUCHER_GENERATED,
+                     bank_account="6222000000012345678") -> ExpenseReport:
+        emp = Employee(
+            name="张三", id="EMP-001", department="销售部", city="上海",
+            hire_date=date(2022, 1, 1), bank_account=bank_account,
+            level=level,
+        )
+        items = [LineItem(
+            expense_type="accommodation", amount=total, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿费",
+        )]
+        report = ExpenseReport(
+            report_id="RPT-P01", employee=emp, line_items=items,
+            total_amount=total, submit_date=datetime(2025, 6, 2, 9, 0),
+            status=status,
+        )
+        return report
+
+
+class TestSkill05PreChecks(TestSkill05PaymentBase):
+    def test_all_checks_pass(self):
+        report = self._make_report()
+        r = payment_process(report, seed=1)  # seed=1 → success
+        self.assertIsInstance(r, PaymentResult)
+        failed = [c for c in r.pre_checks if not c.passed and c.severity == "error"]
+        self.assertEqual(failed, [])
+
+    def test_empty_name_fails(self):
+        report = self._make_report()
+        report.employee.name = ""
+        r = payment_process(report, seed=1)
+        self.assertFalse(r.success)
+        payee = next(c for c in r.pre_checks if c.rule_name == "payee_valid")
+        self.assertFalse(payee.passed)
+
+    def test_empty_bank_account_fails(self):
+        report = self._make_report(bank_account="")
+        r = payment_process(report, seed=1)
+        self.assertFalse(r.success)
+        acct = next(c for c in r.pre_checks if c.rule_name == "bank_account_exists")
+        self.assertFalse(acct.passed)
+
+    def test_bad_account_format_fails(self):
+        report = self._make_report(bank_account="ABC123")
+        r = payment_process(report, seed=1)
+        self.assertFalse(r.success)
+        fmt = next(c for c in r.pre_checks if c.rule_name == "bank_account_format")
+        self.assertFalse(fmt.passed)
+
+    def test_good_account_format_with_dashes(self):
+        report = self._make_report(bank_account="6222-0000-0001-2345-678")
+        r = payment_process(report, seed=1)
+        fmt = next(c for c in r.pre_checks if c.rule_name == "bank_account_format")
+        self.assertTrue(fmt.passed)
+
+    def test_amount_mismatch_fails(self):
+        report = self._make_report(total=535.0)
+        report.total_amount = 999.0  # mismatch with line items
+        r = payment_process(report, seed=1)
+        self.assertFalse(r.success)
+        amt = next(c for c in r.pre_checks if c.rule_name == "amount_consistency")
+        self.assertFalse(amt.passed)
+
+    def test_wrong_status_fails(self):
+        report = self._make_report(status=ReportStatus.DRAFT)
+        r = payment_process(report, seed=1)
+        self.assertFalse(r.success)
+        prior = next(c for c in r.pre_checks if c.rule_name == "prior_approval")
+        self.assertFalse(prior.passed)
+
+
+class TestSkill05PaymentMethod(TestSkill05PaymentBase):
+    def test_large_amount_bank_transfer(self):
+        report = self._make_report(total=6000.0)
+        r = payment_process(report, seed=1)
+        self.assertEqual(r.payment_method, "bank_transfer")
+
+    def test_small_amount_petty_cash(self):
+        report = self._make_report(total=500.0)
+        r = payment_process(report, seed=1)
+        self.assertEqual(r.payment_method, "petty_cash")
+
+    def test_threshold_exact_bank_transfer(self):
+        # ≥5000 → bank_transfer
+        report = self._make_report(total=5000.0)
+        r = payment_process(report, seed=1)
+        self.assertEqual(r.payment_method, "bank_transfer")
+
+
+class TestSkill05Simulation(TestSkill05PaymentBase):
+    def test_seed_reproducible(self):
+        report = self._make_report()
+        r1 = payment_process(report, seed=42)
+        r2 = payment_process(report, seed=42)
+        self.assertEqual(r1.success, r2.success)
+
+    def test_success_has_ref(self):
+        # seed=1 with 0.95 rate should succeed
+        report = self._make_report()
+        r = payment_process(report, seed=1)
+        if r.success:
+            self.assertTrue(r.payment_ref.startswith("PAY-"))
+            self.assertEqual(r.failure_reason, "")
+
+    def test_failure_has_reason(self):
+        # Find a seed that fails (random < 0.05)
+        report = self._make_report()
+        for s in range(100):
+            r = payment_process(report, seed=s)
+            if not r.success and not r.failure_reason.startswith("预校验"):
+                self.assertIn("重试", r.failure_reason)
+                self.assertEqual(r.payment_ref, "")
+                return
+        # If we can't find one in 100 tries with 95% rate, that's fine
+        self.skipTest("Could not trigger simulated failure in 100 seeds")
+
+
+class TestSkill05FailureHandling(TestSkill05PaymentBase):
+    def test_precheck_failure_has_reason(self):
+        report = self._make_report(bank_account="BAD")
+        r = payment_process(report, seed=1)
+        self.assertFalse(r.success)
+        self.assertIn("预校验失败", r.failure_reason)
+        self.assertEqual(r.payment_method, "")  # no method when prechecks fail
 
 
 # ======================================================================

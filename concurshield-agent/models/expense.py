@@ -74,6 +74,38 @@ class ComplianceResult:
 
 
 @dataclass
+class VoucherEntry:
+    """一条凭证分录。"""
+    account: str          # 会计科目
+    direction: str        # "debit" | "credit"
+    amount: float
+    description: str
+
+
+@dataclass
+class VoucherResult:
+    """记账凭证生成结果。"""
+    voucher_number: str
+    entries: list[VoucherEntry]
+    total_debit: float
+    total_credit: float
+    balanced: bool
+    issues: list[str]
+
+
+@dataclass
+class PaymentResult:
+    """付款执行结果。"""
+    success: bool
+    payment_ref: str
+    payment_method: str           # "bank_transfer" | "petty_cash"
+    pre_checks: list[RuleResult]
+    amount: float
+    retry_count: int = 0
+    failure_reason: str = ""
+
+
+@dataclass
 class ReceiptResult:
     """单张发票的收据验证结果。"""
     invoice: "Invoice"

@@ -37,6 +37,12 @@ limits:
     tier_2: { L1: 150, L2: 200, L3: 不限, L4: 不限 }
     tier_3: { L1: 100, L2: 150, L3: 不限, L4: 不限 }
 
+# 付款配置
+payment:
+  bank_transfer_threshold: 5000  # ≥此金额走银行转账
+  petty_cash_max: 5000           # <此金额可走备用金
+  success_rate: 0.95             # 模拟成功率
+
 # 超标容忍度
 tolerance:
   warning_threshold: 50    # 超标 ≤ 此值为B级警告通过
