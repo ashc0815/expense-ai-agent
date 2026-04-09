@@ -13,13 +13,13 @@ def create_sample_employee() -> Employee:
         department="销售部",
         city="上海",
         hire_date=date(2022, 3, 15),
-        bank_account="6222-0000-0001-2345",
+        bank_account="6222000000012345678",
         level=EmployeeLevel.L1,
     )
 
 
 def create_sample_report() -> ExpenseReport:
-    """创建一份典型的差旅报销单。"""
+    """创建一份典型的差旅报销单——干净数据，全流程通过。"""
     employee = create_sample_employee()
 
     invoice_hotel = Invoice(
@@ -30,7 +30,7 @@ def create_sample_report() -> ExpenseReport:
         tax_amount=27.0,
         date=date(2025, 1, 10),
         vendor="如家酒店",
-        city="Shanghai",  # 故意用英文名，测试城市标准化
+        city="上海",
         items=["住宿费"],
         buyer_name="示例科技有限公司",
     )
@@ -43,7 +43,7 @@ def create_sample_report() -> ExpenseReport:
         tax_amount=0.0,
         date=date(2025, 1, 10),
         vendor="餐厅A",
-        city="SH",  # 故意用缩写，测试城市标准化
+        city="上海",
         items=["餐费"],
         buyer_name="示例科技有限公司",
     )
@@ -53,19 +53,19 @@ def create_sample_report() -> ExpenseReport:
             expense_type="accommodation",
             amount=450.0,
             currency="CNY",
-            city="Shanghai",
+            city="上海",
             date=date(2025, 1, 10),
             invoice=invoice_hotel,
-            description="上海出差住宿1晚",
+            description="上海客户拜访出差住宿一晚标准间",
         ),
         LineItem(
             expense_type="meals",
             amount=85.0,
             currency="CNY",
-            city="SH",
+            city="上海",
             date=date(2025, 1, 10),
             invoice=invoice_meal,
-            description="午餐",
+            description="上海客户拜访期间工作午餐一人份",
         ),
     ]
 
@@ -80,7 +80,7 @@ def create_sample_report() -> ExpenseReport:
 
 
 def create_over_limit_report() -> ExpenseReport:
-    """创建一份超标报销单，用于测试合规检查。"""
+    """创建一份超标报销单，用于测试合规检查拒绝。"""
     employee = create_sample_employee()
 
     invoice = Invoice(
@@ -99,12 +99,12 @@ def create_over_limit_report() -> ExpenseReport:
     line_items = [
         LineItem(
             expense_type="accommodation",
-            amount=600.0,  # L1在一线城市限额500，超标100
+            amount=600.0,  # L1在一线城市限额500，超标100 → C级
             currency="CNY",
             city="北京",
             date=date(2025, 2, 5),
             invoice=invoice,
-            description="北京出差住宿1晚（超标）",
+            description="北京总部会议期间住宿一晚超标酒店",
         ),
     ]
 

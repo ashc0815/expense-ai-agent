@@ -10,13 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest
 
 from config import ConfigLoader
-from agent.controller import AgentController
+from agent.controller import ExpenseController
 from mock_data.sample_reports import create_sample_report, create_over_limit_report
-from models.enums import ComplianceLevel, EmployeeLevel, InvoiceType, ReportStatus
+from models.enums import ComplianceLevel, EmployeeLevel, FinalStatus, InvoiceType, ReportStatus
 from models.expense import (
     AmbiguityResult, ApprovalResult, ComplianceResult, Employee,
     ExpenseReport, Invoice, LineItem, LineItemComplianceDetail,
-    PaymentResult, ReceiptResult, VoucherResult,
+    PaymentResult, ProcessingResult, ReceiptResult, StepResult, VoucherResult,
 )
 from rules.city_normalizer import CityNormalizer
 from rules.policy_engine import PolicyEngine
@@ -1468,32 +1468,222 @@ class TestSkill05FailureHandling(TestSkill05PaymentBase):
 
 
 # ======================================================================
-# 端到端流程
+# ExpenseController 端到端流程
 # ======================================================================
 
-class TestFullFlow(unittest.TestCase):
+class TestControllerBase(unittest.TestCase):
     def setUp(self):
         self._loader = _make_loader()
+        self._ctrl = ExpenseController(self._loader)
 
-    def test_normal_report_flow(self):
-        report = create_sample_report()
-        controller = AgentController(
-            self._loader.get("workflow"),
-            self._loader.get_all(),
-        )
-        result = controller.run(report)
-        self.assertTrue(result["success"])
-        self.assertEqual(result["final_status"], ReportStatus.PAID.value)
-        self.assertEqual(len(result["results"]), 5)
 
-    def test_report_has_processing_log(self):
+class TestControllerNormalFlow(TestControllerBase):
+    def test_normal_report_completes(self):
         report = create_sample_report()
-        controller = AgentController(
-            self._loader.get("workflow"),
-            self._loader.get_all(),
+        result = self._ctrl.process_report(report)
+        self.assertIsInstance(result, ProcessingResult)
+        self.assertEqual(result.final_status, FinalStatus.COMPLETED)
+
+    def test_timeline_has_all_steps(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        skill_names = [s.skill_name for s in result.timeline]
+        self.assertIn("receipt_validation", skill_names)
+        self.assertIn("approval", skill_names)
+        self.assertIn("compliance", skill_names)
+        self.assertIn("voucher", skill_names)
+        self.assertIn("payment", skill_names)
+
+    def test_all_steps_passed(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        for step in result.timeline:
+            if not step.skipped:
+                self.assertTrue(step.passed, f"{step.skill_name} 应该通过")
+
+    def test_config_snapshot_captured(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        self.assertIn("policy", result.config_snapshot)
+        self.assertIn("workflow", result.config_snapshot)
+        self.assertIn("expense_types", result.config_snapshot)
+
+    def test_total_processing_time_positive(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        self.assertGreater(result.total_processing_time.total_seconds(), 0)
+
+    def test_step_durations_positive(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        for step in result.timeline:
+            if not step.skipped:
+                self.assertGreaterEqual(step.duration.total_seconds(), 0)
+
+    def test_processing_log_has_chinese(self):
+        report = create_sample_report()
+        self._ctrl.process_report(report)
+        log_text = " ".join(entry["detail"] for entry in report.processing_log)
+        self.assertIn("开始处理", log_text)
+        self.assertIn("流程结束", log_text)
+
+    def test_display_names_are_chinese(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        for step in result.timeline:
+            # 至少应该有中文字符
+            self.assertTrue(
+                any('\u4e00' <= c <= '\u9fff' for c in step.display_name),
+                f"'{step.display_name}' 应包含中文",
+            )
+
+    def test_no_shield_on_normal_report(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        self.assertIsNone(result.shield_report)
+
+
+class TestControllerRejection(TestControllerBase):
+    def test_over_limit_rejected(self):
+        report = create_over_limit_report()
+        result = self._ctrl.process_report(report)
+        self.assertEqual(result.final_status, FinalStatus.REJECTED)
+        self.assertEqual(report.status, ReportStatus.REJECTED)
+
+    def test_rejection_stops_pipeline(self):
+        report = create_over_limit_report()
+        result = self._ctrl.process_report(report)
+        # 应在 compliance 处终止，不应到 voucher/payment
+        skill_names = [s.skill_name for s in result.timeline]
+        self.assertIn("compliance", skill_names)
+        self.assertNotIn("payment", skill_names)
+
+    def test_rejection_step_has_message(self):
+        report = create_over_limit_report()
+        result = self._ctrl.process_report(report)
+        compliance_step = next(
+            s for s in result.timeline if s.skill_name == "compliance"
         )
-        controller.run(report)
-        self.assertEqual(len(report.processing_log), 5)
+        self.assertFalse(compliance_step.passed)
+        self.assertIn("未通过", compliance_step.message)
+
+
+class TestControllerShield(TestControllerBase):
+    def _make_ambiguous_report(self) -> ExpenseReport:
+        """构造一个能通过发票验证但触发 shield 的报销单。
+
+        触发因素: 短描述 + 周末 + 未知城市 → ambiguity > 30
+        """
+        emp = Employee(
+            name="测试员工", id="EMP-T01", department="测试部", city="上海",
+            hire_date=date(2022, 1, 1), bank_account="6222000000012345678",
+            level=EmployeeLevel.L1,
+        )
+        inv = Invoice(
+            invoice_code="031001900299", invoice_number="88880001",
+            invoice_type=InvoiceType.NORMAL, amount=95.0, tax_amount=0.0,
+            date=date(2025, 6, 7), vendor="小餐馆", city="RandomPlace",
+            buyer_name="示例科技有限公司",
+        )
+        items = [LineItem(
+            expense_type="meals", amount=95.0, currency="CNY",
+            city="RandomPlace", date=date(2025, 6, 7),  # Saturday + unknown city
+            invoice=inv, description="餐费",  # short desc
+        )]
+        return ExpenseReport(
+            report_id="RPT-SHIELD", employee=emp, line_items=items,
+            total_amount=95.0, submit_date=datetime(2025, 6, 8, 9, 0),
+        )
+
+    def test_ambiguous_report_triggers_pending_review(self):
+        report = self._make_ambiguous_report()
+        result = self._ctrl.process_report(report)
+        self.assertEqual(result.final_status, FinalStatus.PENDING_REVIEW)
+        self.assertEqual(report.status, ReportStatus.FLAGGED)
+        self.assertIsNotNone(result.shield_report)
+        self.assertTrue(result.shield_report["shield_triggered"])
+        self.assertTrue(len(result.shield_report["flagged_items"]) > 0)
+
+    def test_shield_stops_before_voucher(self):
+        report = self._make_ambiguous_report()
+        result = self._ctrl.process_report(report)
+        skill_names = [s.skill_name for s in result.timeline]
+        self.assertNotIn("voucher", skill_names)
+        self.assertNotIn("payment", skill_names)
+
+
+class TestControllerDisabledSteps(TestControllerBase):
+    def test_disabled_step_skipped(self):
+        # 修改 workflow 禁用 approval — 只改 YAML，不改代码
+        import copy
+        loader = _make_loader()
+        workflow = copy.deepcopy(loader.get("workflow"))
+        for step in workflow["pipeline"]:
+            if step["skill"] == "approval":
+                step["enabled"] = False
+        loader._config["workflow"] = workflow
+
+        ctrl = ExpenseController(loader)
+        report = create_sample_report()
+        result = ctrl.process_report(report)
+
+        approval_step = next(
+            s for s in result.timeline if s.skill_name == "approval"
+        )
+        self.assertTrue(approval_step.skipped)
+        self.assertIn("禁用", approval_step.message)
+        self.assertEqual(result.final_status, FinalStatus.COMPLETED)
+
+    def test_disable_all_but_receipt_still_works(self):
+        import copy
+        loader = _make_loader()
+        workflow = copy.deepcopy(loader.get("workflow"))
+        for step in workflow["pipeline"]:
+            if step["skill"] != "receipt_validation":
+                step["enabled"] = False
+        loader._config["workflow"] = workflow
+
+        ctrl = ExpenseController(loader)
+        report = create_sample_report()
+        result = ctrl.process_report(report)
+        self.assertEqual(result.final_status, FinalStatus.COMPLETED)
+        active = [s for s in result.timeline if not s.skipped]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0].skill_name, "receipt_validation")
+
+
+class TestControllerWarnAndAlert(TestControllerBase):
+    def test_alert_continues_pipeline(self):
+        # voucher 的 fail_action 是 alert，即使失败也继续
+        # 这里我们验证正常流程下 voucher 通过
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        voucher_step = next(
+            s for s in result.timeline if s.skill_name == "voucher"
+        )
+        self.assertTrue(voucher_step.passed)
+        self.assertEqual(voucher_step.fail_action, "alert")
+
+
+class TestControllerRetry(TestControllerBase):
+    def test_payment_retry_config_from_yaml(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        payment_step = next(
+            s for s in result.timeline if s.skill_name == "payment"
+        )
+        self.assertEqual(payment_step.fail_action, "retry")
+
+
+class TestControllerStepResultDetail(TestControllerBase):
+    def test_step_detail_contains_skill_output(self):
+        report = create_sample_report()
+        result = self._ctrl.process_report(report)
+        receipt_step = next(
+            s for s in result.timeline if s.skill_name == "receipt_validation"
+        )
+        # detail 应该包含 skill 返回的原始 dict
+        self.assertIn("passed", receipt_step.detail)
 
 
 if __name__ == "__main__":

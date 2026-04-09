@@ -37,3 +37,10 @@ class FailAction(str, Enum):
     SKIP = "skip"
     ALERT = "alert"
     RETRY = "retry"
+
+
+class FinalStatus(str, Enum):
+    COMPLETED = "completed"             # 全流程通过
+    REJECTED = "rejected"               # 某步骤拒绝
+    PENDING_REVIEW = "pending_review"   # shield 触发，待人工复核
+    PAYMENT_FAILED = "payment_failed"   # 付款重试后仍失败

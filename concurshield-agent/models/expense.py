@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
-from models.enums import EmployeeLevel, InvoiceType, ReportStatus
+from datetime import timedelta as _timedelta
+
+from models.enums import EmployeeLevel, FinalStatus, InvoiceType, ReportStatus
 
 
 @dataclass
@@ -103,6 +105,29 @@ class PaymentResult:
     amount: float
     retry_count: int = 0
     failure_reason: str = ""
+
+
+@dataclass
+class StepResult:
+    """流程中单个步骤的执行结果。"""
+    skill_name: str
+    display_name: str            # 中文显示名
+    passed: bool
+    skipped: bool
+    duration: _timedelta
+    detail: dict                 # skill 返回的原始结果
+    fail_action: str
+    message: str                 # 中文日志消息
+
+
+@dataclass
+class ProcessingResult:
+    """整单流程处理结果。"""
+    final_status: FinalStatus
+    timeline: list[StepResult]
+    shield_report: Optional[dict]     # 模糊检测触发时的详细报告
+    config_snapshot: dict             # 本次使用的配置版本（审计用）
+    total_processing_time: _timedelta
 
 
 @dataclass
