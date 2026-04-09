@@ -1,7 +1,7 @@
 """端到端流程测试 + CityNormalizer / PolicyEngine 单元测试。"""
 
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # 将项目根目录加入 sys.path
@@ -13,10 +13,11 @@ from config import ConfigLoader
 from agent.controller import AgentController
 from mock_data.sample_reports import create_sample_report, create_over_limit_report
 from models.enums import ComplianceLevel, EmployeeLevel, InvoiceType, ReportStatus
-from models.expense import Employee, Invoice, ReceiptResult
+from models.expense import ApprovalResult, Employee, ExpenseReport, Invoice, LineItem, ReceiptResult
 from rules.city_normalizer import CityNormalizer
 from rules.policy_engine import PolicyEngine
 from skills.skill_01_receipt import process as receipt_process
+from skills.skill_02_approval import process as approval_process
 
 
 def _make_loader() -> ConfigLoader:
@@ -556,6 +557,243 @@ class TestSkill01FormatValidation(TestSkill01ReceiptBase):
         self.assertEqual(city_check.severity, "warning")
         # warning 不影响整体 passed
         self.assertTrue(result.passed)
+
+
+# ======================================================================
+# Skill 02: 审批流程
+# ======================================================================
+
+class TestSkill02ApprovalBase(unittest.TestCase):
+    """skill_02_approval 测试的公共基类。"""
+
+    def setUp(self):
+        _make_loader()
+
+    def _make_report(self, level=EmployeeLevel.L1, items=None) -> ExpenseReport:
+        employee = Employee(
+            name="测试员工", id="EMP-T01", department="测试部",
+            city="上海", hire_date=date(2022, 1, 1),
+            bank_account="6222-0000-0000-0001", level=level,
+        )
+        if items is None:
+            items = [LineItem(
+                expense_type="accommodation", amount=1500.0, currency="CNY",
+                city="上海", date=date(2025, 6, 1), invoice=None,
+                description="住宿",
+            )]
+        return ExpenseReport(
+            report_id="RPT-TEST", employee=employee, line_items=items,
+            total_amount=sum(i.amount for i in items),
+            submit_date=datetime(2025, 6, 2, 9, 0),
+        )
+
+
+class TestSkill02BasicApproval(TestSkill02ApprovalBase):
+    """基本审批链测试。"""
+
+    def test_L1_small_travel_one_approver(self):
+        # ≤2000 → direct_manager only
+        report = self._make_report(level=EmployeeLevel.L1)
+        result = approval_process(report, simulate_hours=[10])
+        self.assertIsInstance(result, ApprovalResult)
+        self.assertTrue(result.approved)
+        self.assertEqual(len(result.approval_chain), 1)
+        self.assertEqual(result.approval_chain[0].approver_role, "direct_manager")
+        self.assertEqual(result.approval_chain[0].status, "approved")
+        self.assertEqual(result.escalation_events, [])
+        self.assertEqual(result.skipped_steps, [])
+
+    def test_L1_medium_travel_two_approvers(self):
+        # 5000 → direct_manager + department_head
+        items = [LineItem(
+            expense_type="accommodation", amount=5000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿",
+        )]
+        report = self._make_report(level=EmployeeLevel.L1, items=items)
+        result = approval_process(report, simulate_hours=[8, 12])
+        self.assertTrue(result.approved)
+        self.assertEqual(len(result.approval_chain), 2)
+        self.assertEqual(result.approval_chain[0].approver_role, "direct_manager")
+        self.assertEqual(result.approval_chain[1].approver_role, "department_head")
+
+    def test_L1_large_travel_three_approvers(self):
+        # >10000 → direct_manager + department_head + vp
+        items = [LineItem(
+            expense_type="accommodation", amount=15000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿",
+        )]
+        report = self._make_report(level=EmployeeLevel.L1, items=items)
+        result = approval_process(report, simulate_hours=[5, 10, 20])
+        self.assertTrue(result.approved)
+        self.assertEqual(len(result.approval_chain), 3)
+        roles = [s.approver_role for s in result.approval_chain]
+        self.assertEqual(roles, ["direct_manager", "department_head", "vp"])
+
+
+class TestSkill02LevelOverrides(TestSkill02ApprovalBase):
+    """level_overrides 跳级和自动审批测试。"""
+
+    def test_L3_skips_direct_manager(self):
+        items = [LineItem(
+            expense_type="accommodation", amount=5000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿",
+        )]
+        report = self._make_report(level=EmployeeLevel.L3, items=items)
+        result = approval_process(report, simulate_hours=[10])
+        self.assertTrue(result.approved)
+        roles = [s.approver_role for s in result.approval_chain]
+        self.assertNotIn("direct_manager", roles)
+        self.assertIn("department_head", roles)
+        # skipped_steps 应记录跳过信息
+        self.assertTrue(any("direct_manager" in s for s in result.skipped_steps))
+
+    def test_L4_auto_approve_small_amount(self):
+        # L4 < 5000 → auto
+        items = [LineItem(
+            expense_type="accommodation", amount=3000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿",
+        )]
+        report = self._make_report(level=EmployeeLevel.L4, items=items)
+        result = approval_process(report, simulate_hours=[])
+        self.assertTrue(result.approved)
+        self.assertEqual(len(result.approval_chain), 1)
+        self.assertTrue(result.approval_chain[0].is_auto_approved)
+        self.assertEqual(result.approval_chain[0].approver_role, "auto")
+        # skipped_steps 应记录自动审批
+        self.assertTrue(any("自动审批" in s for s in result.skipped_steps))
+
+    def test_L4_large_amount_needs_approval(self):
+        # L4 ≥ 5000 → 正常审批
+        items = [LineItem(
+            expense_type="accommodation", amount=8000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿",
+        )]
+        report = self._make_report(level=EmployeeLevel.L4, items=items)
+        result = approval_process(report, simulate_hours=[5, 15])
+        self.assertTrue(result.approved)
+        self.assertFalse(any(s.is_auto_approved for s in result.approval_chain))
+
+
+class TestSkill02MultiType(TestSkill02ApprovalBase):
+    """多费用类型合并测试。"""
+
+    def test_travel_plus_entertainment_merges_to_highest(self):
+        # travel ¥1500 → direct_manager
+        # entertainment ¥3000 → department_head (entertainment 从 dept head 起步)
+        # 合并 → direct_manager + department_head
+        items = [
+            LineItem(
+                expense_type="accommodation", amount=1500.0, currency="CNY",
+                city="上海", date=date(2025, 6, 1), invoice=None,
+                description="住宿",
+            ),
+            LineItem(
+                expense_type="client_meal", amount=3000.0, currency="CNY",
+                city="上海", date=date(2025, 6, 1), invoice=None,
+                description="客户宴请",
+            ),
+        ]
+        report = self._make_report(level=EmployeeLevel.L1, items=items)
+        result = approval_process(report, simulate_hours=[5, 10])
+        self.assertTrue(result.approved)
+        roles = [s.approver_role for s in result.approval_chain]
+        self.assertIn("direct_manager", roles)
+        self.assertIn("department_head", roles)
+
+    def test_multi_type_both_auto_stays_auto(self):
+        # L4 两种类型都 < 5000 → 全部 auto
+        items = [
+            LineItem(
+                expense_type="accommodation", amount=2000.0, currency="CNY",
+                city="上海", date=date(2025, 6, 1), invoice=None,
+                description="住宿",
+            ),
+            LineItem(
+                expense_type="meals", amount=1000.0, currency="CNY",
+                city="上海", date=date(2025, 6, 1), invoice=None,
+                description="餐费",
+            ),
+        ]
+        report = self._make_report(level=EmployeeLevel.L4, items=items)
+        result = approval_process(report, simulate_hours=[])
+        self.assertTrue(result.approved)
+        self.assertTrue(all(s.is_auto_approved for s in result.approval_chain))
+
+
+class TestSkill02Escalation(TestSkill02ApprovalBase):
+    """三级超时升级机制测试。"""
+
+    def test_no_escalation_when_fast(self):
+        report = self._make_report()
+        result = approval_process(report, simulate_hours=[10])
+        self.assertEqual(result.escalation_events, [])
+        self.assertEqual(result.approval_chain[0].status, "approved")
+
+    def test_reminder_after_24h(self):
+        report = self._make_report()
+        result = approval_process(report, simulate_hours=[30])
+        self.assertEqual(len(result.escalation_events), 1)
+        self.assertIn("提醒", result.escalation_events[0])
+        self.assertEqual(result.approval_chain[0].status, "reminded")
+
+    def test_escalate_after_48h(self):
+        report = self._make_report()
+        result = approval_process(report, simulate_hours=[55])
+        self.assertEqual(len(result.escalation_events), 1)
+        self.assertIn("升级处理", result.escalation_events[0])
+        self.assertEqual(result.approval_chain[0].status, "escalated")
+
+    def test_auto_escalate_after_72h(self):
+        report = self._make_report()
+        result = approval_process(report, simulate_hours=[75])
+        self.assertEqual(len(result.escalation_events), 1)
+        self.assertIn("自动升级", result.escalation_events[0])
+        self.assertEqual(result.approval_chain[0].status, "escalated")
+
+    def test_multiple_steps_multiple_escalations(self):
+        # 两级审批，两个都超时
+        items = [LineItem(
+            expense_type="accommodation", amount=5000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿",
+        )]
+        report = self._make_report(level=EmployeeLevel.L1, items=items)
+        result = approval_process(report, simulate_hours=[30, 55])
+        self.assertEqual(len(result.escalation_events), 2)
+        self.assertIn("提醒", result.escalation_events[0])
+        self.assertIn("升级处理", result.escalation_events[1])
+
+    def test_random_simulation_with_seed_is_reproducible(self):
+        report = self._make_report()
+        r1 = approval_process(report, seed=42)
+        r2 = approval_process(report, seed=42)
+        self.assertEqual(r1.approval_chain[0].actual_hours, r2.approval_chain[0].actual_hours)
+        self.assertEqual(r1.escalation_events, r2.escalation_events)
+
+
+class TestSkill02SimulatedResults(TestSkill02ApprovalBase):
+    """模拟结果字段验证。"""
+
+    def test_actual_hours_recorded(self):
+        report = self._make_report()
+        result = approval_process(report, simulate_hours=[18.5])
+        self.assertAlmostEqual(result.approval_chain[0].actual_hours, 18.5, places=1)
+
+    def test_auto_approved_step_zero_hours(self):
+        items = [LineItem(
+            expense_type="accommodation", amount=2000.0, currency="CNY",
+            city="上海", date=date(2025, 6, 1), invoice=None,
+            description="住宿",
+        )]
+        report = self._make_report(level=EmployeeLevel.L4, items=items)
+        result = approval_process(report)
+        self.assertEqual(result.approval_chain[0].actual_hours, 0.0)
+        self.assertEqual(result.approval_chain[0].status, "approved")
 
 
 # ======================================================================

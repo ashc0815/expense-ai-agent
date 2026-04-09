@@ -13,6 +13,8 @@ class ApprovalStep:
     approver_role: str
     time_limit_hours: int
     is_auto_approved: bool = False
+    actual_hours: float = 0.0    # 模拟实际审批耗时
+    status: str = ""             # "approved" | "escalated" | "reminded" | "skipped"
 
 
 @dataclass
@@ -22,6 +24,15 @@ class RuleResult:
     passed: bool
     message: str
     severity: str = "error"  # "error" | "warning" | "info"
+
+
+@dataclass
+class ApprovalResult:
+    """审批流程结果。"""
+    approved: bool
+    approval_chain: list[ApprovalStep]    # 实际走过的审批链
+    escalation_events: list[str]          # 超时升级事件
+    skipped_steps: list[str]              # 因 level_override 跳过的步骤
 
 
 @dataclass
