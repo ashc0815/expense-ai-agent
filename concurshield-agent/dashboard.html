@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ConcurShield Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+/* ── Reset & Base ── */
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0f1117;color:#e1e4e8;line-height:1.6;padding:0 0 60px}
+
+/* ── Header ── */
+header{background:linear-gradient(135deg,#1a1c2e 0%,#0d1b2a 100%);padding:32px 0;text-align:center;border-bottom:1px solid #21262d;position:relative;overflow:hidden}
+header::before{content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle at 30% 50%,rgba(88,166,255,.06) 0%,transparent 50%);pointer-events:none}
+header h1{font-size:28px;font-weight:700;letter-spacing:1px}
+header h1 span{color:#58a6ff}
+header p{color:#8b949e;margin-top:6px;font-size:14px}
+
+/* ── Layout ── */
+.container{max-width:1280px;margin:0 auto;padding:0 24px}
+.section-title{font-size:20px;font-weight:600;margin:36px 0 18px;padding-left:12px;border-left:3px solid #58a6ff;color:#c9d1d9}
+
+/* ── Case Cards ── */
+.cases-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px}
+.case-card{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:20px;transition:transform .15s,border-color .15s}
+.case-card:hover{transform:translateY(-2px);border-color:#30363d}
+.case-card.showcase{border-color:#d29922;box-shadow:0 0 20px rgba(210,153,34,.08)}
+.case-card .tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 10px;border-radius:12px;margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px}
+.tag.completed{background:#1b4332;color:#3fb950}
+.tag.rejected{background:#3d1114;color:#f85149}
+.tag.pending{background:#3b2e08;color:#d29922}
+.tag.detected{background:#1c2541;color:#58a6ff}
+.case-card h3{font-size:15px;margin-bottom:8px;color:#f0f6fc}
+.case-card .detail{font-size:13px;color:#8b949e}
+.case-card .detail strong{color:#c9d1d9}
+.case-card .metric{display:flex;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:1px solid #21262d;font-size:13px}
+.case-card .metric .val{font-weight:700;font-size:18px}
+.case-card .metric .val.green{color:#3fb950}
+.case-card .metric .val.red{color:#f85149}
+.case-card .metric .val.yellow{color:#d29922}
+.case-card .metric .val.blue{color:#58a6ff}
+.case-card .factors{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}
+.case-card .factors span{font-size:11px;background:#21262d;padding:2px 8px;border-radius:6px;color:#8b949e}
+.case-card .factors span.hit{background:#3b2e08;color:#d29922}
+
+/* ── Charts ── */
+.charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.chart-box{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:24px}
+.chart-box h4{font-size:14px;color:#8b949e;margin-bottom:16px;text-align:center}
+@media(max-width:768px){.charts-grid{grid-template-columns:1fr}}
+
+/* ── Level Comparison ── */
+.compare-container{display:grid;grid-template-columns:1fr auto 1fr;gap:0;align-items:center}
+.compare-card{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:24px;text-align:center}
+.compare-card.l1{border-color:#f85149}
+.compare-card.l2{border-color:#3fb950}
+.compare-vs{font-size:28px;font-weight:800;color:#484f58;text-align:center;padding:0 16px}
+.compare-card .level-badge{font-size:32px;font-weight:800;margin:8px 0}
+.compare-card .level-badge.red{color:#f85149}
+.compare-card .level-badge.green{color:#3fb950}
+.compare-card .limit-info{font-size:13px;color:#8b949e;margin-top:8px}
+
+/* ── Config Panel ── */
+.config-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.config-block{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:20px}
+.config-block h4{font-size:13px;color:#58a6ff;margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
+.config-block pre{font-size:12px;color:#8b949e;background:#0d1117;padding:12px;border-radius:6px;overflow-x:auto;line-height:1.7}
+.config-block pre .key{color:#d2a8ff}
+.config-block pre .val{color:#a5d6ff}
+.config-block pre .comment{color:#484f58}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <h1>ConcurShield — <span>Agent Only for Ambiguity</span></h1>
+    <p>配置驱动 · 城市标准化 · 五维模糊检测 · 7 场景端到端验证</p>
+  </div>
+</header>
+
+<div class="container">
+
+<!-- ════════════════════════ Section 1: Case Cards ════════════════════════ -->
+<div class="section-title">7 个测试场景处理结果</div>
+<div class="cases-grid" id="casesGrid"></div>
+
+<!-- ════════════════════════ Section 2: Charts ════════════════════════ -->
+<div class="section-title">ConcurShield 触发统计 & 合规分布</div>
+<div class="charts-grid">
+  <div class="chart-box">
+    <h4>合规等级分布（规则覆盖率）</h4>
+    <canvas id="compliancePie"></canvas>
+  </div>
+  <div class="chart-box">
+    <h4>Ambiguity Score 分布</h4>
+    <canvas id="ambiguityBar"></canvas>
+  </div>
+</div>
+
+<!-- ════════════════════════ Section 3: Case 7 Compare ════════════════════════ -->
+<div class="section-title">Case 7 — 员工等级对比：同费用不同结果 <span style="font-size:13px;color:#d29922">★ Showcase</span></div>
+<div class="compare-container">
+  <div class="compare-card l1">
+    <div style="font-size:13px;color:#8b949e">普通员工</div>
+    <div class="level-badge red">L1</div>
+    <div style="font-size:22px;font-weight:700;color:#f0f6fc">¥500 住宿</div>
+    <div class="limit-info">成都 (tier_2) 限额: <strong style="color:#f85149">¥350</strong></div>
+    <div class="limit-info">超标: ¥150 &gt; tolerance ¥50</div>
+    <div style="margin-top:14px"><span class="tag rejected">C级 — 拒绝</span></div>
+  </div>
+  <div class="compare-vs">VS</div>
+  <div class="compare-card l2">
+    <div style="font-size:13px;color:#8b949e">主管/经理</div>
+    <div class="level-badge green">L2</div>
+    <div style="font-size:22px;font-weight:700;color:#f0f6fc">¥500 住宿</div>
+    <div class="limit-info">成都 (tier_2) 限额: <strong style="color:#3fb950">¥500</strong></div>
+    <div class="limit-info">金额 = 限额，合规</div>
+    <div style="margin-top:14px"><span class="tag completed">A级 — 通过</span></div>
+  </div>
+</div>
+<div style="text-align:center;margin-top:14px;font-size:13px;color:#8b949e">
+  同样 ¥500、同一城市——结果完全不同。改 <code style="color:#d2a8ff">policy.yaml</code> 的限额数字即可，零代码改动。
+</div>
+
+<!-- ════════════════════════ Section 4: Config Panel ════════════════════════ -->
+<div class="section-title">当前 YAML 配置关键参数</div>
+<div class="config-grid" id="configGrid"></div>
+
+</div><!-- /container -->
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// Embedded Data (mirrors main.py output)
+// ═══════════════════════════════════════════════════════════════
+
+const CASES = [
+  {
+    id: 1, title: "正常报销", status: "completed", showcase: false,
+    employee: "张三 (L1)", amount: 560, city: "上海",
+    desc: "住宿480 + 餐费80，全部在限额内",
+    compliance: "A", steps: "5/5 通过",
+    ambiguityScore: null
+  },
+  {
+    id: 2, title: "重复发票", status: "rejected", showcase: false,
+    employee: "张三 (L1)", amount: 400, city: "上海",
+    desc: "同一张发票(code+number)提交两次",
+    compliance: "N/A", steps: "Skill-01 拦截",
+    stoppedAt: "发票验证",
+    ambiguityScore: null
+  },
+  {
+    id: 3, title: "超标拒绝 (C级)", status: "rejected", showcase: false,
+    employee: "张三 (L1)", amount: 420, city: "成都 (tier_2)",
+    desc: "住宿420，限额350，超标70 > tolerance 50",
+    compliance: "C", steps: "合规审查拒绝",
+    stoppedAt: "合规审查", limit: 350, overage: 70,
+    ambiguityScore: null
+  },
+  {
+    id: 4, title: "警告通过 (B级)", status: "completed", showcase: false,
+    employee: "张三 (L1)", amount: 380, city: "成都 (tier_2)",
+    desc: "住宿380，限额350，超标30 ≤ tolerance 50",
+    compliance: "B", steps: "5/5 通过(含警告)",
+    limit: 350, overage: 30,
+    ambiguityScore: null
+  },
+  {
+    id: 5, title: "ConcurShield — 城市+描述模糊", status: "pending", showcase: true,
+    employee: "张三 (L1)", amount: 90, city: 'Shanghai → 上海',
+    desc: "城市填Shanghai、描述'商务活动费用'、周六、无参会人名单",
+    compliance: "A", steps: "合规通过但 Shield 触发",
+    ambiguityScore: 67.5, ambiguityScoreWithHistory: 92.5,
+    recommendation: "human_review",
+    factors: ["description_vague", "amount_boundary", "time_anomaly", "city_mismatch"],
+    allFactors: ["description_vague", "amount_boundary", "pattern_anomaly", "time_anomaly", "city_mismatch"]
+  },
+  {
+    id: 6, title: "ConcurShield — 模式异常", status: "detected", showcase: true,
+    employee: "张三 (L1)", amount: 88, city: "上海",
+    desc: "5天内3笔相似金额(88/92/85/90)餐费，规则引擎全A",
+    compliance: "A", steps: "规则通过，模式异常检出",
+    ambiguityScore: 25,
+    recommendation: "auto_pass (单因素)",
+    factors: ["pattern_anomaly"],
+    patternDetail: "¥88 / ¥92 / ¥85 / ¥90 — 金额波动 ±15% 以内"
+  },
+  {
+    id: 7, title: "员工等级差异", status: "completed", showcase: true,
+    employee: "L1 vs L2", amount: 500, city: "成都 (tier_2)",
+    desc: "同¥500住宿：L1限额350→C拒绝，L2限额500→A通过",
+    compliance: "L1:C / L2:A", steps: "配置驱动验证",
+    ambiguityScore: null
+  }
+];
+
+const CONFIG = {
+  limits: {
+    title: "费用限额矩阵 (policy.yaml)",
+    content: `<span class="key">accommodation_per_night:</span>
+  <span class="key">tier_1:</span> { L1: <span class="val">500</span>, L2: <span class="val">700</span>, L3: <span class="val">1000</span>, L4: <span class="val">不限</span> }
+  <span class="key">tier_2:</span> { L1: <span class="val">350</span>, L2: <span class="val">500</span>, L3: <span class="val">700</span>, L4: <span class="val">不限</span> }
+  <span class="key">tier_3:</span> { L1: <span class="val">250</span>, L2: <span class="val">350</span>, L3: <span class="val">500</span>, L4: <span class="val">不限</span> }
+<span class="key">meals_per_person:</span>
+  <span class="key">tier_1:</span> { L1: <span class="val">100</span>, L2: <span class="val">150</span>, L3: <span class="val">200</span>, L4: <span class="val">不限</span> }`
+  },
+  tolerance: {
+    title: "超标容忍度 (policy.yaml)",
+    content: `<span class="key">tolerance:</span>
+  <span class="key">warning_threshold:</span> <span class="val">50</span>    <span class="comment"># 超标≤50 → B级警告</span>
+  <span class="key">reject_above:</span>      <span class="val">50</span>    <span class="comment"># 超标>50  → C级拒绝</span>
+  <span class="key">percentage_mode:</span>   <span class="val">false</span> <span class="comment"># 绝对值模式</span>`
+  },
+  workflow: {
+    title: "流程编排 (workflow.yaml)",
+    content: `<span class="key">pipeline:</span>
+  - <span class="key">skill:</span> <span class="val">receipt_validation</span>  <span class="key">fail_action:</span> <span class="val">reject</span>
+  - <span class="key">skill:</span> <span class="val">approval</span>             <span class="key">fail_action:</span> <span class="val">reject</span>
+  - <span class="key">skill:</span> <span class="val">compliance</span>           <span class="key">fail_action:</span> <span class="val">reject</span>
+  - <span class="key">skill:</span> <span class="val">voucher</span>              <span class="key">fail_action:</span> <span class="val">alert</span>
+  - <span class="key">skill:</span> <span class="val">payment</span>              <span class="key">fail_action:</span> <span class="val">retry</span> (×3)`
+  },
+  city: {
+    title: "城市标准化 (city_mapping.yaml)",
+    content: `<span class="key">mappings:</span>
+  <span class="key">上海:</span> [<span class="val">Shanghai</span>, <span class="val">shanghai</span>, <span class="val">SH</span>, <span class="val">沪</span>]
+  <span class="key">北京:</span> [<span class="val">Beijing</span>, <span class="val">beijing</span>, <span class="val">BJ</span>, <span class="val">京</span>]
+  <span class="key">成都:</span> [<span class="val">Chengdu</span>, <span class="val">chengdu</span>, <span class="val">CD</span>, <span class="val">蓉</span>]
+<span class="key">match_strategy:</span>
+  <span class="key">case_sensitive:</span> <span class="val">false</span>
+  <span class="key">unmapped_behavior:</span> <span class="val">flag_for_review</span>`
+  },
+  ambiguity: {
+    title: "模糊检测权重 (ambiguity_detector)",
+    content: `<span class="comment"># 五维评分模型 (0-100)</span>
+<span class="key">description_vague:</span>  <span class="val">25%</span>  <span class="comment"># <10字 或含泛化词</span>
+<span class="key">amount_boundary:</span>    <span class="val">20%</span>  <span class="comment"># 限额的90%-110%</span>
+<span class="key">pattern_anomaly:</span>    <span class="val">25%</span>  <span class="comment"># 7天内≥3笔相似</span>
+<span class="key">time_anomaly:</span>       <span class="val">15%</span>  <span class="comment"># 周末餐费/交通</span>
+<span class="key">city_mismatch:</span>      <span class="val">15%</span>  <span class="comment"># 未识别/不一致</span>
+<span class="comment"># <30 auto_pass / 30-70 human_review / >70 suggest_reject</span>`
+  },
+  payment: {
+    title: "付款配置 (policy.yaml)",
+    content: `<span class="key">payment:</span>
+  <span class="key">bank_transfer_threshold:</span> <span class="val">5000</span>  <span class="comment"># ≥此金额银行转账</span>
+  <span class="key">petty_cash_max:</span>          <span class="val">5000</span>  <span class="comment"># <此金额备用金</span>
+  <span class="key">success_rate:</span>             <span class="val">0.95</span>  <span class="comment"># 模拟成功率</span>`
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// Render Case Cards
+// ═══════════════════════════════════════════════════════════════
+
+const grid = document.getElementById('casesGrid');
+CASES.forEach(c => {
+  const tagClass = {completed:'completed', rejected:'rejected', pending:'pending', detected:'detected'}[c.status] || 'completed';
+  const tagText = {completed:'COMPLETED', rejected:'REJECTED', pending:'PENDING REVIEW', detected:'DETECTED'}[c.status];
+
+  let metricsHtml = '';
+  if (c.ambiguityScore !== null) {
+    const scoreColor = c.ambiguityScore > 70 ? 'red' : c.ambiguityScore > 30 ? 'yellow' : 'green';
+    metricsHtml += `<div><div style="color:#8b949e;font-size:11px">Ambiguity Score</div><div class="val ${scoreColor}">${c.ambiguityScore}</div></div>`;
+  }
+  if (c.ambiguityScoreWithHistory) {
+    metricsHtml += `<div><div style="color:#8b949e;font-size:11px">+History</div><div class="val red">${c.ambiguityScoreWithHistory}</div></div>`;
+  }
+  if (c.limit) {
+    metricsHtml += `<div><div style="color:#8b949e;font-size:11px">限额</div><div class="val blue">¥${c.limit}</div></div>`;
+  }
+  if (c.overage) {
+    const oc = c.overage > 50 ? 'red' : 'yellow';
+    metricsHtml += `<div><div style="color:#8b949e;font-size:11px">超标</div><div class="val ${oc}">¥${c.overage}</div></div>`;
+  }
+  if (c.compliance && c.compliance !== 'N/A') {
+    const cc = c.compliance.includes('C') ? 'red' : c.compliance.includes('B') ? 'yellow' : 'green';
+    metricsHtml += `<div><div style="color:#8b949e;font-size:11px">合规等级</div><div class="val ${cc}">${c.compliance}</div></div>`;
+  }
+
+  let factorsHtml = '';
+  if (c.factors) {
+    const all5 = ['description_vague','amount_boundary','pattern_anomaly','time_anomaly','city_mismatch'];
+    factorsHtml = '<div class="factors">' + all5.map(f =>
+      `<span class="${c.factors.includes(f)?'hit':''}">${f.replace('_',' ')}</span>`
+    ).join('') + '</div>';
+  }
+
+  grid.innerHTML += `
+    <div class="case-card ${c.showcase?'showcase':''}">
+      <span class="tag ${tagClass}">${tagText}</span>
+      ${c.showcase ? '<span style="float:right;font-size:11px;color:#d29922">★ Showcase</span>' : ''}
+      <h3>Case ${c.id}: ${c.title}</h3>
+      <div class="detail">
+        <div><strong>${c.employee}</strong> · ¥${c.amount} · ${c.city}</div>
+        <div style="margin-top:4px">${c.desc}</div>
+        <div style="margin-top:4px;color:#58a6ff">${c.steps}</div>
+        ${c.patternDetail ? `<div style="margin-top:4px;color:#d29922;font-size:12px">模式: ${c.patternDetail}</div>` : ''}
+      </div>
+      ${factorsHtml}
+      ${metricsHtml ? `<div class="metric">${metricsHtml}</div>` : ''}
+    </div>`;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Chart 1: Compliance Pie
+// ═══════════════════════════════════════════════════════════════
+
+new Chart(document.getElementById('compliancePie'), {
+  type: 'doughnut',
+  data: {
+    labels: ['A级 合规', 'B级 警告通过', 'C级 拒绝', 'AMBIGUOUS (Shield)'],
+    datasets: [{
+      data: [3, 1, 2, 2],
+      backgroundColor: ['#238636','#9e6a03','#da3633','#1f6feb'],
+      borderColor: '#161b22',
+      borderWidth: 3
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: {
+      legend: { position: 'bottom', labels: { color: '#8b949e', padding: 16, font: { size: 13 } } },
+      tooltip: {
+        callbacks: {
+          label: ctx => {
+            const labels = [
+              'Case 1, 4, 6',
+              'Case 4',
+              'Case 2, 3',
+              'Case 5, 6'
+            ];
+            return `${ctx.label}: ${ctx.raw} 个 (${labels[ctx.dataIndex]})`;
+          }
+        }
+      }
+    }
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Chart 2: Ambiguity Score Bar
+// ═══════════════════════════════════════════════════════════════
+
+const ambScores = [
+  { label: 'Case 1\n正常', score: 0, color: '#238636' },
+  { label: 'Case 2\n重复发票', score: 0, color: '#484f58' },
+  { label: 'Case 3\n超标C', score: 0, color: '#484f58' },
+  { label: 'Case 4\n警告B', score: 0, color: '#238636' },
+  { label: 'Case 5\nShield', score: 67.5, color: '#d29922' },
+  { label: 'Case 5\n+History', score: 92.5, color: '#da3633' },
+  { label: 'Case 6\n模式异常', score: 25, color: '#238636' },
+];
+
+new Chart(document.getElementById('ambiguityBar'), {
+  type: 'bar',
+  data: {
+    labels: ambScores.map(s => s.label),
+    datasets: [{
+      label: 'Ambiguity Score',
+      data: ambScores.map(s => s.score),
+      backgroundColor: ambScores.map(s => s.color),
+      borderRadius: 4,
+      borderSkipped: false
+    }]
+  },
+  options: {
+    responsive: true,
+    scales: {
+      y: {
+        beginAtZero: true, max: 100,
+        grid: { color: '#21262d' },
+        ticks: { color: '#8b949e', font: { size: 12 } }
+      },
+      x: {
+        grid: { display: false },
+        ticks: { color: '#8b949e', font: { size: 11 }, maxRotation: 0 }
+      }
+    },
+    plugins: {
+      legend: { display: false },
+      annotation: {}
+    }
+  },
+  plugins: [{
+    id: 'thresholdLines',
+    afterDraw(chart) {
+      const { ctx, chartArea: { left, right }, scales: { y } } = chart;
+      [{val:30,color:'#3fb950',label:'auto_pass'},{val:70,color:'#da3633',label:'suggest_reject'}].forEach(t => {
+        const yPos = y.getPixelForValue(t.val);
+        ctx.save();
+        ctx.strokeStyle = t.color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6,4]);
+        ctx.beginPath();
+        ctx.moveTo(left, yPos);
+        ctx.lineTo(right, yPos);
+        ctx.stroke();
+        ctx.fillStyle = t.color;
+        ctx.font = '11px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(`← ${t.label} (${t.val})`, right, yPos - 4);
+        ctx.restore();
+      });
+    }
+  }]
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Config Panels
+// ═══════════════════════════════════════════════════════════════
+
+const configGrid = document.getElementById('configGrid');
+Object.values(CONFIG).forEach(cfg => {
+  configGrid.innerHTML += `
+    <div class="config-block">
+      <h4>${cfg.title}</h4>
+      <pre>${cfg.content}</pre>
+    </div>`;
+});
+</script>
+</body>
+</html>
