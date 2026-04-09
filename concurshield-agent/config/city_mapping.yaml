@@ -1,0 +1,22 @@
+# 城市名标准化映射——这是Concur系统的已知缺陷，我们在这里修复
+# 标准名 → 所有别名
+mappings:
+  上海: [Shanghai, shanghai, SH, 沪]
+  北京: [Beijing, beijing, BJ, 京]
+  广州: [Guangzhou, guangzhou, GZ, 穗]
+  深圳: [Shenzhen, shenzhen, SZ, 鹏城]
+  杭州: [Hangzhou, hangzhou, HZ]
+  成都: [Chengdu, chengdu, CD, 蓉]
+  武汉: [Wuhan, wuhan, WH]
+  南京: [Nanjing, nanjing, NJ, 金陵]
+  重庆: [Chongqing, chongqing, CQ, 渝]
+  西安: [Xian, xian, XA]
+  苏州: [Suzhou, suzhou, SZ_su]
+  长沙: [Changsha, changsha, CS]
+  郑州: [Zhengzhou, zhengzhou, ZZ]
+
+# 匹配策略
+match_strategy:
+  case_sensitive: false
+  fuzzy_match: false       # 预留：未来可启用模糊匹配
+  unmapped_behavior: flag_for_review  # 未映射的城市名触发人工复核

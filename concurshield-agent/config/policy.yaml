@@ -1,0 +1,40 @@
+# 员工等级定义
+employee_levels:
+  - id: L1
+    name: 普通员工
+  - id: L2
+    name: 主管/经理
+  - id: L3
+    name: 总监
+  - id: L4
+    name: VP及以上
+
+# 城市分级
+city_tiers:
+  tier_1:
+    cities: [北京, 上海, 广州, 深圳, 杭州]
+  tier_2:
+    cities: [成都, 武汉, 南京, 重庆, 西安, 苏州, 长沙, 郑州]
+  tier_3:
+    cities: ["*"]  # 其他所有城市
+
+# 费用限额矩阵：expense_type × city_tier × employee_level
+limits:
+  meals_per_person:
+    tier_1: { L1: 100, L2: 150, L3: 200, L4: 不限 }
+    tier_2: { L1: 60, L2: 100, L3: 150, L4: 不限 }
+    tier_3: { L1: 50, L2: 80, L3: 120, L4: 不限 }
+  accommodation_per_night:
+    tier_1: { L1: 500, L2: 700, L3: 1000, L4: 不限 }
+    tier_2: { L1: 350, L2: 500, L3: 700, L4: 不限 }
+    tier_3: { L1: 250, L2: 350, L3: 500, L4: 不限 }
+  local_transport_per_day:
+    tier_1: { L1: 200, L2: 300, L3: 不限, L4: 不限 }
+    tier_2: { L1: 150, L2: 200, L3: 不限, L4: 不限 }
+    tier_3: { L1: 100, L2: 150, L3: 不限, L4: 不限 }
+
+# 超标容忍度
+tolerance:
+  warning_threshold: 50    # 超标 ≤ 此值为B级警告通过
+  reject_above: 50         # 超标 > 此值为C级拒绝
+  percentage_mode: false   # true则用百分比，false用绝对值

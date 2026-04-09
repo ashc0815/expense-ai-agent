@@ -1,0 +1,44 @@
+# 费用类型注册表——新增类型只需要在这里加配置
+expense_types:
+  travel:
+    name_zh: 差旅费
+    subtypes:
+      - id: transport_intercity
+        name_zh: 城际交通
+        requires_invoice: true
+        accounting_debit: 管理费用-差旅费
+      - id: transport_local
+        name_zh: 市内交通
+        requires_invoice: true
+        accounting_debit: 管理费用-差旅费
+      - id: accommodation
+        name_zh: 住宿
+        requires_invoice: true
+        accounting_debit: 管理费用-差旅费
+      - id: meals
+        name_zh: 餐费
+        requires_invoice: true
+        accounting_debit: 管理费用-差旅费
+  entertainment:
+    name_zh: 业务招待费
+    subtypes:
+      - id: client_meal
+        name_zh: 客户宴请
+        requires_invoice: true
+        requires_attendee_list: true    # 招待费必须附参会人员名单
+        accounting_debit: 管理费用-招待费
+  office:
+    name_zh: 办公费
+    subtypes:
+      - id: supplies
+        name_zh: 办公用品
+        requires_invoice: true
+        accounting_debit: 管理费用-办公费
+
+# 贷方科目（统一）
+default_credit_account: "其他应收款-{employee_name}"
+
+# 增值税专用发票处理
+vat_special_invoice:
+  split_tax: true
+  tax_debit_account: 应交税费-进项税额

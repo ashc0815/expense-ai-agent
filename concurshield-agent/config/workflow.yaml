@@ -1,0 +1,19 @@
+# 流程编排——可以灵活开关、调整顺序
+pipeline:
+  - skill: receipt_validation
+    enabled: true
+    fail_action: reject     # 失败后：reject终止 / warn继续 / skip跳过
+  - skill: approval
+    enabled: true
+    fail_action: reject
+  - skill: compliance
+    enabled: true
+    fail_action: reject
+    ambiguity_action: flag_for_review  # 模糊case的处理方式
+  - skill: voucher
+    enabled: true
+    fail_action: alert      # 凭证异常不终止，但告警
+  - skill: payment
+    enabled: true
+    fail_action: retry       # 付款失败重试
+    max_retries: 3

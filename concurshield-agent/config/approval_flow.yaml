@@ -1,0 +1,34 @@
+# 审批矩阵：expense_type × amount_range × employee_level → approver_role + 时限
+approval_rules:
+  - expense_type: travel
+    conditions:
+      - amount_max: 2000
+        approver_role: direct_manager
+        time_limit_hours: 24
+      - amount_max: 10000
+        approver_role: department_head
+        time_limit_hours: 24
+      - amount_max: null  # 无上限
+        approver_role: vp
+        time_limit_hours: 48
+  - expense_type: entertainment
+    conditions:
+      - amount_max: 5000
+        approver_role: department_head
+        time_limit_hours: 24
+      - amount_max: null
+        approver_role: vp
+        time_limit_hours: 48
+
+# 员工等级可以跳级审批
+level_overrides:
+  L3:
+    skip_direct_manager: true   # 总监不需要直属主管审批
+  L4:
+    auto_approve_below: 5000    # VP 5000以下自动通过
+
+# 超时升级机制
+escalation:
+  reminder_after_hours: 24
+  escalate_after_hours: 48
+  auto_escalate_after_hours: 72
