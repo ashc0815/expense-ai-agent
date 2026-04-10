@@ -158,18 +158,52 @@ expense_types:
 ## 运行方式
 
 ```bash
-# 安装依赖
+# 安装基础依赖
 pip install pyyaml
 
 # 运行全部7个场景
 python main.py
 
 # 运行测试
-python -m pytest tests/test_full_flow.py -v
-
-# 或用 unittest
 python -m unittest tests.test_full_flow -v
 ```
+
+### 可选：启用 LLM 深度语义分析
+
+当 `ambiguity_score > 50` 时，AmbiguityDetector 会调用 LLM 做深度合规审计。
+支持多个提供商（优先级 MiniMax → Claude → fallback 规则模型）。
+
+**使用 MiniMax M2**（OpenAI 兼容接口）：
+
+```bash
+pip install openai
+
+# Linux/macOS
+export MINIMAX_API_KEY=你的key
+# 可选：自定义 base_url 和 model
+export MINIMAX_BASE_URL=https://api.minimaxi.com/v1   # 默认（国际站）
+export MINIMAX_MODEL=MiniMax-M2                       # 默认
+
+# Windows CMD
+set MINIMAX_API_KEY=你的key
+set MINIMAX_BASE_URL=https://api.minimaxi.com/v1
+set MINIMAX_MODEL=MiniMax-M2
+
+# Windows PowerShell
+$env:MINIMAX_API_KEY="你的key"
+```
+
+> 如果你用的是 MiniMax 国内站，把 `MINIMAX_BASE_URL` 改成 `https://api.minimax.chat/v1`。
+> 模型 ID 以 MiniMax 控制台显示为准。
+
+**使用 Claude**：
+
+```bash
+pip install anthropic
+export ANTHROPIC_API_KEY=你的key
+```
+
+**都不配置** → 自动 fallback 到规则评分模型（零依赖可用）。
 
 ## 测试场景
 

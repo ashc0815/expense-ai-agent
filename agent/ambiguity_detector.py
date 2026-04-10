@@ -173,15 +173,46 @@ class AmbiguityDetector:
         triggered_factors: list[str],
         explanation: str,
     ) -> LLMReviewResult:
-        """调用 Claude API 做深度语义分析，无 API key 时 fallback 到规则模型。"""
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            logger.info("ANTHROPIC_API_KEY 未设置，使用 fallback 规则评分模型")
-            return self._fallback_llm_review(
-                line_item, employee, triggered_factors, explanation,
-            )
+        """调用 LLM 做深度语义分析。
 
-        # ---- 构建上下文 ----
+        提供商优先级: MiniMax → Claude → fallback 规则模型。
+        - MINIMAX_API_KEY 存在 → 使用 MiniMax（OpenAI 兼容接口）
+        - ANTHROPIC_API_KEY 存在 → 使用 Claude
+        - 都没有 → fallback 到规则评分模型
+        """
+        prompt = self._build_llm_prompt(
+            line_item, employee, rule_results, triggered_factors, explanation,
+        )
+
+        # 1. 尝试 MiniMax
+        minimax_key = os.environ.get("MINIMAX_API_KEY", "")
+        if minimax_key:
+            result = self._call_minimax(prompt, minimax_key)
+            if result is not None:
+                return result
+
+        # 2. 尝试 Claude
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if anthropic_key:
+            result = self._call_claude(prompt, anthropic_key)
+            if result is not None:
+                return result
+
+        # 3. Fallback 规则模型
+        logger.info("未配置可用 LLM API key，使用 fallback 规则评分模型")
+        return self._fallback_llm_review(
+            line_item, employee, triggered_factors, explanation,
+        )
+
+    def _build_llm_prompt(
+        self,
+        line_item: LineItem,
+        employee: Employee,
+        rule_results: list[RuleResult],
+        triggered_factors: list[str],
+        explanation: str,
+    ) -> str:
+        """构建发送给 LLM 的合规审计 prompt。"""
         normalizer = self._engine.city_normalizer
         normalized_city = normalizer.normalize(line_item.city)
         city_tier = normalizer.get_tier(line_item.city)
@@ -195,7 +226,7 @@ class AmbiguityDetector:
             for r in rule_results
         ) if rule_results else "无前序规则结果"
 
-        prompt = f"""你是企业财务合规审计专家。以下费用明细触发了模糊判定。
+        return f"""你是企业财务合规审计专家。以下费用明细触发了模糊判定。
 
 员工信息：{employee.name}（等级：{employee.level.value}，部门：{employee.department}）
 费用明细：
@@ -218,33 +249,60 @@ class AmbiguityDetector:
 严格按以下JSON格式返回，不要包含其他文本：
 {{"risk_level": "高/中/低", "risk_points": ["风险点1", "风险点2"], "recommendation": "approve/review/reject", "reasoning": "分析说明", "required_materials": ["材料1", "材料2"]}}"""
 
-        # ---- 调用 Claude API ----
+    def _call_minimax(self, prompt: str, api_key: str) -> Optional[LLMReviewResult]:
+        """通过 OpenAI 兼容 SDK 调用 MiniMax M2。
+
+        环境变量:
+            MINIMAX_API_KEY: 必需
+            MINIMAX_BASE_URL: 可选，默认 https://api.minimaxi.com/v1
+            MINIMAX_MODEL:    可选，默认 MiniMax-M2
+        """
+        try:
+            from openai import OpenAI
+        except ImportError:
+            logger.warning("openai 包未安装，无法调用 MiniMax。请运行: pip install openai")
+            return None
+
+        base_url = os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+        model = os.environ.get("MINIMAX_MODEL", "MiniMax-M2")
+
+        try:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+            )
+            raw_text = (resp.choices[0].message.content or "").strip()
+            logger.info(f"MiniMax 返回: {len(raw_text)} 字符")
+            return self._parse_llm_response(raw_text, source="minimax")
+        except Exception as e:
+            logger.error(f"MiniMax API 调用失败: {e}")
+            return None
+
+    def _call_claude(self, prompt: str, api_key: str) -> Optional[LLMReviewResult]:
+        """通过 Anthropic SDK 调用 Claude。"""
         try:
             import anthropic
+        except ImportError:
+            logger.warning("anthropic 包未安装，无法调用 Claude。请运行: pip install anthropic")
+            return None
 
+        try:
             client = anthropic.Anthropic(api_key=api_key)
             message = client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
-
             raw_text = message.content[0].text.strip()
-            return self._parse_llm_response(raw_text)
-
-        except ImportError:
-            logger.warning("anthropic 包未安装，使用 fallback 规则评分模型")
-            return self._fallback_llm_review(
-                line_item, employee, triggered_factors, explanation,
-            )
+            return self._parse_llm_response(raw_text, source="claude")
         except Exception as e:
-            logger.error(f"Claude API 调用失败: {e}，使用 fallback 规则评分模型")
-            return self._fallback_llm_review(
-                line_item, employee, triggered_factors, explanation,
-            )
+            logger.error(f"Claude API 调用失败: {e}")
+            return None
 
-    def _parse_llm_response(self, raw_text: str) -> LLMReviewResult:
-        """解析 Claude API 返回的 JSON。"""
+    def _parse_llm_response(self, raw_text: str, source: str = "claude") -> LLMReviewResult:
+        """解析 LLM 返回的 JSON（通用于 MiniMax / Claude / 其他 OpenAI 兼容接口）。"""
         try:
             # 处理可能包含 markdown 代码块的情况
             text = raw_text
@@ -266,17 +324,17 @@ class AmbiguityDetector:
                 risk_points=data.get("risk_points", []),
                 required_materials=data.get("required_materials", []),
                 raw_response=raw_text,
-                source="claude",
+                source=source,
             )
         except (json.JSONDecodeError, KeyError, IndexError) as e:
-            logger.error(f"LLM 返回解析失败: {e}")
+            logger.error(f"{source} 返回解析失败: {e}")
             return LLMReviewResult(
                 confidence=0.5,
                 recommendation="review",
-                reasoning=f"LLM 返回解析失败，原始内容: {raw_text[:200]}",
+                reasoning=f"{source} 返回解析失败，原始内容: {raw_text[:200]}",
                 risk_level="中",
                 raw_response=raw_text,
-                source="claude",
+                source=source,
             )
 
     def _fallback_llm_review(
