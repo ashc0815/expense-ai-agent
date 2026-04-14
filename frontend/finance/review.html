@@ -88,6 +88,14 @@
 <script src="/shared/api.js"></script>
 <script src="/shared/ai-card.js"></script>
 <script>
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 (function () {
   let items = [];
   let selectedId = null;
@@ -169,9 +177,9 @@
         <div class="inbox-item${active}" onclick="window._selectItem('${s.id}')">
           <div style="display:flex; justify-content:space-between; align-items:flex-start">
             <div>
-              <div style="font-weight:600; font-size:.92rem">${s.merchant}</div>
+              <div style="font-weight:600; font-size:.92rem">${esc(s.merchant)}</div>
               <div style="font-size:.75rem; color:var(--gray-400); margin-top:.15rem">
-                ${s.employee_id} · ${s.department || '—'} · ${CAT_LABEL(s.category)}
+                ${esc(s.employee_id)} · ${esc(s.department) || '—'} · ${CAT_LABEL(s.category)}
               </div>
             </div>
             <div style="text-align:right">
@@ -206,21 +214,23 @@
     const risk = sub.risk_score || 0;
     const riskClass = risk < 30 ? 'low' : risk < 55 ? 'medium' : risk < 75 ? 'high' : 'critical';
 
+    const safeReceiptUrl = sub.receipt_url && /^https?:\/\//i.test(sub.receipt_url) ? sub.receipt_url : '#';
+
     document.getElementById('inbox-detail').innerHTML = `
       <div style="padding:1.25rem 1.5rem; max-height:calc(100vh - 9rem); overflow-y:auto">
 
         <!-- 头部信息 -->
         <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1rem">
           <div>
-            <div style="font-size:1.1rem; font-weight:700">${sub.merchant}</div>
+            <div style="font-size:1.1rem; font-weight:700">${esc(sub.merchant)}</div>
             <div style="font-size:1.5rem; font-weight:800; color:var(--brand-dark); margin-top:.2rem">
               ${sub.currency} ${sub.amount.toFixed(2)}
             </div>
             <div style="font-size:.78rem; color:var(--gray-400); margin-top:.25rem">
-              ${sub.employee_id} · ${sub.department || t('review.unknown-dept')} · ${sub.cost_center || '—'}
+              ${esc(sub.employee_id)} · ${esc(sub.department) || t('review.unknown-dept')} · ${esc(sub.cost_center) || '—'}
             </div>
           </div>
-          <a href="${sub.receipt_url}" target="_blank" class="btn btn-outline btn-sm">${t('review.view-receipt')}</a>
+          <a href="${safeReceiptUrl}" target="_blank" class="btn btn-outline btn-sm">${t('review.view-receipt')}</a>
         </div>
 
         <!-- 嵌入式 AI 解释卡（第三种 agent 形态）-->
@@ -238,8 +248,8 @@
         <div class="card" style="margin-bottom:1rem">
           <div class="card-title" style="font-size:.82rem">${t('review.mgr-approval')}</div>
           <div style="font-size:.85rem">
-            <span style="color:var(--gray-400)">${sub.approver_id || '—'}</span>
-            ${sub.approver_comment ? ` · "${sub.approver_comment}"` : ''}
+            <span style="color:var(--gray-400)">${esc(sub.approver_id) || '—'}</span>
+            ${sub.approver_comment ? ` · &ldquo;${esc(sub.approver_comment)}&rdquo;` : ''}
           </div>
         </div>
 
@@ -253,7 +263,7 @@
             </div>
             <div class="form-group">
               <label>${t('review.field-cc')}</label>
-              <input id="f-cc" value="${sub.cost_center || ''}" placeholder="CC-RD">
+              <input id="f-cc" value="${esc(sub.cost_center)}" placeholder="CC-RD">
             </div>
             <div class="form-group">
               <label>${t('review.field-proj')}</label>
@@ -266,9 +276,9 @@
         <div class="card" style="margin-bottom:1rem">
           <div class="card-title" style="font-size:.82rem">${t('review.invoice-info')}</div>
           <div style="font-size:.82rem; line-height:1.7">
-            <div><span style="color:var(--gray-400)">${t('review.invoice-no')}</span>${sub.invoice_number || '—'}</div>
-            <div><span style="color:var(--gray-400)">${t('review.invoice-code')}</span>${sub.invoice_code || '—'}</div>
-            <div><span style="color:var(--gray-400)">${t('review.seller-tax')}</span>${sub.seller_tax_id || '—'}</div>
+            <div><span style="color:var(--gray-400)">${t('review.invoice-no')}</span>${esc(sub.invoice_number) || '—'}</div>
+            <div><span style="color:var(--gray-400)">${t('review.invoice-code')}</span>${esc(sub.invoice_code) || '—'}</div>
+            <div><span style="color:var(--gray-400)">${t('review.seller-tax')}</span>${esc(sub.seller_tax_id) || '—'}</div>
             <div><span style="color:var(--gray-400)">${t('review.tax-amount')}</span>${sub.tax_amount != null ? '¥' + sub.tax_amount.toFixed(2) : '—'}</div>
           </div>
         </div>
@@ -277,7 +287,7 @@
         ${sub.description ? `
           <div class="card" style="margin-bottom:1rem">
             <div class="card-title" style="font-size:.82rem">${t('review.notes-title')}</div>
-            <div style="font-size:.85rem">${sub.description}</div>
+            <div style="font-size:.85rem">${esc(sub.description)}</div>
           </div>` : ''}
 
         <!-- 财务意见 -->
