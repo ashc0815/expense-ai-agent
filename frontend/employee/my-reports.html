@@ -216,19 +216,22 @@
     inputEl.placeholder = _t("ai.placeholder-qa");
 
     const messages = [];
+    let budgetFetched = false;
     let busy = false;
 
     // ── toggle（与 submit.html 保持一致）──
     window.toggleQA = function () {
       drawer.classList.toggle("open");
-      if (drawer.classList.contains("open") && messages.length === 0) {
+      if (drawer.classList.contains("open") && messages.length === 0 && !budgetFetched) {
+        budgetFetched = true;
+        messages.push({ role: "assistant", content: _t("ai.welcome-qa") });
         appendMsg("assistant", _t("ai.welcome-qa"));
         // Proactive budget snapshot — fires once, fails silently
         api.getBudgetSnapshot().then(function(snap) {
           if (snap && snap.message) {
+            messages.push({ role: "assistant", content: snap.message });
             setTimeout(function() {
               appendMsg("assistant", snap.message);
-              messages.push({ role: "assistant", content: snap.message });
             }, 400);
           }
         }).catch(function() {});
