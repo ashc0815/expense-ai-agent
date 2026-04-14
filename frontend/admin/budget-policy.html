@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>预算策略 — ConcurShield</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>
+    window.AUTH_MODE = "mock"; window.API_BASE = "";
+    if (!localStorage.getItem("mock_role")) { localStorage.setItem("mock_role", "finance_admin"); }
+  </script>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+<script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="page">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1.5rem">
+    <h1 style="font-size:1.1rem; font-weight:700; margin:0" data-i18n="budget.policy-title">预算策略配置</h1>
+    <div style="display:flex; gap:.5rem; align-items:center">
+      <label style="font-size:.85rem; color:var(--gray-500)" data-i18n="budget.period-label">期间</label>
+      <select id="period-select" class="btn btn-ghost btn-sm" style="padding:.3rem .6rem; font-size:.85rem">
+        <option value="2026-Q2">2026-Q2</option>
+        <option value="2026-Q1">2026-Q1</option>
+        <option value="2026-Q3">2026-Q3</option>
+        <option value="2026-Q4">2026-Q4</option>
+      </select>
+      <button class="btn btn-sm" onclick="openAddModal()" data-i18n="budget.add-cc-btn">+ 添加成本中心</button>
+    </div>
+  </div>
+
+  <div id="alert-box"></div>
+  <div id="table-wrap">
+    <div class="card" style="text-align:center; padding:2rem">
+      <span class="spinner"></span>
+      <div style="margin-top:.5rem; color:var(--gray-400)" data-i18n="budget.loading">加载预算数据…</div>
+    </div>
+  </div>
+</main>
+
+<!-- Edit modal -->
+<div id="edit-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.4);
+  z-index:100; align-items:center; justify-content:center">
+  <div class="card" style="width:420px; max-width:95vw">
+    <div class="card-title" id="modal-title">编辑预算</div>
+    <div style="display:flex; flex-direction:column; gap:.75rem; margin-top:.5rem">
+      <div>
+        <label style="font-size:.8rem; color:var(--gray-500)">成本中心</label>
+        <input id="m-cc" class="mock-input" style="width:100%; margin-top:.25rem" readonly>
+      </div>
+      <div>
+        <label style="font-size:.8rem; color:var(--gray-500)">预算总额 (¥)</label>
+        <input id="m-total" type="number" min="1" step="100"
+          style="width:100%; margin-top:.25rem; border:1px solid var(--gray-200); border-radius:var(--radius-sm); padding:.4rem .6rem">
+      </div>
+      <div style="display:flex; gap:.75rem">
+        <div style="flex:1">
+          <label style="font-size:.8rem; color:var(--gray-500)">提示阈值 (%)</label>
+          <input id="m-info" type="number" min="1" max="99" step="5"
+            style="width:100%; margin-top:.25rem; border:1px solid var(--gray-200); border-radius:var(--radius-sm); padding:.4rem .6rem">
+        </div>
+        <div style="flex:1">
+          <label style="font-size:.8rem; color:var(--gray-500)">拦截阈值 (%)</label>
+          <input id="m-block" type="number" min="1" max="100" step="5"
+            style="width:100%; margin-top:.25rem; border:1px solid var(--gray-200); border-radius:var(--radius-sm); padding:.4rem .6rem">
+        </div>
+      </div>
+      <div>
+        <label style="font-size:.8rem; color:var(--gray-500)">超限行为</label>
+        <select id="m-action"
+          style="width:100%; margin-top:.25rem; border:1px solid var(--gray-200); border-radius:var(--radius-sm); padding:.4rem .6rem">
+          <option value="warn_only" data-i18n="budget.action-warn">仅提示</option>
+          <option value="block" data-i18n="budget.action-block">拦截</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex; justify-content:flex-end; gap:.5rem; margin-top:1.25rem">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()" data-i18n="btn.cancel">取消</button>
+      <button class="btn btn-sm" onclick="savePolicy()" data-i18n="budget.save-btn">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="/shared/api.js"></script>
+<script>
+(function () {
+  let _amounts = [];
+  let _period = '2026-Q2';
+  let _editCC = null;
+
+  async function load() {
+    _period = document.getElementById('period-select').value;
+    try {
+      const amounts = await api.getBudgetAmounts(_period);
+      _amounts = amounts || [];
+      const statuses = await Promise.all(
+        _amounts.map(function(a) {
+          return api.getBudgetStatus(a.cost_center, null, _period).catch(function() { return {}; });
+        })
+      );
+      render(_amounts, statuses);
+    } catch (err) {
+      document.getElementById('table-wrap').innerHTML =
+        '<div class="alert alert-error">' + (err.message || String(err)) + '</div>';
+    }
+  }
+
+  function render(amounts, statuses) {
+    if (!amounts.length) {
+      document.getElementById('table-wrap').innerHTML =
+        '<div class="card" style="text-align:center;padding:2rem;color:var(--gray-400)">' + t('budget.no-data') + '</div>';
+      return;
+    }
+
+    const rows = amounts.map(function(a, i) {
+      const st = statuses[i] || {};
+      const pct = st.usage_pct != null ? (st.usage_pct * 100).toFixed(1) : '—';
+      const pctNum = st.usage_pct != null ? st.usage_pct * 100 : 0;
+      const barColor = pctNum >= (st.block_threshold || 0.95) * 100 ? '#ef4444'
+                     : pctNum >= (st.info_threshold || 0.75) * 100 ? '#f59e0b' : '#22c55e';
+      const infoPct = st.info_threshold != null ? (st.info_threshold * 100).toFixed(0) + '%' : '75%';
+      const blockPct = st.block_threshold != null ? (st.block_threshold * 100).toFixed(0) + '%' : '95%';
+      const action = st.over_budget_action === 'block' ? t('budget.action-block') : t('budget.action-warn');
+      return '<tr style="border-bottom:1px solid var(--gray-100)">' +
+        '<td style="padding:.5rem .6rem;font-weight:600;font-size:.85rem">' + a.cost_center + '</td>' +
+        '<td style="padding:.5rem .6rem;font-size:.85rem">¥' + Number(a.total_amount).toLocaleString() + '</td>' +
+        '<td style="padding:.5rem .6rem">' +
+          '<div style="display:flex;align-items:center;gap:.5rem">' +
+            '<div style="width:80px;height:6px;background:var(--gray-100);border-radius:3px;overflow:hidden">' +
+              '<div style="width:' + Math.min(pctNum, 100) + '%;height:100%;background:' + barColor + ';border-radius:3px"></div>' +
+            '</div>' +
+            '<span style="font-size:.8rem;font-weight:600;color:' + barColor + '">' + pct + '%</span>' +
+          '</div>' +
+        '</td>' +
+        '<td style="padding:.5rem .6rem;font-size:.82rem">' + infoPct + '</td>' +
+        '<td style="padding:.5rem .6rem;font-size:.82rem">' + blockPct + '</td>' +
+        '<td style="padding:.5rem .6rem;font-size:.82rem">' + action + '</td>' +
+        '<td style="padding:.5rem .6rem">' +
+          '<button class="btn btn-ghost btn-sm" onclick="openEditModal(\'' + a.cost_center + '\',' + a.total_amount + ')" style="font-size:.75rem">' + t('budget.edit-btn') + '</button>' +
+        '</td>' +
+      '</tr>';
+    });
+
+    // Global default row
+    rows.push(
+      '<tr style="color:var(--gray-400);font-style:italic">' +
+      '<td style="padding:.5rem .6rem;font-size:.85rem">' + t('budget.global-default') + '</td>' +
+      '<td style="padding:.5rem .6rem">—</td>' +
+      '<td style="padding:.5rem .6rem">—</td>' +
+      '<td style="padding:.5rem .6rem;font-size:.82rem">75%</td>' +
+      '<td style="padding:.5rem .6rem;font-size:.82rem">95%</td>' +
+      '<td style="padding:.5rem .6rem;font-size:.82rem">' + t('budget.action-warn') + '</td>' +
+      '<td style="padding:.5rem .6rem">' +
+        '<button class="btn btn-ghost btn-sm" onclick="openEditModal(\'_default\',null)" style="font-size:.75rem">' + t('budget.edit-btn') + '</button>' +
+      '</td>' +
+      '</tr>'
+    );
+
+    document.getElementById('table-wrap').innerHTML =
+      '<div class="card" style="overflow-x:auto">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:.85rem">' +
+          '<thead><tr style="border-bottom:2px solid var(--gray-100);text-align:left;color:var(--gray-400);font-size:.78rem;text-transform:uppercase;letter-spacing:.4px">' +
+            '<th style="padding:.5rem .6rem">' + t('budget.col-cc') + '</th>' +
+            '<th style="padding:.5rem .6rem">' + t('budget.col-total') + '</th>' +
+            '<th style="padding:.5rem .6rem">' + t('budget.col-used') + '</th>' +
+            '<th style="padding:.5rem .6rem">' + t('budget.col-warn') + '</th>' +
+            '<th style="padding:.5rem .6rem">' + t('budget.col-block') + '</th>' +
+            '<th style="padding:.5rem .6rem">' + t('budget.col-overbudget') + '</th>' +
+            '<th style="padding:.5rem .6rem"></th>' +
+          '</tr></thead>' +
+          '<tbody>' + rows.join('') + '</tbody>' +
+        '</table>' +
+      '</div>';
+  }
+
+  window.openEditModal = function(cc, totalAmount) {
+    _editCC = cc;
+    const ccInput = document.getElementById('m-cc');
+    ccInput.value = cc === '_default' ? t('budget.global-default') : cc;
+    ccInput.setAttribute('readonly', '');
+    document.getElementById('m-total').value = totalAmount || '';
+    document.getElementById('m-total').disabled = (cc === '_default');
+    document.getElementById('m-info').value = 75;
+    document.getElementById('m-block').value = 95;
+    document.getElementById('m-action').value = 'warn_only';
+    document.getElementById('edit-modal').style.display = 'flex';
+  };
+
+  window.openAddModal = function() {
+    _editCC = null;
+    const ccInput = document.getElementById('m-cc');
+    ccInput.value = '';
+    ccInput.removeAttribute('readonly');
+    document.getElementById('m-total').value = '';
+    document.getElementById('m-total').disabled = false;
+    document.getElementById('m-info').value = 75;
+    document.getElementById('m-block').value = 95;
+    document.getElementById('m-action').value = 'warn_only';
+    document.getElementById('edit-modal').style.display = 'flex';
+  };
+
+  window.closeModal = function() {
+    document.getElementById('edit-modal').style.display = 'none';
+  };
+
+  window.savePolicy = async function() {
+    const cc = _editCC || document.getElementById('m-cc').value.trim();
+    if (!cc) { alert('请填写成本中心编码'); return; }
+    const totalVal = parseFloat(document.getElementById('m-total').value);
+    const infoVal = parseInt(document.getElementById('m-info').value) / 100;
+    const blockVal = parseInt(document.getElementById('m-block').value) / 100;
+    const action = document.getElementById('m-action').value;
+    try {
+      if (cc !== '_default' && !isNaN(totalVal) && totalVal > 0) {
+        await api.upsertBudgetAmount({ cost_center: cc, period: _period, total_amount: totalVal });
+      }
+      await api.updateBudgetPolicy(cc, {
+        info_threshold: infoVal,
+        block_threshold: blockVal,
+        over_budget_action: action,
+      });
+      window.closeModal();
+      await load();
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  };
+
+  document.getElementById('period-select').addEventListener('change', load);
+  load();
+})();
+</script>
+</body>
+</html>
