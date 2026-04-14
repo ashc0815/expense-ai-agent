@@ -338,3 +338,101 @@ def test_budget_status_no_budget_has_no_trend():
     body = r.json()
     assert body["configured"] is False
     assert "trend" not in body
+
+
+# ── snapshot/me trend narrative tests ─────────────────────────────────────────
+
+def test_snapshot_me_appends_trend_narrative_when_high_risk():
+    """snapshot/me: when signal=info/blocked and overrun_risk=high → message contains 月均."""
+    cc = "CC-SNAP-HIGH"
+    emp_id = "emp-snap-high"
+    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.get_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
+
+    # Seed Q2 spend at 80% (info signal)
+    async def _seed_q2_snap():
+        from backend.db.store import Submission
+        async with _TestSession() as db:
+            existing = await db.execute(
+                __import__('sqlalchemy', fromlist=['select']).select(Submission)
+                .where(Submission.id == "snap-q2-high")
+            )
+            if existing.scalar_one_or_none() is None:
+                db.add(Submission(
+                    id="snap-q2-high", employee_id=emp_id, status="reviewed",
+                    amount=Decimal("8000"), currency="CNY", category="travel",
+                    date="2026-04-10", merchant="SnapTest", receipt_url="http://x.com/r.png",
+                    cost_center=cc,
+                ))
+                await db.commit()
+
+    # Seed past months: avg 3000/month → 2000 remaining / 3000 avg = 0.67 months → high
+    async def _seed_past_snap():
+        from backend.db.store import Submission
+        async with _TestSession() as db:
+            for sid, dt, amt in [
+                ("snap-m1", "2026-01-15", Decimal("3000")),
+                ("snap-m2", "2026-02-15", Decimal("3000")),
+                ("snap-m3", "2026-03-15", Decimal("3000")),
+            ]:
+                existing = await db.execute(
+                    __import__('sqlalchemy', fromlist=['select']).select(Submission)
+                    .where(Submission.id == sid)
+                )
+                if existing.scalar_one_or_none() is None:
+                    db.add(Submission(
+                        id=sid, employee_id=emp_id, status="reviewed",
+                        amount=amt, currency="CNY", category="travel",
+                        date=dt, merchant="SnapPast", receipt_url="http://x.com/r.png",
+                        cost_center=cc,
+                    ))
+            await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(_seed_q2_snap())
+    asyncio.get_event_loop().run_until_complete(_seed_past_snap())
+
+    r = client.get(
+        "/api/budget/snapshot/me",
+        headers={"X-User-Id": emp_id, "X-User-Role": "employee"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["message"] is not None
+    assert "月均" in body["message"]
+
+
+def test_snapshot_me_no_trend_when_ok_risk():
+    """snapshot/me: when overrun_risk=ok (low avg), message does not mention 月均."""
+    cc = "CC-SNAP-OK"
+    emp_id = "emp-snap-ok"
+    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.get_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
+
+    # Seed Q2 spend at 80% (info signal — so we get a message)
+    async def _seed_q2_ok():
+        from backend.db.store import Submission
+        async with _TestSession() as db:
+            existing = await db.execute(
+                __import__('sqlalchemy', fromlist=['select']).select(Submission)
+                .where(Submission.id == "snap-q2-ok")
+            )
+            if existing.scalar_one_or_none() is None:
+                db.add(Submission(
+                    id="snap-q2-ok", employee_id=emp_id, status="reviewed",
+                    amount=Decimal("8000"), currency="CNY", category="travel",
+                    date="2026-04-10", merchant="OkTest", receipt_url="http://x.com/r.png",
+                    cost_center=cc,
+                ))
+                await db.commit()
+
+    # No past-month submissions → monthly_avg = 0 → overrun_risk = ok
+    asyncio.get_event_loop().run_until_complete(_seed_q2_ok())
+
+    r = client.get(
+        "/api/budget/snapshot/me",
+        headers={"X-User-Id": emp_id, "X-User-Role": "employee"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["message"] is not None       # signal=info → message exists
+    assert "月均" not in body["message"]     # but no trend narrative
