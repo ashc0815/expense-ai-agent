@@ -635,7 +635,7 @@ async def list_audit_logs(
 
 # ── CRUD — budget ─────────────────────────────────────────────────
 
-async def get_budget_policy(db: AsyncSession, cost_center: str) -> Optional[BudgetPolicy]:
+async def get_budget_policy(db: AsyncSession, cost_center: Optional[str]) -> Optional[BudgetPolicy]:
     """优先返回成本中心专属策略，回退到全局默认（cost_center IS NULL）。"""
     specific = await db.execute(
         select(BudgetPolicy).where(BudgetPolicy.cost_center == cost_center)

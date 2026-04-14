@@ -91,11 +91,11 @@ class PolicyBody(BaseModel):
 @router.get("/policies/{cost_center}")
 async def get_budget_policy(
     cost_center: str,
-    ctx: UserContext = Depends(require_role("finance_admin")),
+    _ctx: UserContext = Depends(require_role("finance_admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     cc = None if cost_center == "_default" else cost_center
-    policy = await store.get_budget_policy(db, cc or "")
+    policy = await store.get_budget_policy(db, cc)
     if policy is None:
         raise HTTPException(404, "策略未配置")
     return {
@@ -141,7 +141,7 @@ class AmountBody(BaseModel):
 @router.get("/amounts")
 async def list_budget_amounts(
     period: Optional[str] = Query(None),
-    ctx: UserContext = Depends(require_role("finance_admin")),
+    _ctx: UserContext = Depends(require_role("finance_admin")),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     budgets = await store.list_cost_center_budgets(db, period)
@@ -155,7 +155,7 @@ async def list_budget_amounts(
     ]
 
 
-@router.post("/amounts", status_code=200)
+@router.post("/amounts", status_code=201)
 async def upsert_budget_amount(
     body: AmountBody,
     ctx: UserContext = Depends(require_role("finance_admin")),

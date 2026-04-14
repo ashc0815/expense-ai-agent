@@ -80,3 +80,16 @@ def test_budget_status_projected_blocked():
     assert body["signal"] == "blocked"
     assert "projected_pct" in body
     assert body["projected_pct"] >= 0.95
+
+
+def test_post_amounts_returns_201():
+    """POST /amounts should return 201 Created."""
+    r = client.post(
+        "/api/budget/amounts",
+        json={"cost_center": "CC-NEW", "period": "2026-Q2", "total_amount": 5000.0},
+        headers=ADMIN_HEADERS,
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["cost_center"] == "CC-NEW"
+    assert body["total_amount"] == 5000.0
