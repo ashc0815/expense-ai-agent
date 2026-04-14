@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>财务复核 — ConcurShield</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <link rel="stylesheet" href="/shared/ai-card.css">
+  <script>
+    window.AUTH_MODE = "mock"; window.API_BASE = "";
+    if (!localStorage.getItem("mock_role")) { localStorage.setItem("mock_role", "finance_admin"); }
+  </script>
+  <style>
+    .stats-strip {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      gap: .6rem; margin-bottom: 1rem;
+    }
+    .stat-card {
+      background: white; border: 1px solid var(--gray-100);
+      border-radius: var(--radius); padding: .65rem 1rem;
+    }
+    .stat-value {
+      font-size: 1.2rem; font-weight: 700; color: var(--gray-900);
+      margin-bottom: .15rem; line-height: 1.2;
+    }
+    .stat-value.danger { color: var(--danger); }
+    .stat-label { font-size: .72rem; color: var(--gray-400); }
+    .stat-tiers { display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .1rem; }
+  </style>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="page-wide">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem">
+    <div>
+      <h1 style="font-size:1.25rem; font-weight:700; margin:0" data-i18n="review.title">财务复核队列</h1>
+      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem" data-i18n="review.subtitle">
+        经理已批准、待财务审核入账
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:.6rem">
+      <div id="count-chip" class="status-badge status-manager_approved" style="font-size:.85rem; padding:.4rem .8rem"></div>
+      <button class="btn btn-outline btn-sm" id="bulk-lowrisk-btn" onclick="bulkApproveLowRisk()" data-i18n="btn.bulk-approve">
+        批量通过低风险
+      </button>
+    </div>
+  </div>
+
+  <!-- ── 汇总条 ── -->
+  <div class="stats-strip" id="stats-strip" style="display:none">
+    <div class="stat-card">
+      <div class="stat-value" id="stat-amount">—</div>
+      <div class="stat-label" data-i18n="stats.total-amount">待审合计金额</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="stat-risk">—</div>
+      <div class="stat-label" data-i18n="stats.avg-risk">平均风险评分</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="stat-t4">—</div>
+      <div class="stat-label" data-i18n="stats.t4-count">高风险单 (T4)</div>
+    </div>
+    <div class="stat-card" style="display:flex; flex-direction:column; justify-content:center">
+      <div class="stat-tiers" id="stat-tiers"></div>
+      <div class="stat-label" style="margin-top:.35rem" data-i18n="stats.tier-dist">风险分布</div>
+    </div>
+  </div>
+
+  <div class="inbox-layout">
+    <!-- 左侧列表 -->
+    <aside class="inbox-list" id="inbox-list">
+      <div style="text-align:center; padding:2rem"><span class="spinner"></span></div>
+    </aside>
+
+    <!-- 右侧详情 -->
+    <section class="inbox-detail" id="inbox-detail">
+      <div style="text-align:center; padding:4rem; color:var(--gray-400)" data-i18n="review.placeholder">
+        请从左侧选择一张报销单
+      </div>
+    </section>
+  </div>
+</main>
+
+<script src="/shared/api.js"></script>
+<script src="/shared/ai-card.js"></script>
+<script>
+(function () {
+  let items = [];
+  let selectedId = null;
+  let policy = null;     // 缓存 GL/CC/项目库
+
+  const CAT_LABEL = c => (window.i18n && window.i18n.cat(c)) ||
+    ({ meal:'餐饮', transport:'交通', accommodation:'住宿', entertainment:'招待', other:'其他' }[c] || c);
+
+  // ── 加载列表 ──
+  async function loadList() {
+    try {
+      // 拿政策（含 gl_mapping + projects）
+      policy = await api.getPolicy();
+      // 拿待审核列表
+      const data = await api.listSubmissions({ status: 'manager_approved', page_size: 100 });
+      items = data.items;
+      document.getElementById('count-chip').textContent = `${data.total} ${t('review.pending-suffix')}`;
+      renderStats();
+      renderList();
+      if (items.length && !selectedId) selectItem(items[0].id);
+    } catch (err) {
+      document.getElementById('inbox-list').innerHTML =
+        `<div class="alert alert-error">${t('review.load-fail')}${err.message}</div>`;
+    }
+  }
+
+  function renderStats() {
+    const strip = document.getElementById('stats-strip');
+    if (!items.length) { strip.style.display = 'none'; return; }
+    strip.style.display = 'grid';
+
+    // 合计金额
+    const total = items.reduce((s, x) => s + x.amount, 0);
+    document.getElementById('stat-amount').textContent =
+      '¥' + total.toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+
+    // 平均风险
+    const withRisk = items.filter(x => x.risk_score != null);
+    const avgRisk = withRisk.length
+      ? withRisk.reduce((s, x) => s + x.risk_score, 0) / withRisk.length
+      : null;
+    const riskEl = document.getElementById('stat-risk');
+    riskEl.textContent = avgRisk != null ? `${avgRisk.toFixed(0)}/100` : '—';
+    riskEl.className = 'stat-value' + (avgRisk != null && avgRisk >= 75 ? ' danger' : '');
+
+    // T4 高风险数
+    const t4 = items.filter(x => x.tier === 'T4').length;
+    const t4El = document.getElementById('stat-t4');
+    t4El.textContent = t4 ? t('review.t4-count-val').replace('{n}', t4) : t('review.t4-none');
+    t4El.className = 'stat-value' + (t4 > 0 ? ' danger' : '');
+
+    // 风险分布 tier badges
+    const counts = {};
+    items.forEach(x => { if (x.tier) counts[x.tier] = (counts[x.tier] || 0) + 1; });
+    document.getElementById('stat-tiers').innerHTML =
+      ['T1','T2','T3','T4']
+        .filter(t => counts[t])
+        .map(t => `<span class="status-badge tier-${t}">${t} × ${counts[t]}</span>`)
+        .join('');
+  }
+
+  function renderList() {
+    if (!items.length) {
+      document.getElementById('inbox-list').innerHTML =
+        `<div style="text-align:center; padding:3rem; color:var(--gray-400)">
+          ${t('review.empty')}
+        </div>`;
+      document.getElementById('inbox-detail').innerHTML =
+        `<div style="text-align:center; padding:4rem; color:var(--gray-400)">${t('review.all-done')}</div>`;
+      return;
+    }
+    document.getElementById('inbox-list').innerHTML = items.map(s => {
+      const active = s.id === selectedId ? ' active' : '';
+      const tier = s.tier ? `<span class="status-badge tier-${s.tier}" style="margin-left:.4rem">${s.tier}</span>` : '';
+      const budgetBadge = s.budget_blocked
+        ? `<span class="badge badge-error" style="margin-left:.3rem;font-size:.7rem">${t('budget.held-badge')}</span>`
+        : '';
+      return `
+        <div class="inbox-item${active}" onclick="window._selectItem('${s.id}')">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start">
+            <div>
+              <div style="font-weight:600; font-size:.92rem">${s.merchant}</div>
+              <div style="font-size:.75rem; color:var(--gray-400); margin-top:.15rem">
+                ${s.employee_id} · ${s.department || '—'} · ${CAT_LABEL(s.category)}
+              </div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-weight:700">¥${s.amount.toFixed(2)}</div>
+              ${tier}${budgetBadge}
+            </div>
+          </div>
+          <div style="font-size:.7rem; color:var(--gray-300); margin-top:.4rem">
+            ${s.date} · ${t('review.mgr-approved-at')} ${s.approved_at?.slice(0,10) || '—'}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  window._selectItem = selectItem;
+  function selectItem(id) {
+    selectedId = id;
+    renderList();
+    const sub = items.find(s => s.id === id);
+    if (sub) renderDetail(sub);
+  }
+
+  // ── 详情面板 ──
+  function renderDetail(sub) {
+    const glOptions = Object.entries(policy.gl_mapping || {}).map(([cat, code]) =>
+      `<option value="${code}"${sub.gl_account === code ? ' selected' : ''}>${code} (${CAT_LABEL(cat)})</option>`
+    ).join('');
+    const projOptions = `<option value="">${t('review.no-project')}</option>` +
+      (policy.projects || []).map(p =>
+        `<option value="${p.code}"${sub.project_code === p.code ? ' selected' : ''}>${p.code} · ${p.name}</option>`
+      ).join('');
+    const risk = sub.risk_score || 0;
+    const riskClass = risk < 30 ? 'low' : risk < 55 ? 'medium' : risk < 75 ? 'high' : 'critical';
+
+    document.getElementById('inbox-detail').innerHTML = `
+      <div style="padding:1.25rem 1.5rem; max-height:calc(100vh - 9rem); overflow-y:auto">
+
+        <!-- 头部信息 -->
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1rem">
+          <div>
+            <div style="font-size:1.1rem; font-weight:700">${sub.merchant}</div>
+            <div style="font-size:1.5rem; font-weight:800; color:var(--brand-dark); margin-top:.2rem">
+              ${sub.currency} ${sub.amount.toFixed(2)}
+            </div>
+            <div style="font-size:.78rem; color:var(--gray-400); margin-top:.25rem">
+              ${sub.employee_id} · ${sub.department || t('review.unknown-dept')} · ${sub.cost_center || '—'}
+            </div>
+          </div>
+          <a href="${sub.receipt_url}" target="_blank" class="btn btn-outline btn-sm">${t('review.view-receipt')}</a>
+        </div>
+
+        <!-- 嵌入式 AI 解释卡（第三种 agent 形态）-->
+        <div id="ai-card-${sub.id}"></div>
+
+        <!-- 风险条 -->
+        <div class="risk-bar-wrap" style="margin-bottom:1.25rem">
+          <div class="risk-bar-labels"><span>${t('review.risk-label')}</span><span>${risk.toFixed(0)}/100 · ${sub.tier || ''}</span></div>
+          <div class="risk-bar-track">
+            <div class="risk-bar-fill ${riskClass}" style="width:${risk}%"></div>
+          </div>
+        </div>
+
+        <!-- 经理审批信息 -->
+        <div class="card" style="margin-bottom:1rem">
+          <div class="card-title" style="font-size:.82rem">${t('review.mgr-approval')}</div>
+          <div style="font-size:.85rem">
+            <span style="color:var(--gray-400)">${sub.approver_id || '—'}</span>
+            ${sub.approver_comment ? ` · "${sub.approver_comment}"` : ''}
+          </div>
+        </div>
+
+        <!-- 财务编码（可编辑） -->
+        <div class="card" style="margin-bottom:1rem">
+          <div class="card-title" style="font-size:.82rem">${t('review.accounting-codes')}</div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>${t('review.field-gl')}</label>
+              <select id="f-gl">${glOptions}</select>
+            </div>
+            <div class="form-group">
+              <label>${t('review.field-cc')}</label>
+              <input id="f-cc" value="${sub.cost_center || ''}" placeholder="CC-RD">
+            </div>
+            <div class="form-group">
+              <label>${t('review.field-proj')}</label>
+              <select id="f-proj">${projOptions}</select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 发票字段 -->
+        <div class="card" style="margin-bottom:1rem">
+          <div class="card-title" style="font-size:.82rem">${t('review.invoice-info')}</div>
+          <div style="font-size:.82rem; line-height:1.7">
+            <div><span style="color:var(--gray-400)">${t('review.invoice-no')}</span>${sub.invoice_number || '—'}</div>
+            <div><span style="color:var(--gray-400)">${t('review.invoice-code')}</span>${sub.invoice_code || '—'}</div>
+            <div><span style="color:var(--gray-400)">${t('review.seller-tax')}</span>${sub.seller_tax_id || '—'}</div>
+            <div><span style="color:var(--gray-400)">${t('review.tax-amount')}</span>${sub.tax_amount != null ? '¥' + sub.tax_amount.toFixed(2) : '—'}</div>
+          </div>
+        </div>
+
+        <!-- 备注 -->
+        ${sub.description ? `
+          <div class="card" style="margin-bottom:1rem">
+            <div class="card-title" style="font-size:.82rem">${t('review.notes-title')}</div>
+            <div style="font-size:.85rem">${sub.description}</div>
+          </div>` : ''}
+
+        <!-- 财务意见 -->
+        <div class="form-group" style="margin-bottom:1rem">
+          <label>${t('review.finance-comment')}</label>
+          <textarea id="f-comment" rows="2" placeholder="${t('review.comment-ph')}"></textarea>
+        </div>
+
+        <!-- 按钮 -->
+        <div style="display:flex; gap:.6rem; justify-content:flex-end">
+          ${(sub.budget_blocked && localStorage.getItem('mock_role') === 'finance_admin')
+            ? `<button class="btn btn-outline btn-sm" style="border-color:#ef4444;color:#ef4444;margin-right:.5rem"
+                 onclick="window._unblockSub('${sub.id}')">${t('budget.unblock-btn')}</button>`
+            : ''}
+          <button class="btn btn-outline" onclick="window._reject('${sub.id}')">${t('btn.reject')}</button>
+          <button class="btn btn-success" onclick="window._approve('${sub.id}')">${t('btn.approve')}</button>
+        </div>
+      </div>`;
+
+    // 异步加载 AI 解释卡
+    if (sub.audit_report && window.aiCard) {
+      window.aiCard.load(sub.id);
+    }
+  }
+
+  window._approve = async function(id) {
+    const body = {
+      gl_account:   document.getElementById('f-gl').value || null,
+      cost_center:  document.getElementById('f-cc').value || null,
+      project_code: document.getElementById('f-proj').value || null,
+      comment:      document.getElementById('f-comment').value || null,
+    };
+    try {
+      const result = await api.financeApprove(id, body);
+      alert(t('review.approve-ok') + result.voucher_number);
+      selectedId = null;
+      await loadList();
+    } catch (err) { alert(t('review.approve-fail') + err.message); }
+  };
+
+  window.bulkApproveLowRisk = async function() {
+    const lowRisk = items.filter(s => s.tier === 'T1' || s.tier === 'T2');
+    if (!lowRisk.length) {
+      alert(t('review.bulk-no-low'));
+      return;
+    }
+    const total = lowRisk.reduce((a, x) => a + x.amount, 0);
+    if (!confirm(t('review.bulk-confirm').replace('{n}', lowRisk.length).replace('{total}', total.toFixed(2)))) return;
+    const btn = document.getElementById('bulk-lowrisk-btn');
+    btn.disabled = true;
+    btn.textContent = t('review.bulk-processing');
+    try {
+      const result = await api.financeBulkApprove(lowRisk.map(s => s.id), '批量通过 - 低风险');
+      alert(t('review.bulk-ok').replace('{approved}', result.approved.length).replace('{skipped}', result.skipped.length));
+      selectedId = null;
+      await loadList();
+    } catch (err) {
+      alert(t('review.bulk-fail') + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = t('btn.bulk-approve');
+    }
+  };
+
+  window._reject = async function(id) {
+    const comment = document.getElementById('f-comment').value || prompt(t('review.reject-prompt'));
+    if (!comment) return;
+    try {
+      await api.financeReject(id, comment);
+      selectedId = null;
+      await loadList();
+    } catch (err) { alert(t('review.reject-fail') + err.message); }
+  };
+
+  window._unblockSub = async function(id) {
+    if (!confirm(t('budget.unblock-confirm'))) return;
+    try {
+      await api.unblockSubmission(id);
+      selectedId = null;
+      await loadList();
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  };
+
+  // 键盘快捷键
+  document.addEventListener('keydown', e => {
+    if (!selectedId || ['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    if (e.key === 'a' || e.key === 'A') window._approve(selectedId);
+    if (e.key === 'r' || e.key === 'R') window._reject(selectedId);
+    if (e.key === 'j' || e.key === 'J') {
+      const i = items.findIndex(x => x.id === selectedId);
+      if (i + 1 < items.length) selectItem(items[i + 1].id);
+    }
+    if (e.key === 'k' || e.key === 'K') {
+      const i = items.findIndex(x => x.id === selectedId);
+      if (i > 0) selectItem(items[i - 1].id);
+    }
+  });
+
+  loadList();
+})();
+</script>
+</body>
+</html>
