@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的报销 — ConcurShield</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>
+    window.AUTH_MODE = "mock";
+    window.API_BASE  = "";
+  </script>
+</head>
+<body>
+  <div id="nav-root"></div>
+  <script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+  <script src="/shared/nav.js"></script>
+
+  <style>
+    /* ── Tab 切换按钮（嵌在 chat-header 里） ── */
+    #qa-tabs { display: flex; gap: 4px; }
+    .qa-tab {
+      padding: 2px 10px; font-size: 11px; font-weight: 500;
+      border: 1px solid var(--gray-200); border-radius: 5px;
+      background: white; color: var(--gray-400); cursor: pointer;
+    }
+    .qa-tab.active { background: var(--brand); color: white; border-color: var(--brand); }
+
+    /* ── Chat pane 包装层 ── */
+    #qa-chat-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+
+    /* ── 详情 pane ── */
+    #qa-detail-pane {
+      display: none; flex: 1; overflow-y: auto;
+      padding: 1rem 1.25rem; background: var(--gray-50);
+    }
+    .detail-merchant { font-size: 17px; font-weight: 700; color: var(--gray-900); margin-bottom: 2px; }
+    .detail-amount   { font-size: 22px; font-weight: 700; color: var(--brand); margin-bottom: 14px; }
+    .detail-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 7px 0; border-bottom: 1px solid var(--gray-100);
+      font-size: .85rem; color: var(--gray-700);
+    }
+    .detail-row span:first-child { color: var(--gray-400); font-size: .78rem; }
+
+    /* ── 可点击表格行 ── */
+    tbody tr { cursor: pointer; }
+    tbody tr:hover { background: var(--gray-50); }
+    tbody tr.row-selected { background: var(--brand-light); }
+  </style>
+
+  <main class="page">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem">
+        <div class="card-title" style="margin:0" data-i18n="reports.page-title">我的报销单</div>
+        <div style="display:flex; gap:.5rem; align-items:center">
+          <select id="status-filter" class="btn btn-ghost" style="padding:.35rem .65rem; font-size:.85rem">
+            <option value="" data-i18n="reports.all-status">全部状态</option>
+            <option value="processing"       data-i18n="status.processing">处理中</option>
+            <option value="reviewed"         data-i18n="status.reviewed">AI 已审</option>
+            <option value="manager_approved" data-i18n="status.manager_approved">经理已批</option>
+            <option value="finance_approved" data-i18n="status.finance_approved">财务已批</option>
+            <option value="exported"         data-i18n="status.exported">已入账</option>
+            <option value="rejected"         data-i18n="status.rejected">已拒绝</option>
+            <option value="review_failed"    data-i18n="status.review_failed">审核失败</option>
+          </select>
+          <a href="/employee/submit.html" class="btn btn-primary btn-sm" data-i18n="reports.new-btn">+ 新建报销</a>
+        </div>
+      </div>
+
+      <div id="list-body">
+        <div style="text-align:center; padding:2rem"><span class="spinner"></span></div>
+      </div>
+
+      <div id="pagination" class="pagination"></div>
+    </div>
+  </main>
+
+  <!-- ── AI 助手（与 submit.html 共用同一套样式）── -->
+  <button class="chat-toggle-btn" id="qa-toggle" onclick="toggleQA()" title="AI 助手">💬</button>
+
+  <aside class="chat-drawer" id="qa-drawer">
+    <div class="chat-header">
+      <div class="chat-title" data-i18n="ai.title">AI 报销助手</div>
+      <div style="display:flex; align-items:center; gap:8px">
+        <div id="qa-tabs">
+          <button class="qa-tab active" data-tab="chat"   onclick="switchTab('chat')"   data-i18n="ai.chat-tab">对话</button>
+          <button class="qa-tab"        data-tab="detail" onclick="switchTab('detail')" data-i18n="ai.detail-tab">详情</button>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="toggleQA()">✕</button>
+      </div>
+    </div>
+
+    <!-- 对话 tab -->
+    <div id="qa-chat-pane">
+      <div class="chat-messages" id="qa-messages"></div>
+      <div class="chat-input-wrap">
+        <input id="qa-input">
+        <button id="qa-send">➤</button>
+      </div>
+    </div>
+
+    <!-- 详情 tab -->
+    <div id="qa-detail-pane">
+      <div id="detail-content" style="color:var(--gray-400); text-align:center; padding:2rem 0; font-size:.85rem"
+           data-i18n="ai.empty-detail">
+        点击列表中的一行查看详情
+      </div>
+    </div>
+  </aside>
+
+  <script src="/shared/api.js"></script>
+  <script>
+  (function () {
+    let currentPage = 1;
+    let _subsMap = {};   // id → submission，供 selectRow 使用
+
+    async function load() {
+      const status = document.getElementById("status-filter").value;
+      const params = { page: currentPage, page_size: 10 };
+      if (status) params.status = status;
+
+      try {
+        const data = await api.listSubmissions(params);
+        renderList(data);
+      } catch (err) {
+        document.getElementById("list-body").innerHTML =
+          `<div class="alert alert-error">加载失败：${err.message}</div>`;
+      }
+    }
+
+    function renderList(data) {
+      const { items, total, has_next } = data;
+      _subsMap = {};
+      items.forEach(s => { _subsMap[s.id] = s; });
+      if (!items.length) {
+        document.getElementById("list-body").innerHTML =
+          `<div style="text-align:center;padding:2rem;color:#9ca3af">暂无报销单</div>`;
+        document.getElementById("pagination").innerHTML = "";
+        return;
+      }
+
+      const _t = window.t || (k => k);
+      document.getElementById("list-body").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>${_t("reports.col-date")}</th>
+              <th>${_t("reports.col-merchant")}</th>
+              <th>${_t("reports.col-amount")}</th>
+              <th>${_t("reports.col-category")}</th>
+              <th>${_t("reports.col-status")}</th>
+              <th>${_t("reports.col-risk")}</th>
+              <th>${_t("reports.col-action")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map(sub => `
+              <tr onclick="selectRow('${sub.id}')" data-id="${sub.id}">
+                <td>${sub.date}</td>
+                <td>${sub.merchant}</td>
+                <td>${sub.currency} ${sub.amount.toFixed(2)}</td>
+                <td>${_catLabel(sub.category)}</td>
+                <td><span class="status-badge status-${sub.status}">${_statusLabel(sub.status)}</span></td>
+                <td>${sub.tier ? `<span class="status-badge tier-${sub.tier}">${sub.tier}</span>` : "—"}</td>
+                <td>
+                  <a href="/employee/report-detail.html?id=${sub.id}" class="btn btn-ghost btn-sm"
+                     onclick="event.stopPropagation()">${_t("btn.view")}</a>
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>`;
+
+      // pagination
+      const totalPages = Math.ceil(total / 10);
+      let pages = "";
+      for (let i = 1; i <= totalPages; i++) {
+        pages += `<button class="page-btn${i === currentPage ? " active" : ""}"
+          onclick="window._goPage(${i})">${i}</button>`;
+      }
+      document.getElementById("pagination").innerHTML = pages;
+      if (window.i18n) window.i18n.apply(); // translate data-i18n in freshly rendered HTML
+    }
+
+    function _statusLabel(s) { return (window.i18n && window.i18n.status(s)) ||
+      ({ processing:"处理中", reviewed:"AI 已审", manager_approved:"经理已批",
+         finance_approved:"财务已批", exported:"已入账", approved:"已批准",
+         rejected:"已拒绝", review_failed:"审核失败" }[s] || s); }
+    function _catLabel(c) { return (window.i18n && window.i18n.cat(c)) ||
+      ({ meal:"餐饮", transport:"交通", accommodation:"住宿",
+         entertainment:"招待", other:"其他" }[c] || c); }
+    // 暴露给 selectRow（在另一个 script block 里）
+    window._statusLabel = _statusLabel;
+    window._catLabel    = _catLabel;
+    window._subsMap     = () => _subsMap;
+
+    window._goPage = function (p) { currentPage = p; load(); };
+    document.getElementById("status-filter").addEventListener("change", () => {
+      currentPage = 1; load();
+    });
+
+    load();
+  })();
+  </script>
+
+  <script>
+  // ── QA Drawer controller — stateless, 前端维护 messages ──
+  (function () {
+    const _t      = window.t || (k => k);
+    const drawer  = document.getElementById("qa-drawer");
+    const msgsEl  = document.getElementById("qa-messages");
+    const inputEl = document.getElementById("qa-input");
+    const sendBtn = document.getElementById("qa-send");
+
+    inputEl.placeholder = _t("ai.placeholder-qa");
+
+    const messages = [];
+    let busy = false;
+
+    // ── toggle（与 submit.html 保持一致）──
+    window.toggleQA = function () {
+      drawer.classList.toggle("open");
+      if (drawer.classList.contains("open") && messages.length === 0) {
+        appendMsg("assistant", _t("ai.welcome-qa"));
+        // Proactive budget snapshot — fires once, fails silently
+        api.getBudgetSnapshot().then(function(snap) {
+          if (snap && snap.message) {
+            setTimeout(function() {
+              appendMsg("assistant", snap.message);
+              messages.push({ role: "assistant", content: snap.message });
+            }, 400);
+          }
+        }).catch(function() {});
+      }
+      if (drawer.classList.contains("open")) setTimeout(() => inputEl.focus(), 50);
+    };
+
+    // ── 消息渲染（与 submit.html 同款）──
+    function appendMsg(role, text) {
+      const div = document.createElement("div");
+      div.className = `chat-msg ${role}`;
+      div.innerHTML = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+      msgsEl.appendChild(div);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+      return div;
+    }
+
+    function appendToolCard(name) {
+      const label = {
+        get_my_submissions:        "查询报销记录",
+        get_my_recent_submissions: "查询近期记录",
+        get_submission_detail:     "查询单笔详情",
+      }[name] || name;
+      const div = document.createElement("div");
+      div.className = "chat-tool running";
+      div.innerHTML = `<div class="chat-tool-head">${label}</div><div class="chat-tool-body">调用中…</div>`;
+      msgsEl.appendChild(div);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+      return div;
+    }
+
+    async function send() {
+      if (busy) return;
+      const text = inputEl.value.trim();
+      if (!text) return;
+
+      busy = true;
+      sendBtn.disabled = true;
+      inputEl.value = "";
+
+      messages.push({ role: "user", content: text });
+      appendMsg("user", text);
+
+      let toolCard = null;
+      let finalText = "";
+
+      try {
+        await api.qaStream(messages, (event) => {
+          if (event.type === "tool_call") {
+            toolCard = appendToolCard(event.name);
+          } else if (event.type === "tool_result") {
+            if (toolCard) { toolCard.className = "chat-tool done"; toolCard.querySelector(".chat-tool-body").textContent = "完成"; }
+          } else if (event.type === "assistant_text") {
+            finalText = event.text;
+          } else if (event.type === "error") {
+            finalText = `❌ ${event.message}`;
+          }
+        });
+
+        if (finalText) {
+          appendMsg("assistant", finalText);
+          messages.push({ role: "assistant", content: finalText });
+        }
+      } catch (err) {
+        appendMsg("assistant", `❌ 请求失败：${err.message}`);
+      } finally {
+        busy = false;
+        sendBtn.disabled = false;
+        inputEl.focus();
+      }
+    }
+
+    sendBtn.addEventListener("click", send);
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+
+    // ── Tab 切换（全局，因为 onclick 在行内 HTML） ──
+    window.switchTab = function (tab) {
+      document.querySelectorAll(".qa-tab").forEach(t =>
+        t.classList.toggle("active", t.dataset.tab === tab));
+      document.getElementById("qa-chat-pane").style.display  = tab === "chat"   ? "flex" : "none";
+      document.getElementById("qa-detail-pane").style.display = tab === "detail" ? "flex" : "none";
+    };
+
+    // ── 点击行 → 详情 tab ──
+    window.selectRow = function (id) {
+      const sub = window._subsMap()[id];
+      if (!sub) return;
+
+      // 高亮选中行
+      document.querySelectorAll("tbody tr").forEach(r =>
+        r.classList.toggle("row-selected", r.dataset.id === id));
+
+      // 渲染详情
+      document.getElementById("detail-content").innerHTML = `
+        <div class="detail-merchant">${sub.merchant || "—"}</div>
+        <div class="detail-amount">${sub.currency} ${sub.amount.toFixed(2)}</div>
+        <div class="detail-row"><span>${_t("reports.col-date")}</span><span>${sub.date}</span></div>
+        <div class="detail-row"><span>${_t("reports.col-category")}</span><span>${window._catLabel(sub.category)}</span></div>
+        <div class="detail-row">
+          <span>${_t("reports.col-status")}</span>
+          <span class="status-badge status-${sub.status}">${window._statusLabel(sub.status)}</span>
+        </div>
+        ${sub.tier ? `
+        <div class="detail-row">
+          <span>${_t("reports.col-risk")}</span>
+          <span class="status-badge tier-${sub.tier}">${sub.tier}</span>
+        </div>` : ""}
+        ${sub.note ? `
+        <div class="detail-row" style="flex-direction:column; align-items:flex-start; gap:4px">
+          <span>${_t("detail.note")}</span>
+          <span style="color:#374151">${sub.note}</span>
+        </div>` : ""}
+        <a href="/employee/report-detail.html?id=${sub.id}"
+           class="btn btn-primary btn-sm"
+           style="display:block; text-align:center; margin-top:14px">
+          ${_t("detail.view-full")}
+        </a>`;
+
+      // 打开面板并切换到详情 tab
+      drawer.classList.add("open");
+      window.switchTab("detail");
+    };
+  })();
+  </script>
+</body>
+</html>
