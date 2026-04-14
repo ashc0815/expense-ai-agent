@@ -436,3 +436,24 @@ def test_snapshot_me_no_trend_when_ok_risk():
     body = r.json()
     assert body["message"] is not None       # signal=info → message exists
     assert "月均" not in body["message"]     # but no trend narrative
+
+
+# ── chat tool trend key test ───────────────────────────────────────────────────
+
+def test_tool_get_budget_summary_includes_trend():
+    """tool_get_budget_summary must return a 'trend' key so the LLM can read overrun_risk."""
+    cc = "CC-CHAT-TREND"
+    emp_id = "emp-chat-trend"
+    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.get_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
+
+    async def _call_tool():
+        from backend.api.routes.chat import tool_get_budget_summary
+        from backend.api.middleware.auth import UserContext
+        async with _TestSession() as db:
+            ctx = UserContext(user_id=emp_id, role="employee")
+            return await tool_get_budget_summary({}, ctx, db, "")
+
+    result = asyncio.get_event_loop().run_until_complete(_call_tool())
+    assert "trend" in result
+    assert result["trend"] is not None or result.get("configured") is False

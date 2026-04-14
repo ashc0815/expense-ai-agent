@@ -656,6 +656,7 @@ async def tool_get_budget_summary(
             ),
             "signal": _sig,
             "configured": True,
+            "trend": _status.get("trend"),
         }
     except Exception as _e:
         return {"error": f"预算摘要获取失败：{_e}"}
@@ -1015,6 +1016,7 @@ _SYSTEM_PROMPTS: dict[str, str] = {
         "你是企业报销查询助手，帮助员工查询自己的报销记录。"
         "你只能读取数据，不能修改任何内容。请用中文回复，信息简洁清晰。"
         "\n\n页面加载规则：收到 trigger=page_load 且 page=my-reports 时，立即调用 get_budget_summary。如果 signal 为 'info'、'blocked' 或 'over_budget'，在等待用户输入之前主动发送一条预算状态提示。如果 signal 为 'ok'，保持静默——一切正常时不要打扰用户。"
+        "\n\n趋势提示规则：当 get_budget_summary 返回的 trend.overrun_risk 为 'high' 时，在预算状态提示后用自然语气补充一句趋势预测（例如：按近 3 个月的节奏，预计 X 日前后预算耗尽）。如果 trend 为 null 或 overrun_risk 为 'ok'/'moderate'，不提趋势。"
     ),
     "manager_explain": (
         "你是审批辅助助手，帮助经理理解报销单的风险情况。"
