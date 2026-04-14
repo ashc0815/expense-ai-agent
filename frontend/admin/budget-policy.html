@@ -89,12 +89,23 @@
   let _amounts = [];
   let _period = '2026-Q2';
   let _editCC = null;
+  let _defaultPolicy = null;
+
+  function escAttr(s) {
+    return String(s == null ? '' : s).replace(/'/g, "&#39;").replace(/"/g, '&quot;');
+  }
 
   async function load() {
     _period = document.getElementById('period-select').value;
     try {
-      const amounts = await api.getBudgetAmounts(_period);
+      const [amounts, defaultPolicy] = await Promise.all([
+        api.getBudgetAmounts(_period),
+        fetch('/api/budget/policies/_default', { headers: await auth.getHeaders() })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .catch(function() { return null; }),
+      ]);
       _amounts = amounts || [];
+      _defaultPolicy = defaultPolicy;
       const statuses = await Promise.all(
         _amounts.map(function(a) {
           return api.getBudgetStatus(a.cost_center, null, _period).catch(function() { return {}; });
@@ -138,20 +149,23 @@
         '<td style="padding:.5rem .6rem;font-size:.82rem">' + blockPct + '</td>' +
         '<td style="padding:.5rem .6rem;font-size:.82rem">' + action + '</td>' +
         '<td style="padding:.5rem .6rem">' +
-          '<button class="btn btn-ghost btn-sm" onclick="openEditModal(\'' + a.cost_center + '\',' + a.total_amount + ')" style="font-size:.75rem">' + t('budget.edit-btn') + '</button>' +
+          '<button class="btn btn-ghost btn-sm" onclick="openEditModal(\'' + escAttr(a.cost_center) + '\',' + a.total_amount + ')" style="font-size:.75rem">' + t('budget.edit-btn') + '</button>' +
         '</td>' +
       '</tr>';
     });
 
     // Global default row
+    const defInfoPct = _defaultPolicy ? (_defaultPolicy.info_threshold * 100).toFixed(0) + '%' : '75%';
+    const defBlockPct = _defaultPolicy ? (_defaultPolicy.block_threshold * 100).toFixed(0) + '%' : '95%';
+    const defActionLabel = _defaultPolicy && _defaultPolicy.over_budget_action === 'block' ? t('budget.action-block') : t('budget.action-warn');
     rows.push(
       '<tr style="color:var(--gray-400);font-style:italic">' +
       '<td style="padding:.5rem .6rem;font-size:.85rem">' + t('budget.global-default') + '</td>' +
       '<td style="padding:.5rem .6rem">—</td>' +
       '<td style="padding:.5rem .6rem">—</td>' +
-      '<td style="padding:.5rem .6rem;font-size:.82rem">75%</td>' +
-      '<td style="padding:.5rem .6rem;font-size:.82rem">95%</td>' +
-      '<td style="padding:.5rem .6rem;font-size:.82rem">' + t('budget.action-warn') + '</td>' +
+      '<td style="padding:.5rem .6rem;font-size:.82rem">' + defInfoPct + '</td>' +
+      '<td style="padding:.5rem .6rem;font-size:.82rem">' + defBlockPct + '</td>' +
+      '<td style="padding:.5rem .6rem;font-size:.82rem">' + defActionLabel + '</td>' +
       '<td style="padding:.5rem .6rem">' +
         '<button class="btn btn-ghost btn-sm" onclick="openEditModal(\'_default\',null)" style="font-size:.75rem">' + t('budget.edit-btn') + '</button>' +
       '</td>' +
@@ -182,9 +196,10 @@
     ccInput.setAttribute('readonly', '');
     document.getElementById('m-total').value = totalAmount || '';
     document.getElementById('m-total').disabled = (cc === '_default');
-    document.getElementById('m-info').value = 75;
-    document.getElementById('m-block').value = 95;
-    document.getElementById('m-action').value = 'warn_only';
+    const policy = (cc === '_default' && _defaultPolicy) ? _defaultPolicy : null;
+    document.getElementById('m-info').value = policy ? (policy.info_threshold * 100).toFixed(0) : 75;
+    document.getElementById('m-block').value = policy ? (policy.block_threshold * 100).toFixed(0) : 95;
+    document.getElementById('m-action').value = policy ? (policy.over_budget_action || 'warn_only') : 'warn_only';
     document.getElementById('edit-modal').style.display = 'flex';
   };
 
@@ -203,6 +218,7 @@
 
   window.closeModal = function() {
     document.getElementById('edit-modal').style.display = 'none';
+    document.getElementById('m-cc').setAttribute('readonly', '');
   };
 
   window.savePolicy = async function() {
@@ -212,6 +228,10 @@
     const infoVal = parseInt(document.getElementById('m-info').value) / 100;
     const blockVal = parseInt(document.getElementById('m-block').value) / 100;
     const action = document.getElementById('m-action').value;
+    if (blockVal <= infoVal) {
+      alert('拦截阈值必须大于提示阈值');
+      return;
+    }
     try {
       if (cc !== '_default' && !isNaN(totalVal) && totalVal > 0) {
         await api.upsertBudgetAmount({ cost_center: cc, period: _period, total_amount: totalVal });
