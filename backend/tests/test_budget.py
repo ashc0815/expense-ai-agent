@@ -93,3 +93,59 @@ def test_post_amounts_returns_201():
     body = r.json()
     assert body["cost_center"] == "CC-NEW"
     assert body["total_amount"] == 5000.0
+
+
+def test_put_policy_requires_finance_admin():
+    r = client.put(
+        "/api/budget/policies/_default",
+        headers=HEADERS,   # employee role
+        json={"info_threshold": 0.75, "block_threshold": 0.95, "over_budget_action": "warn_only"},
+    )
+    assert r.status_code == 403
+
+
+def test_put_policy_invalid_thresholds():
+    r = client.put(
+        "/api/budget/policies/_default",
+        headers=ADMIN_HEADERS,
+        json={"info_threshold": 0.95, "block_threshold": 0.80, "over_budget_action": "warn_only"},
+    )
+    assert r.status_code == 400
+
+
+def test_put_and_get_policy_roundtrip():
+    r = client.put(
+        "/api/budget/policies/_default",
+        headers=ADMIN_HEADERS,
+        json={"info_threshold": 0.70, "block_threshold": 0.90, "over_budget_action": "block"},
+    )
+    assert r.status_code == 200
+    assert r.json()["block_threshold"] == 0.90
+
+    r2 = client.get("/api/budget/policies/_default", headers=ADMIN_HEADERS)
+    assert r2.status_code == 200
+    assert r2.json()["over_budget_action"] == "block"
+
+
+def test_upsert_and_list_budget_amounts():
+    r = client.post(
+        "/api/budget/amounts",
+        headers=ADMIN_HEADERS,
+        json={"cost_center": "ENG-TEST", "period": "2026-Q2", "total_amount": 5000.0},
+    )
+    assert r.status_code == 201
+    assert r.json()["total_amount"] == 5000.0
+
+    r2 = client.get("/api/budget/amounts?period=2026-Q2", headers=ADMIN_HEADERS)
+    assert r2.status_code == 200
+    items = r2.json()
+    assert any(i["cost_center"] == "ENG-TEST" for i in items)
+
+
+def test_upsert_budget_amount_negative_rejected():
+    r = client.post(
+        "/api/budget/amounts",
+        headers=ADMIN_HEADERS,
+        json={"cost_center": "ENG-TEST", "period": "2026-Q2", "total_amount": -100.0},
+    )
+    assert r.status_code == 400
