@@ -1,0 +1,1715 @@
+"""Agent Chat API — 员工和 AI 助手对话式报销。
+
+架构：
+  1. 真实的 Tool 定义（Anthropic schema）+ Tool 实现（操作 Draft 表）
+  2. LLM 抽象层：MockLLM（规则脚本）/ RealLLM（Anthropic API，预留）
+  3. 真实的 Agent Loop（while 循环 + 消息历史）
+  4. SSE Streaming 端点，消息逐条推送给前端
+
+数据流：
+  POST /api/chat/drafts                       新建 draft
+  POST /api/chat/drafts/{id}/receipt          上传发票到 draft
+  POST /api/chat/drafts/{id}/message (SSE)    发消息给 agent，SSE 流式返回
+  POST /api/chat/drafts/{id}/submit           转正为正式 submission（走审批流）
+  GET  /api/chat/drafts/{id}                  读 draft 当前状态
+
+权限边界：
+  ✅ Agent 可以：读发票、推荐类别、查重、读历史、写 draft 字段
+  ❌ Agent 不可以：提交 submission、修改已提交数据、调用审批
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import uuid
+from datetime import date, datetime, timezone
+from typing import Any, AsyncIterator, Literal, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.api.middleware.auth import UserContext, require_auth
+from backend.api.routes.admin import _POLICY
+from backend.api.routes.submissions import _run_pipeline, _sub_dict
+from backend.db.store import (
+    append_draft_messages, create_audit_log, create_draft, create_submission,
+    get_db, get_draft, get_employee, get_submission, get_submission_by_invoice,
+    list_submissions, mark_draft_submitted,
+    update_draft_field as store_update_draft_field,
+    update_draft_receipt,
+)
+from backend.storage import get_storage
+
+router = APIRouter()
+
+# ═══════════════════════════════════════════════════════════════════
+# Tool 定义 — Anthropic schema 格式（将来直接喂给 Claude API）
+#
+# 架构：tool 定义集中在 _TOOL_DEFS，按 name 索引；TOOL_REGISTRY 把每个
+# agent role 映射到它被允许调用的 tool 名字列表。这是防 prompt injection
+# 的架构基石——LLM 只能"看到"白名单内的 tool，run_agent 在 dispatch
+# 前还会二次校验，任何试图调用白名单外 tool 的请求都会被拒绝。
+# ═══════════════════════════════════════════════════════════════════
+
+AgentRole = Literal["employee_submit", "employee_qa", "manager_explain"]
+
+_TOOL_DEFS: dict[str, dict] = {
+    "extract_receipt_fields": {
+        "name": "extract_receipt_fields",
+        "description": "使用 Vision 识别当前 draft 的发票图片，抽取商户/金额/日期/发票号/税额等字段。只能在 draft 已有 receipt_url 时调用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "suggest_category": {
+        "name": "suggest_category",
+        "description": "根据商户名称推荐费用类别（meal/transport/accommodation/entertainment/other）。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "merchant": {"type": "string", "description": "商户名称"},
+            },
+            "required": ["merchant"],
+        },
+    },
+    "check_duplicate_invoice": {
+        "name": "check_duplicate_invoice",
+        "description": "检查发票号是否已被该公司其他员工报销过。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_number": {"type": "string"},
+            },
+            "required": ["invoice_number"],
+        },
+    },
+    "get_my_recent_submissions": {
+        "name": "get_my_recent_submissions",
+        "description": "获取当前员工最近 5 笔报销记录，用于判断消费模式或异常。",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "get_report_detail": {
+        "name": "get_report_detail",
+        "description": "读取当前员工某一笔历史报销单的完整字段（商户、金额、类别、状态、日期、审批人备注等）。仅能读取自己的报销单。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "report_id": {"type": "string", "description": "报销单 ID（可以是完整 uuid 或前 8 位短 ID）"},
+            },
+            "required": ["report_id"],
+        },
+    },
+    "get_submission_for_review": {
+        "name": "get_submission_for_review",
+        "description": "（仅经理/财务可用）读取某一笔报销单的完整数据，包括 5-skill 审核报告 audit_report、风险分、tier。不做 owner 校验，因为审批角色本来就需要看别人的报销。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "submission_id": {"type": "string"},
+            },
+            "required": ["submission_id"],
+        },
+    },
+    "get_employee_submission_history": {
+        "name": "get_employee_submission_history",
+        "description": "（仅经理/财务可用）查询某员工最近 N 笔历史报销，用于判断消费节奏/异常模式。返回金额、类别、日期、状态。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "employee_id": {"type": "string"},
+                "limit": {"type": "integer", "description": "返回笔数，默认 10"},
+            },
+            "required": ["employee_id"],
+        },
+    },
+    "get_spend_summary": {
+        "name": "get_spend_summary",
+        "description": "聚合当前员工在指定周期内的报销金额，按 category 分组返回总额和笔数。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["month", "quarter"],
+                    "description": "month=当前自然月，quarter=当前自然季度",
+                },
+            },
+            "required": ["period"],
+        },
+    },
+    "update_draft_field": {
+        "name": "update_draft_field",
+        "description": "更新当前 draft 的某个字段。允许的字段：merchant, amount, date, category, tax_amount, invoice_number, invoice_code, project_code, description。注意：这只是草稿，不会提交。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "field": {"type": "string"},
+                "value": {"type": "string", "description": "字段值（数字也以字符串传入）"},
+                "source": {
+                    "type": "string",
+                    "description": "来源：ocr / agent_suggested / user_confirmed",
+                    "enum": ["ocr", "agent_suggested", "user_confirmed"],
+                },
+            },
+            "required": ["field", "value", "source"],
+        },
+    },
+    "check_budget_status": {
+        "name": "check_budget_status",
+        "description": "查询当前成本中心的预算使用情况，以及提交指定金额后的预计占用比例。在员工填写金额后调用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "cost_center": {
+                    "type": "string",
+                    "description": "员工所属成本中心编码，例如 'ENG-TRAVEL'",
+                },
+                "amount": {
+                    "type": "number",
+                    "description": "本次报销金额（人民币）",
+                },
+            },
+            "required": ["cost_center", "amount"],
+        },
+    },
+    "get_budget_summary": {
+        "name": "get_budget_summary",
+        "description": "获取当前用户所属成本中心的预算快照，用于页面加载时主动推送预算状态。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "description": "期间，例如 '2026-Q2'。不传时默认当前季度。",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+TOOL_REGISTRY: dict[str, list[str]] = {
+    # 员工 submit 页——全交互式 chat，所有 5 个 tool 都可用
+    "employee_submit": [
+        "extract_receipt_fields",
+        "suggest_category",
+        "check_duplicate_invoice",
+        "get_my_recent_submissions",
+        "update_draft_field",
+        "check_budget_status",
+    ],
+    # 员工 Q&A 页（"我的报销"）——只读：没有 update_draft_field，
+    # 没有 extract_receipt_fields，LLM 即使被注入也无法写任何 draft
+    "employee_qa": [
+        "get_my_recent_submissions",
+        "get_report_detail",
+        "get_spend_summary",
+        "get_budget_summary",
+    ],
+    # 经理/财务审批页 AI 解释卡——读取审计报告 + 员工历史，组装一段
+    # 结构化解释。完全只读：没有任何写能力，没有 update_draft，没有 submit。
+    # 即使被注入也只能读已存在的报销数据。
+    "manager_explain": [
+        "get_submission_for_review",
+        "get_employee_submission_history",
+    ],
+}
+
+
+def get_tools_for_role(role: str) -> list[dict]:
+    """返回指定 role 允许使用的 tool 定义列表（喂给 LLM 的 tools 参数）。"""
+    names = TOOL_REGISTRY.get(role, [])
+    return [_TOOL_DEFS[n] for n in names if n in _TOOL_DEFS]
+
+_ALLOWED_FIELDS = {
+    "merchant", "amount", "date", "category", "tax_amount",
+    "invoice_number", "invoice_code", "project_code", "description",
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# Tool 实现 — 真实操作 DB / 文件
+# ═══════════════════════════════════════════════════════════════════
+
+async def _gpt4o_ocr(receipt_url: str) -> Optional[dict]:
+    """GPT-4o Vision 识别发票图片，返回字段 dict 或 None（失败时回退 mock）。
+
+    receipt_url 形如 /uploads/YYYY-MM/uuid_name.jpg（LocalStorage 格式）。
+    """
+    import base64
+    from openai import AsyncOpenAI
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    # 还原文件路径：项目根 / uploads / YYYY-MM / xxx.jpg
+    root = Path(__file__).resolve().parents[3]
+    file_path = root / receipt_url.lstrip("/")
+    if not file_path.exists():
+        return None
+
+    suffix = file_path.suffix.lower()
+    if suffix == ".pdf":
+        return None  # GPT-4o Vision 不直接支持 PDF
+    mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".png": "image/png", ".webp": "image/webp"}.get(suffix, "image/jpeg")
+
+    with open(file_path, "rb") as fh:
+        b64 = base64.b64encode(fh.read()).decode()
+
+    client = AsyncOpenAI(api_key=api_key)
+    try:
+        resp = await client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+            max_tokens=800,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    {"type": "text", "text": (
+                        "识别这张中国增值税发票，提取字段并以 JSON 返回（无法识别的字段设为 null）：\n"
+                        '{"merchant":"销售方名称","amount":价税合计数字,"date":"YYYY-MM-DD",'
+                        '"currency":"CNY","tax_amount":税额数字,"invoice_number":"发票号码",'
+                        '"invoice_code":"发票代码","seller_tax_id":"销售方税号",'
+                        '"description":"货物或服务名称"}\n只返回 JSON，不要任何解释。'
+                    )},
+                ],
+            }],
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+    content = resp.choices[0].message.content or ""
+    # 去掉可能的 markdown 代码块
+    if "```" in content:
+        for part in content.split("```"):
+            part = part.strip().lstrip("json").strip()
+            if part.startswith("{"):
+                content = part
+                break
+    try:
+        result = json.loads(content)
+        result["_mock"] = False
+        result["_source"] = "gpt-4o-vision"
+        return result
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+async def tool_extract_receipt_fields(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """从 draft 的发票图提取字段。
+
+    优先使用 GPT-4o Vision（需要 OPENAI_API_KEY）；
+    未设置 API Key 时返回精心设计的 mock 数据（走通全部 5-Skill 审核）。
+    """
+    draft = await get_draft(db, draft_id)
+    if not draft or not draft.receipt_url:
+        return {"error": "当前 draft 没有上传发票图片"}
+
+    # ── GPT-4o Vision（真实 OCR）──────────────────────────────────
+    if os.getenv("OPENAI_API_KEY"):
+        ocr_result = await _gpt4o_ocr(draft.receipt_url)
+        if ocr_result and not ocr_result.get("error"):
+            return ocr_result
+
+    # ── Mock 数据（金色路径设计，无 API Key 时使用）───────────────
+    import random
+    from datetime import timedelta
+    invoice_number = f"{random.randint(10000000, 99999999)}"
+
+    today = date.today()
+    d = today
+    while d.weekday() >= 5:  # 回退到最近工作日
+        d -= timedelta(days=1)
+
+    return {
+        "merchant": "海底捞火锅 (上海南京西路店)",
+        "amount": 150.00,
+        "date": d.isoformat(),
+        "currency": "CNY",
+        "tax_amount": 9.00,
+        "tax_rate": 0.06,
+        "invoice_number": invoice_number,
+        "invoice_code": "310012135012",
+        "description": "团队午餐讨论 AI 报销项目进度及下阶段需求",
+        "items": [
+            {"description": "午餐套餐 A", "amount": 50},
+            {"description": "午餐套餐 B", "amount": 50},
+            {"description": "饮料两份", "amount": 50},
+        ],
+        "_mock": True,
+        "_note": "MOCK 数据（未设置 OPENAI_API_KEY）。设置后将自动调用 GPT-4o Vision 识别真实发票。",
+    }
+
+
+async def tool_suggest_category(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """简单规则：按关键词匹配类别。"""
+    merchant = (args.get("merchant") or "").lower()
+    rules = [
+        (["海底捞", "西贝", "餐", "咖啡", "饭", "茶", "coffee", "restaurant"], "meal"),
+        (["滴滴", "出租", "高铁", "机票", "airline", "taxi", "uber"], "transport"),
+        (["酒店", "宾馆", "hotel", "inn"], "accommodation"),
+        (["ktv", "娱乐", "会所"], "entertainment"),
+    ]
+    for keywords, cat in rules:
+        if any(k in merchant for k in keywords):
+            return {"category": cat, "confidence": 0.92, "reason": f"匹配关键词 '{merchant}'"}
+    return {"category": "other", "confidence": 0.5, "reason": "无明显关键词匹配"}
+
+
+async def tool_check_duplicate_invoice(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    invoice_number = args.get("invoice_number")
+    if not invoice_number:
+        return {"error": "缺少 invoice_number"}
+    existing = await get_submission_by_invoice(db, invoice_number)
+    if existing:
+        return {
+            "is_duplicate": True,
+            "existing_submission_id": existing.id,
+            "submitted_by": existing.employee_id,
+            "submitted_at": existing.created_at.isoformat() if existing.created_at else None,
+        }
+    return {"is_duplicate": False}
+
+
+async def tool_get_my_recent_submissions(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    result = await list_submissions(
+        db, employee_id=ctx.user_id, page=1, page_size=5,
+    )
+    return {
+        "items": [
+            {
+                "merchant": s.merchant,
+                "amount": float(s.amount),
+                "category": s.category,
+                "date": s.date,
+                "status": s.status,
+            }
+            for s in result["items"]
+        ],
+        "total": result["total"],
+    }
+
+
+async def tool_get_report_detail(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """只读：获取当前员工某一笔报销单详情。强制 owner scoping。"""
+    rid = (args.get("report_id") or "").strip()
+    if not rid:
+        return {"error": "缺少 report_id"}
+
+    # 支持短 ID（前 8 位）——用户常会只说前几位
+    sub = await get_submission(db, rid)
+    if sub is None and len(rid) < 36:
+        page = await list_submissions(db, employee_id=ctx.user_id, page=1, page_size=100)
+        for s in page["items"]:
+            if s.id.startswith(rid):
+                sub = s
+                break
+
+    if sub is None:
+        return {"error": f"未找到 report_id={rid}"}
+    if sub.employee_id != ctx.user_id:
+        # 白名单之外的额外 owner 校验——即便 LLM 猜到别人的 id 也读不到
+        return {"error": "权限不足：只能查看自己的报销单"}
+
+    return {
+        "id": sub.id,
+        "status": sub.status,
+        "merchant": sub.merchant,
+        "amount": float(sub.amount),
+        "currency": sub.currency,
+        "category": sub.category,
+        "date": sub.date,
+        "tax_amount": float(sub.tax_amount) if sub.tax_amount is not None else None,
+        "description": sub.description,
+        "invoice_number": sub.invoice_number,
+        "project_code": sub.project_code,
+        "approver_comment": getattr(sub, "approver_comment", None),
+        "created_at": sub.created_at.isoformat() if sub.created_at else None,
+    }
+
+
+async def tool_get_submission_for_review(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """只读：经理/财务读某一笔报销的完整数据 + 审计报告。
+
+    不做 owner 校验——审批角色本来就需要看别人的报销。这是为什么这个 tool
+    只在 manager_explain 白名单里，employee_qa 永远拿不到它。
+    """
+    sub_id = (args.get("submission_id") or "").strip()
+    if not sub_id:
+        return {"error": "缺少 submission_id"}
+
+    sub = await get_submission(db, sub_id)
+    if sub is None and len(sub_id) < 36:
+        # 短 ID 前缀匹配
+        page = await list_submissions(db, page=1, page_size=200)
+        for s in page["items"]:
+            if s.id.startswith(sub_id):
+                sub = s
+                break
+    if sub is None:
+        return {"error": f"未找到 submission_id={sub_id}"}
+
+    return {
+        "id": sub.id,
+        "employee_id": sub.employee_id,
+        "status": sub.status,
+        "merchant": sub.merchant,
+        "amount": float(sub.amount),
+        "currency": sub.currency,
+        "category": sub.category,
+        "date": sub.date,
+        "tax_amount": float(sub.tax_amount) if sub.tax_amount is not None else None,
+        "description": sub.description,
+        "invoice_number": sub.invoice_number,
+        "department": getattr(sub, "department", None),
+        "tier": sub.tier,
+        "risk_score": float(sub.risk_score) if sub.risk_score is not None else None,
+        "audit_report": sub.audit_report or {},
+        "created_at": sub.created_at.isoformat() if sub.created_at else None,
+    }
+
+
+async def tool_get_employee_submission_history(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """只读：经理/财务读某员工最近 N 笔报销历史，判断消费模式/异常。"""
+    emp_id = (args.get("employee_id") or "").strip()
+    limit = int(args.get("limit") or 10)
+    if not emp_id:
+        return {"error": "缺少 employee_id"}
+
+    page = await list_submissions(db, employee_id=emp_id, page=1, page_size=limit)
+    items = []
+    total_amount = 0.0
+    by_cat: dict[str, dict] = {}
+    for s in page["items"]:
+        amt = float(s.amount)
+        items.append({
+            "id": s.id[:8],
+            "merchant": s.merchant,
+            "amount": amt,
+            "category": s.category,
+            "date": s.date,
+            "status": s.status,
+        })
+        total_amount += amt
+        b = by_cat.setdefault(s.category or "other", {"category": s.category, "amount": 0.0, "count": 0})
+        b["amount"] += amt
+        b["count"] += 1
+
+    return {
+        "employee_id": emp_id,
+        "items": items,
+        "total_count": page["total"],
+        "shown_count": len(items),
+        "total_amount": round(total_amount, 2),
+        "by_category": [
+            {**b, "amount": round(b["amount"], 2)} for b in by_cat.values()
+        ],
+    }
+
+
+async def tool_get_spend_summary(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """只读：当前员工在 period 内的报销聚合，按 category 分组。"""
+    period = args.get("period")
+    if period not in ("month", "quarter"):
+        return {"error": "period 必须是 'month' 或 'quarter'"}
+
+    today = date.today()
+    if period == "month":
+        start = today.replace(day=1)
+        label = f"{today.year}-{today.month:02d}"
+    else:
+        q_start_month = ((today.month - 1) // 3) * 3 + 1
+        start = today.replace(month=q_start_month, day=1)
+        label = f"{today.year}-Q{(today.month - 1) // 3 + 1}"
+    start_iso = start.isoformat()
+
+    page = await list_submissions(db, employee_id=ctx.user_id, page=1, page_size=500)
+    in_range = [s for s in page["items"] if (s.date or "") >= start_iso]
+
+    by_cat: dict[str, dict] = {}
+    total = 0.0
+    for s in in_range:
+        cat = s.category or "other"
+        bucket = by_cat.setdefault(cat, {"category": cat, "amount": 0.0, "count": 0})
+        amt = float(s.amount)
+        bucket["amount"] += amt
+        bucket["count"] += 1
+        total += amt
+
+    return {
+        "period": period,
+        "period_label": label,
+        "start_date": start_iso,
+        "total": round(total, 2),
+        "count": len(in_range),
+        "by_category": sorted(
+            [{**b, "amount": round(b["amount"], 2)} for b in by_cat.values()],
+            key=lambda x: x["amount"],
+            reverse=True,
+        ),
+    }
+
+
+async def tool_update_draft_field(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    field = args.get("field")
+    value = args.get("value")
+    source = args.get("source", "agent_suggested")
+    if field not in _ALLOWED_FIELDS:
+        return {"error": f"字段 '{field}' 不允许被 agent 修改", "allowed": sorted(_ALLOWED_FIELDS)}
+    # 类型转换：amount / tax_amount 转 float
+    if field in ("amount", "tax_amount"):
+        try:
+            value = float(value)
+        except (ValueError, TypeError):
+            return {"error": f"{field} 必须是数字"}
+    await store_update_draft_field(db, draft_id, field, value, source=source)
+    return {"ok": True, "field": field, "value": value, "source": source}
+
+
+async def tool_check_budget_status(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """查询成本中心预算使用情况及提交指定金额后的预计占比。"""
+    from decimal import Decimal as _D
+    from backend.db import store as _store
+
+    _cc = (args.get("cost_center") or "").strip()
+    _amt = args.get("amount", 0)
+    if not _cc:
+        return {"error": "缺少 cost_center"}
+    try:
+        _status = await _store.get_budget_status(db, _cc, _D(str(_amt)))
+        if not _status.get("configured"):
+            return {"result": f"成本中心 {_cc} 未配置预算。", "configured": False}
+        _pct = _status["usage_pct"] * 100
+        _proj = _status.get("projected_pct", _status["usage_pct"]) * 100
+        _sig = _status["signal"]
+        _remaining = _status["total_amount"] - _status["spent_amount"]
+        return {
+            "result": (
+                f"成本中心 {_cc}：当前已用 {_pct:.1f}%，"
+                f"本次报销后预计达 {_proj:.1f}%，"
+                f"剩余 ¥{_remaining:,.0f}（共 ¥{_status['total_amount']:,.0f}）。"
+                f"状态：{_sig}。"
+            ),
+            "signal": _sig,
+            "configured": True,
+        }
+    except Exception as _e:
+        return {"error": f"预算查询失败：{_e}"}
+
+
+async def tool_get_budget_summary(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """获取当前用户成本中心的预算快照，用于页面加载时主动推送。"""
+    from backend.db.store import Employee as _Emp
+    from sqlalchemy import select as _sel
+    from backend.db import store as _store
+
+    _period = args.get("period") or None
+    try:
+        _emp_r = await db.execute(_sel(_Emp).where(_Emp.id == ctx.user_id))
+        _emp = _emp_r.scalar_one_or_none()
+        if not _emp or not _emp.cost_center:
+            return {"error": "未找到员工成本中心信息。"}
+        _status = await _store.get_budget_status(db, _emp.cost_center, None, _period)
+        if not _status.get("configured"):
+            return {"result": f"成本中心 {_emp.cost_center} 未配置预算。", "configured": False}
+        _pct = _status["usage_pct"] * 100
+        _remaining = _status["total_amount"] - _status["spent_amount"]
+        _sig = _status["signal"]
+        return {
+            "result": (
+                f"你所在成本中心 {_emp.cost_center} 本季度预算状态："
+                f"已用 {_pct:.1f}%（¥{_status['spent_amount']:,.0f} / ¥{_status['total_amount']:,.0f}），"
+                f"剩余 ¥{_remaining:,.0f}。状态：{_sig}。"
+            ),
+            "signal": _sig,
+            "configured": True,
+        }
+    except Exception as _e:
+        return {"error": f"预算摘要获取失败：{_e}"}
+
+
+TOOL_HANDLERS = {
+    "extract_receipt_fields":            tool_extract_receipt_fields,
+    "suggest_category":                  tool_suggest_category,
+    "check_duplicate_invoice":           tool_check_duplicate_invoice,
+    "get_my_recent_submissions":         tool_get_my_recent_submissions,
+    "get_report_detail":                 tool_get_report_detail,
+    "get_spend_summary":                 tool_get_spend_summary,
+    "get_submission_for_review":         tool_get_submission_for_review,
+    "get_employee_submission_history":   tool_get_employee_submission_history,
+    "update_draft_field":                tool_update_draft_field,
+    "check_budget_status":               tool_check_budget_status,
+    "get_budget_summary":                tool_get_budget_summary,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# LLM 抽象层 — MockLLM 规则脚本 / RealLLM 预留
+# ═══════════════════════════════════════════════════════════════════
+
+class LLMResponse:
+    """LLM 一轮响应的抽象 — 对应 Anthropic API 的 Message 结构。"""
+    def __init__(
+        self,
+        text: str = "",
+        tool_calls: Optional[list[dict]] = None,
+        stop_reason: str = "end_turn",
+    ):
+        self.text = text
+        self.tool_calls = tool_calls or []  # [{id, name, input}, ...]
+        self.stop_reason = stop_reason      # "end_turn" | "tool_use"
+
+
+class BaseLLM:
+    async def next_turn(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        agent_role: str = "employee_submit",
+    ) -> LLMResponse:
+        raise NotImplementedError
+
+
+class MockLLM(BaseLLM):
+    """规则脚本化的 "LLM"，用来在没有 API Key 时 demo agent 架构。
+
+    决策逻辑：看消息历史的最新一条，决定下一步。
+    不做任何 LLM 推理——纯状态机。
+    """
+
+    async def next_turn(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        agent_role: str = "employee_submit",
+    ) -> LLMResponse:
+        if agent_role == "employee_qa":
+            return self._qa_turn(messages)
+        # 默认：employee_submit 脚本
+        # 扫描历史找：最后一条 user 消息、是否有 extract 结果、是否有 dup 结果、是否已有 suggest 结果
+        last_user_idx = self._find_last(messages, role="user", text_not_tool=True)
+        last_user_text = ""
+        if last_user_idx is not None:
+            last_user_text = self._extract_text(messages[last_user_idx]).lower()
+
+        extract_result = self._find_tool_result(messages, "extract_receipt_fields")
+        dup_result     = self._find_tool_result(messages, "check_duplicate_invoice")
+        suggest_result = self._find_tool_result(messages, "suggest_category")
+
+        # 第 1 步：还没 extract 过 → 只要有用户消息就自动触发识别
+        # 真实 LLM 会根据上下文判断；MockLLM 用简单规则：没 extract 结果就先做这一步
+        if extract_result is None and last_user_idx is not None:
+            return LLMResponse(
+                text="好，我先识别一下您上传的发票图片…",
+                tool_calls=[self._tool_call("extract_receipt_fields", {})],
+                stop_reason="tool_use",
+            )
+
+        # 第 2 步：有 extract 结果但还没查重 → check_duplicate
+        if extract_result and not extract_result.get("error") and dup_result is None:
+            inv = extract_result.get("invoice_number")
+            if inv:
+                return LLMResponse(
+                    text=f"识别成功！商户：**{extract_result.get('merchant', '—')}**，金额：¥{extract_result.get('amount', 0)}。我先查一下发票号是否重复…",
+                    tool_calls=[self._tool_call("check_duplicate_invoice", {"invoice_number": inv})],
+                    stop_reason="tool_use",
+                )
+
+        # 第 2b 步：查重发现重复 → 直接结束
+        if dup_result and dup_result.get("is_duplicate"):
+            existing = dup_result.get("existing_submission_id", "")
+            return LLMResponse(
+                text=f"⚠️ 这张发票已被报销过（单据 #{existing[:8]}），不能重复提交。请检查是否上传了正确的发票。",
+                stop_reason="end_turn",
+            )
+
+        # 第 3 步：有 extract 且不重复，但还没推荐类别 → suggest
+        if extract_result and not extract_result.get("error") and suggest_result is None:
+            merchant = extract_result.get("merchant", "")
+            return LLMResponse(
+                text="发票号 OK，没有重复。让我根据商户名称推荐一个类别…",
+                tool_calls=[self._tool_call("suggest_category", {"merchant": merchant})],
+                stop_reason="tool_use",
+            )
+
+        # 第 4 步：所有查询都完成 → 批量写入 draft
+        if extract_result and suggest_result and not self._has_draft_writes(messages):
+            tc = []
+            f = extract_result
+            tc.append(self._tool_call("update_draft_field", {
+                "field": "merchant", "value": str(f.get("merchant") or ""), "source": "ocr"}))
+            tc.append(self._tool_call("update_draft_field", {
+                "field": "amount", "value": str(f.get("amount") or 0), "source": "ocr"}))
+            tc.append(self._tool_call("update_draft_field", {
+                "field": "date", "value": str(f.get("date") or ""), "source": "ocr"}))
+            tc.append(self._tool_call("update_draft_field", {
+                "field": "tax_amount", "value": str(f.get("tax_amount") or 0), "source": "ocr"}))
+            if f.get("invoice_number"):
+                tc.append(self._tool_call("update_draft_field", {
+                    "field": "invoice_number", "value": f["invoice_number"], "source": "ocr"}))
+            if f.get("invoice_code"):
+                tc.append(self._tool_call("update_draft_field", {
+                    "field": "invoice_code", "value": f["invoice_code"], "source": "ocr"}))
+            tc.append(self._tool_call("update_draft_field", {
+                "field": "category", "value": suggest_result.get("category", "other"),
+                "source": "agent_suggested"}))
+            if f.get("description"):
+                tc.append(self._tool_call("update_draft_field", {
+                    "field": "description", "value": f["description"], "source": "ocr"}))
+            return LLMResponse(
+                text=f"推荐类别：**{self._cat_label(suggest_result.get('category'))}**（置信度 {int(suggest_result.get('confidence', 0) * 100)}%）。我把所有字段填到左侧表单了，请您检查——如需修改某个字段，告诉我即可。",
+                tool_calls=tc,
+                stop_reason="tool_use",
+            )
+
+        # 第 5 步：已写入 draft → 结束，提示用户确认
+        if self._has_draft_writes(messages):
+            return LLMResponse(
+                text="✅ 所有字段已填入左侧表单。您可以：\n\n• 检查确认后点击「提交报销单」\n• 告诉我需要修改什么（例如：把金额改成 500）\n• 换一个类别（例如：这是团建不是餐饮）",
+                stop_reason="end_turn",
+            )
+
+        # 用户后续说"改 XX"
+        if "改" in last_user_text or "换" in last_user_text or "修改" in last_user_text:
+            return LLMResponse(
+                text="明白，请告诉我具体要改哪个字段改成什么值。例如：'把金额改成 380' 或 '类别改成 entertainment'。",
+                stop_reason="end_turn",
+            )
+
+        # 默认欢迎语
+        return LLMResponse(
+            text="你好！我是报销助手。您可以：\n\n• 上传发票图，我帮您自动识别字段\n• 直接告诉我您要报销什么\n• 让我查一下您的历史报销记录\n\n请开始吧～",
+            stop_reason="end_turn",
+        )
+
+    # ── employee_qa 分支 ──
+    def _qa_turn(self, messages: list[dict]) -> LLMResponse:
+        """只读 QA 模式的规则脚本。
+
+        两轮循环：第 1 轮根据最新 user 文本决定调哪个 tool；第 2 轮看到
+        tool 结果 → 格式化成自然语言 → end_turn。纯关键词匹配，零推理。
+        """
+        # 先看是否已有本轮的 tool 结果 —— 有就直接产出最终文本
+        summary = self._find_tool_result(messages, "get_spend_summary")
+        detail  = self._find_tool_result(messages, "get_report_detail")
+        recent  = self._find_tool_result(messages, "get_my_recent_submissions")
+
+        if summary is not None:
+            return LLMResponse(text=self._fmt_summary(summary), stop_reason="end_turn")
+        if detail is not None:
+            return LLMResponse(text=self._fmt_detail(detail), stop_reason="end_turn")
+        if recent is not None:
+            return LLMResponse(text=self._fmt_recent(recent), stop_reason="end_turn")
+
+        # 否则根据最新 user 文本决定要调哪个 tool
+        last_idx = self._find_last(messages, role="user", text_not_tool=True)
+        text = self._extract_text(messages[last_idx]).lower() if last_idx is not None else ""
+
+        spend_kws  = ("花", "总共", "消费", "多少", "spend", "summary", "汇总")
+        detail_kws = ("详情", "状态", "那笔", "这笔", "上笔", "上一笔", "上次")
+        recent_kws = ("最近", "历史", "recent", "list", "有哪些")
+
+        if any(k in text for k in spend_kws):
+            period = "quarter" if any(k in text for k in ("季度", "quarter", "本季", "这季")) else "month"
+            return LLMResponse(
+                text=f"好的，我查一下你{'本季度' if period == 'quarter' else '本月'}的消费汇总…",
+                tool_calls=[self._tool_call("get_spend_summary", {"period": period})],
+                stop_reason="tool_use",
+            )
+        if any(k in text for k in detail_kws) or any(k in text for k in recent_kws):
+            return LLMResponse(
+                text="我先拉一下你最近的报销记录…",
+                tool_calls=[self._tool_call("get_my_recent_submissions", {})],
+                stop_reason="tool_use",
+            )
+
+        return LLMResponse(
+            text=(
+                "你好！我是「我的报销」助手。你可以问我：\n\n"
+                "• 我这个月花了多少？\n"
+                "• 本季度的消费汇总是多少？\n"
+                "• 最近有哪些报销记录？\n"
+                "• 上一笔报销是什么状态？"
+            ),
+            stop_reason="end_turn",
+        )
+
+    @staticmethod
+    def _fmt_summary(s: dict) -> str:
+        if s.get("error"):
+            return f"查询失败：{s['error']}"
+        label = s.get("period_label") or s.get("period") or ""
+        total = s.get("total", 0)
+        count = s.get("count", 0)
+        lines = [f"📊 **{label}** 消费汇总：共 {count} 笔，合计 **¥{total:,.2f}**"]
+        by_cat = s.get("by_category") or []
+        if by_cat:
+            lines.append("")
+            lines.append("按类别：")
+            cat_label = {"meal": "餐饮", "transport": "交通", "accommodation": "住宿",
+                         "entertainment": "招待", "other": "其他"}
+            for b in by_cat:
+                lines.append(f"• {cat_label.get(b['category'], b['category'])}：¥{b['amount']:,.2f}（{b['count']} 笔）")
+        else:
+            lines.append("\n本期还没有报销记录。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _fmt_detail(d: dict) -> str:
+        if d.get("error"):
+            return f"查询失败：{d['error']}"
+        status_label = {
+            "processing": "AI 审核中", "reviewed": "AI 审核通过",
+            "manager_approved": "经理已批准", "finance_approved": "财务已批准",
+            "exported": "已导出", "rejected": "已驳回", "review_failed": "AI 审核未通过",
+        }.get(d.get("status") or "", d.get("status") or "—")
+        lines = [
+            f"📄 单据 #{(d.get('id') or '')[:8]} — **{status_label}**",
+            f"• 商户：{d.get('merchant', '—')}",
+            f"• 金额：¥{d.get('amount', 0):,.2f} {d.get('currency') or ''}",
+            f"• 类别：{d.get('category', '—')}",
+            f"• 日期：{d.get('date', '—')}",
+        ]
+        if d.get("approver_comment"):
+            lines.append(f"• 审批备注：{d['approver_comment']}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _fmt_recent(r: dict) -> str:
+        items = r.get("items") or []
+        if not items:
+            return "你最近没有报销记录。"
+        lines = [f"📋 最近 {len(items)} 笔报销："]
+        for i, it in enumerate(items, 1):
+            lines.append(
+                f"{i}. {it.get('merchant', '—')} · ¥{it.get('amount', 0):,.2f} · "
+                f"{it.get('category', '—')} · {it.get('date', '—')} · {it.get('status', '—')}"
+            )
+        return "\n".join(lines)
+
+    # ── helpers ──
+
+    @staticmethod
+    def _tool_call(name: str, inp: dict) -> dict:
+        return {"id": f"tool_{uuid.uuid4().hex[:12]}", "name": name, "input": inp}
+
+    @staticmethod
+    def _extract_text(msg: dict) -> str:
+        c = msg.get("content", "")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return " ".join(
+                b.get("text", "") if isinstance(b, dict) and b.get("type") == "text" else ""
+                for b in c
+            )
+        return ""
+
+    @staticmethod
+    def _find_last(messages: list[dict], role: str, text_not_tool: bool = False) -> Optional[int]:
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.get("role") != role:
+                continue
+            if text_not_tool:
+                c = m.get("content")
+                if isinstance(c, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_result" for b in c
+                ):
+                    continue
+            return i
+        return None
+
+    @staticmethod
+    def _find_tool_result(messages: list[dict], tool_name: str) -> Optional[dict]:
+        """从消息历史里找某个 tool 的最新结果。"""
+        # 先找 tool_use.id → 再找同 id 的 tool_result
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.get("role") != "assistant":
+                continue
+            content = m.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == tool_name:
+                    tuid = block.get("id")
+                    # 在后续消息里找对应的 tool_result
+                    for j in range(i + 1, len(messages)):
+                        mj = messages[j]
+                        if mj.get("role") != "user":
+                            continue
+                        cj = mj.get("content", [])
+                        if not isinstance(cj, list):
+                            continue
+                        for bj in cj:
+                            if isinstance(bj, dict) and bj.get("type") == "tool_result" and bj.get("tool_use_id") == tuid:
+                                raw = bj.get("content", "")
+                                if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+                                    raw = raw[0].get("text", "")
+                                try:
+                                    return json.loads(raw) if isinstance(raw, str) else raw
+                                except json.JSONDecodeError:
+                                    return {"_raw": raw}
+        return None
+
+    def _has_draft_writes(self, messages: list[dict]) -> bool:
+        for m in messages:
+            if m.get("role") != "assistant":
+                continue
+            content = m.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "update_draft_field":
+                    return True
+        return False
+
+    @staticmethod
+    def _cat_label(cat: str) -> str:
+        return {"meal": "餐饮", "transport": "交通", "accommodation": "住宿",
+                "entertainment": "招待", "other": "其他"}.get(cat, cat or "其他")
+
+
+_SYSTEM_PROMPTS: dict[str, str] = {
+    "employee_submit": (
+        "你是企业报销助手，帮助员工填写报销单草稿（draft）。请用中文回复，简洁专业。\n\n"
+        "可用工具：识别发票图片、推荐费用类别、检查重复发票、查历史报销记录、更新草稿字段。\n"
+        "重要约束：你只能修改草稿（draft），不能提交或审批报销单。提交必须由员工手动确认。"
+        "\n\n预算检查规则：员工填写金额后，调用 check_budget_status（使用员工的成本中心和填写金额）。如果 signal 为 'info'，告知预算使用情况和预计占比。如果 signal 为 'blocked' 或 'over_budget'，明确告知提交后将被财务管理员拦截审核，不要隐瞒。如果 signal 为 'ok' 或成本中心未配置预算，无需提及预算。"
+    ),
+    "employee_qa": (
+        "你是企业报销查询助手，帮助员工查询自己的报销记录。"
+        "你只能读取数据，不能修改任何内容。请用中文回复，信息简洁清晰。"
+        "\n\n页面加载规则：收到 trigger=page_load 且 page=my-reports 时，立即调用 get_budget_summary。如果 signal 为 'info'、'blocked' 或 'over_budget'，在等待用户输入之前主动发送一条预算状态提示。如果 signal 为 'ok'，保持静默——一切正常时不要打扰用户。"
+    ),
+    "manager_explain": (
+        "你是审批辅助助手，帮助经理理解报销单的风险情况。"
+        "你只能读取报销数据，不能修改任何内容。请用中文回复，提供简洁的风险摘要。"
+    ),
+}
+
+
+class RealLLM(BaseLLM):
+    """GPT-4o 真实 API 调用。设置 OPENAI_API_KEY + AGENT_USE_REAL_LLM=1 启用。
+
+    消息格式转换：内部使用 Anthropic 格式（tool_use / tool_result blocks），
+    发送给 OpenAI 前翻译成 OpenAI format（tool_calls / role=tool），
+    返回后再翻译回 LLMResponse。外层 run_agent loop 无需任何修改。
+    """
+
+    def __init__(self) -> None:
+        try:
+            from openai import AsyncOpenAI
+            self._client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            self._model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        except Exception as exc:
+            raise RuntimeError(f"OpenAI SDK 初始化失败：{exc}") from exc
+
+    async def next_turn(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        agent_role: str = "employee_submit",
+    ) -> LLMResponse:
+        system = _SYSTEM_PROMPTS.get(agent_role, _SYSTEM_PROMPTS["employee_submit"])
+        oai_messages = self._to_oai_messages(messages, system)
+        oai_tools = self._to_oai_tools(tools)
+
+        kwargs: dict = {
+            "model": self._model,
+            "messages": oai_messages,
+            "max_tokens": 2048,
+        }
+        if oai_tools:
+            kwargs["tools"] = oai_tools
+            kwargs["tool_choice"] = "auto"
+
+        response = await self._client.chat.completions.create(**kwargs)
+        choice = response.choices[0]
+        msg = choice.message
+
+        text = msg.content or ""
+        tool_calls: list[dict] = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    inp = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, ValueError):
+                    inp = {}
+                tool_calls.append({"id": tc.id, "name": tc.function.name, "input": inp})
+
+        stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"
+        return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason)
+
+    # ── Format translators ─────────────────────────────────────────
+
+    @staticmethod
+    def _to_oai_messages(messages: list[dict], system: str) -> list[dict]:
+        """Anthropic 内部消息格式 → OpenAI API 格式。"""
+        result: list[dict] = [{"role": "system", "content": system}]
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+
+            if isinstance(content, str):
+                result.append({"role": role, "content": content})
+                continue
+
+            if not isinstance(content, list):
+                continue
+
+            if role == "assistant":
+                texts = [
+                    b["text"] for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                oai_tool_calls = [
+                    {
+                        "id": b["id"],
+                        "type": "function",
+                        "function": {
+                            "name": b["name"],
+                            "arguments": json.dumps(b.get("input", {}), ensure_ascii=False),
+                        },
+                    }
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_use"
+                ]
+                oai_msg: dict = {
+                    "role": "assistant",
+                    "content": " ".join(texts) if texts else None,
+                }
+                if oai_tool_calls:
+                    oai_msg["tool_calls"] = oai_tool_calls
+                result.append(oai_msg)
+
+            elif role == "user":
+                tool_results = [
+                    b for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_result"
+                ]
+                text_blocks = [
+                    b for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                # tool results → role=tool messages (must follow the assistant turn)
+                for tr in tool_results:
+                    raw = tr.get("content", "")
+                    if isinstance(raw, list) and raw:
+                        raw = raw[0].get("text", "") if isinstance(raw[0], dict) else str(raw[0])
+                    result.append({
+                        "role": "tool",
+                        "tool_call_id": tr.get("tool_use_id", ""),
+                        "content": raw if isinstance(raw, str) else json.dumps(raw),
+                    })
+                if text_blocks:
+                    joined = " ".join(b.get("text", "") for b in text_blocks)
+                    result.append({"role": "user", "content": joined})
+
+        return result
+
+    @staticmethod
+    def _to_oai_tools(tools: list[dict]) -> list[dict]:
+        """Anthropic tool schema → OpenAI function schema。"""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+                },
+            }
+            for t in tools
+        ]
+
+
+def get_llm() -> BaseLLM:
+    """根据环境切换 LLM backend。
+
+    MockLLM（默认）：无需任何 API Key，规则脚本，支持全套 eval。
+    RealLLM（GPT-4o）：设置 OPENAI_API_KEY + AGENT_USE_REAL_LLM=1。
+    """
+    if os.getenv("OPENAI_API_KEY") and os.getenv("AGENT_USE_REAL_LLM") == "1":
+        return RealLLM()
+    return MockLLM()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Agent Loop — 真实架构，只是 LLM 是 Mock
+# ═══════════════════════════════════════════════════════════════════
+
+async def run_agent(
+    user_message: str,
+    draft_id: Optional[str],
+    ctx: UserContext,
+    db: AsyncSession,
+    agent_role: str = "employee_submit",
+    messages_history: Optional[list[dict]] = None,
+) -> AsyncIterator[dict]:
+    """流式跑 agent，每个事件 yield 一个 dict 给前端。
+
+    两种模式：
+      - draft_id 非空（submit 模式）：从 draft.chat_history 读历史，
+        loop 结束后把本轮新消息 append 回 DB。
+      - draft_id 为 None（stateless QA 模式）：调用方通过 messages_history
+        传入完整历史（前端内存维护），后端不持久化任何东西。
+
+    agent_role 决定 tool 白名单（TOOL_REGISTRY）。run_agent 会把 role
+    对应的 tool 定义喂给 LLM，并在 dispatch 前再校验一次——即使 LLM
+    被 prompt injection 幻觉出白名单外的 tool 名，也会被拒绝执行。
+
+    事件类型：
+      - {type: "message_start"}
+      - {type: "assistant_text", text: "..."}
+      - {type: "tool_call", name, input, id}
+      - {type: "tool_result", id, result}
+      - {type: "draft_updated", fields, field_sources}
+      - {type: "message_end", stop_reason}
+      - {type: "error", message}
+    """
+    llm = get_llm()
+    allowed_tool_names = set(TOOL_REGISTRY.get(agent_role, []))
+    tools_for_llm = get_tools_for_role(agent_role)
+
+    # ── 根据模式加载消息历史 ──
+    messages: list[dict]
+    new_messages_to_persist: Optional[list[dict]]
+    if draft_id is not None:
+        # Submit 模式——从 draft 读历史，跑完写回 DB
+        draft = await get_draft(db, draft_id)
+        if not draft:
+            yield {"type": "error", "message": "Draft not found"}
+            return
+        if draft.employee_id != ctx.user_id:
+            yield {"type": "error", "message": "权限不足"}
+            return
+        messages = list(draft.chat_history or [])
+        new_user_msg = {"role": "user", "content": user_message}
+        messages.append(new_user_msg)
+        new_messages_to_persist = [new_user_msg]
+    else:
+        # Stateless QA 模式——调用方全权管理历史，后端不持久化
+        messages = list(messages_history or [])
+        new_messages_to_persist = None
+
+    yield {"type": "message_start"}
+
+    # Agent loop — 最多 10 轮防爆
+    for _ in range(10):
+        response = await llm.next_turn(messages, tools_for_llm, agent_role=agent_role)
+
+        if response.text:
+            yield {"type": "assistant_text", "text": response.text}
+
+        # 构造 assistant turn（包含 text + tool_use blocks）
+        assistant_content: list[dict] = []
+        if response.text:
+            assistant_content.append({"type": "text", "text": response.text})
+        for tc in response.tool_calls:
+            assistant_content.append({
+                "type": "tool_use",
+                "id": tc["id"],
+                "name": tc["name"],
+                "input": tc["input"],
+            })
+        if assistant_content:
+            assistant_msg = {"role": "assistant", "content": assistant_content}
+            messages.append(assistant_msg)
+            if new_messages_to_persist is not None:
+                new_messages_to_persist.append(assistant_msg)
+
+        if response.stop_reason == "end_turn":
+            yield {"type": "message_end", "stop_reason": "end_turn"}
+            break
+
+        # 执行工具
+        if response.stop_reason == "tool_use" and response.tool_calls:
+            tool_results_content: list[dict] = []
+            draft_changed = False
+            for tc in response.tool_calls:
+                yield {"type": "tool_call", "id": tc["id"], "name": tc["name"], "input": tc["input"]}
+                # 白名单强制——防 prompt injection 的最后一道闸
+                if tc["name"] not in allowed_tool_names:
+                    result = {
+                        "error": f"tool '{tc['name']}' not allowed for role '{agent_role}'",
+                        "allowed": sorted(allowed_tool_names),
+                    }
+                else:
+                    handler = TOOL_HANDLERS.get(tc["name"])
+                    if not handler:
+                        result = {"error": f"unknown tool {tc['name']}"}
+                    else:
+                        try:
+                            result = await handler(tc["input"], ctx, db, draft_id)
+                        except Exception as e:  # noqa: BLE001
+                            result = {"error": str(e)}
+                yield {"type": "tool_result", "id": tc["id"], "name": tc["name"], "result": result}
+                if tc["name"] == "update_draft_field" and result.get("ok"):
+                    draft_changed = True
+                tool_results_content.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc["id"],
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+
+            if draft_changed and draft_id is not None:
+                # 推一条"draft 已更新"事件给前端，让左侧表单实时同步
+                fresh = await get_draft(db, draft_id)
+                yield {
+                    "type": "draft_updated",
+                    "fields": fresh.fields or {},
+                    "field_sources": fresh.field_sources or {},
+                }
+
+            tool_user_msg = {"role": "user", "content": tool_results_content}
+            messages.append(tool_user_msg)
+            if new_messages_to_persist is not None:
+                new_messages_to_persist.append(tool_user_msg)
+            continue  # 下一轮 LLM
+
+        # 未知 stop_reason
+        yield {"type": "message_end", "stop_reason": response.stop_reason}
+        break
+    else:
+        # 走到 for 的 else 说明达到 10 轮上限
+        yield {"type": "error", "message": "Agent loop exceeded 10 iterations"}
+
+    # 持久化新消息到 draft.chat_history（QA stateless 模式跳过）
+    if draft_id is not None and new_messages_to_persist:
+        await append_draft_messages(db, draft_id, new_messages_to_persist)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 路由 — Draft CRUD + Chat Stream + Submit
+# ═══════════════════════════════════════════════════════════════════
+
+class ChatMessageBody(BaseModel):
+    message: str
+
+
+class QAMessageBody(BaseModel):
+    """Stateless QA 请求体——前端维护最近 N 轮历史。
+
+    messages 数组每项形如 {"role": "user"|"assistant", "content": "..."}。
+    后端不做持久化，每次请求是一次独立的 agent 运行。
+    """
+    messages: list[dict]
+
+
+def _draft_dict(draft) -> dict:
+    return {
+        "id": draft.id,
+        "employee_id": draft.employee_id,
+        "receipt_url": draft.receipt_url,
+        "fields": draft.fields or {},
+        "field_sources": draft.field_sources or {},
+        "chat_history": draft.chat_history or [],
+        "submitted_as": draft.submitted_as,
+        "created_at": draft.created_at.isoformat() if draft.created_at else None,
+        "updated_at": draft.updated_at.isoformat() if draft.updated_at else None,
+    }
+
+
+@router.post("/drafts", status_code=201)
+async def create_draft_route(
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await create_draft(db, ctx.user_id)
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="draft_created",
+        resource_type="draft", resource_id=draft.id,
+        detail={},
+    )
+    return _draft_dict(draft)
+
+
+@router.get("/drafts/{draft_id}")
+async def get_draft_route(
+    draft_id: str,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await get_draft(db, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft 不存在")
+    if draft.employee_id != ctx.user_id and ctx.role == "employee":
+        raise HTTPException(status_code=403, detail="权限不足")
+    return _draft_dict(draft)
+
+
+@router.post("/drafts/{draft_id}/receipt")
+async def upload_receipt_to_draft(
+    draft_id: str,
+    receipt_image: UploadFile = File(...),
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await get_draft(db, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft 不存在")
+    if draft.employee_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="权限不足")
+
+    storage = get_storage()
+    receipt_url = await storage.save(receipt_image, receipt_image.filename or "receipt.jpg")
+    updated = await update_draft_receipt(db, draft_id, receipt_url)
+    return _draft_dict(updated)
+
+
+@router.post("/drafts/{draft_id}/message")
+async def send_chat_message(
+    draft_id: str,
+    body: ChatMessageBody,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """SSE streaming — 每个事件一行 `data: {...}\\n\\n`。"""
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for event in run_agent(
+                body.message, draft_id, ctx, db,
+                agent_role="employee_submit",
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            err = {"type": "error", "message": str(exc)}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+        },
+    )
+
+
+async def compose_explanation(
+    submission_id: str, ctx: UserContext, db: AsyncSession,
+) -> dict:
+    """嵌入式 AI 解释卡的核心逻辑——单次"agent 运行"。
+
+    架构诚实性：当前 Mock 实现是 deterministic workflow（固定调 2 个 tool
+    + 规则化组合）。Real LLM (Day 5) 接上时，会用同样的 tool 白名单，
+    但由 LLM 自己决定调哪个 tool / 组合什么文案 —— 那时才是真 agent。
+
+    手工跑 agent loop 的关键：用 TOOL_REGISTRY['manager_explain'] 强制
+    白名单，所有 tool 调用都过 TOOL_HANDLERS，和 run_agent 用同一套基础设施。
+    """
+    role = "manager_explain"
+    allowed = set(TOOL_REGISTRY.get(role, []))
+
+    async def call_tool(name: str, args: dict) -> dict:
+        if name not in allowed:
+            return {"error": f"tool '{name}' not allowed for role '{role}'"}
+        handler = TOOL_HANDLERS.get(name)
+        if not handler:
+            return {"error": f"unknown tool {name}"}
+        try:
+            return await handler(args, ctx, db, "")
+        except Exception as e:  # noqa: BLE001
+            return {"error": str(e)}
+
+    # ── Step 1: 拉报销单本体 + audit_report ──
+    sub = await call_tool("get_submission_for_review", {"submission_id": submission_id})
+    if sub.get("error"):
+        return {"error": sub["error"]}
+
+    # ── Step 2: 拉该员工最近 10 笔历史 ──
+    history = await call_tool("get_employee_submission_history",
+                              {"employee_id": sub["employee_id"], "limit": 10})
+
+    # ── Step 3: 规则化组合（Mock 阶段；RealLLM 接上后由 LLM 写）──
+    tier = sub.get("tier") or "T2"
+    risk = sub.get("risk_score") or 50.0
+    audit = sub.get("audit_report") or {}
+    timeline = audit.get("timeline") or []
+    shield = audit.get("shield_report") or {}
+
+    green: list[str] = []
+    yellow: list[str] = []
+    red: list[str] = []
+
+    # ── 从 5-skill timeline 推 flags ──
+    for step in timeline:
+        msg = step.get("message", "")
+        if step.get("passed"):
+            if msg:
+                green.append(msg)
+        elif not step.get("skipped"):
+            red.append(msg)
+
+    # ── 字段完整性 ──
+    if sub.get("invoice_number"):
+        green.append(f"发票号已识别 ({sub['invoice_number']})")
+    else:
+        yellow.append("缺少发票号")
+
+    if sub.get("description") and len(sub["description"]) >= 10:
+        green.append("费用描述具体，包含场景信息")
+    elif sub.get("description"):
+        yellow.append(f"费用描述较短：『{sub['description']}』")
+    else:
+        yellow.append("缺少费用描述")
+
+    # ── 金额对比员工历史 ──
+    context = {}
+    if history and not history.get("error") and history.get("items"):
+        items = history["items"]
+        amounts = [it["amount"] for it in items if it["id"] != sub["id"][:8]]
+        if amounts:
+            avg = sum(amounts) / len(amounts)
+            this = sub["amount"]
+            if this <= avg * 0.8:
+                green.append(f"金额 ¥{this:.0f} 低于该员工平均 ¥{avg:.0f}")
+            elif this >= avg * 1.5:
+                yellow.append(f"金额 ¥{this:.0f} 显著高于该员工平均 ¥{avg:.0f}")
+            else:
+                green.append(f"金额 ¥{this:.0f} 接近该员工平均 ¥{avg:.0f}")
+            context = {
+                "history_count": len(items),
+                "history_avg": round(avg, 2),
+                "this_vs_avg_pct": round((this / avg - 1) * 100, 1) if avg else 0,
+            }
+        else:
+            context = {"history_count": len(items), "history_avg": None}
+    else:
+        context = {"history_count": 0, "history_avg": None}
+
+    # ── 从 ambiguity shield_report 拉风险信号 ──
+    if shield:
+        shield_score = shield.get("total_score") or shield.get("risk_score") or 0
+        if shield_score >= 30:
+            red.append(f"模糊性检测分 {shield_score} ≥ 30（高）")
+        for signal in (shield.get("triggered") or shield.get("signals") or [])[:3]:
+            if isinstance(signal, dict):
+                yellow.append(signal.get("message") or signal.get("name") or str(signal))
+            else:
+                yellow.append(str(signal))
+
+    # ── 推荐 ──
+    if tier == "T1":
+        recommendation = "approve"
+        headline = "建议批准（低风险）"
+    elif tier == "T2":
+        recommendation = "approve"
+        headline = "建议批准（次低风险）"
+    elif tier == "T3":
+        recommendation = "review"
+        headline = "建议人工复核（中风险）"
+    else:  # T4
+        recommendation = "reject"
+        headline = "建议驳回（高风险）"
+
+    # ── advisory：软指引 ──
+    advisory = None
+    if tier in ("T1", "T2") and yellow:
+        advisory = f"可批，但建议提醒员工：{yellow[0]}"
+    elif tier == "T3":
+        advisory = "需人工核对一次发票原件再决定"
+    elif tier == "T4":
+        advisory = "建议驳回并要求员工重新提交完整证据"
+
+    return {
+        "submission_id": sub["id"],
+        "tier": tier,
+        "risk_score": risk,
+        "recommendation": recommendation,
+        "headline": headline,
+        "summary": {
+            "merchant": sub.get("merchant"),
+            "amount": sub.get("amount"),
+            "currency": sub.get("currency"),
+            "category": sub.get("category"),
+            "date": sub.get("date"),
+        },
+        "green_flags": green[:5],
+        "yellow_flags": yellow[:5],
+        "red_flags": red[:5],
+        "advisory": advisory,
+        "context": context,
+        "_agent_role": role,
+        "_tools_called": ["get_submission_for_review", "get_employee_submission_history"],
+    }
+
+
+@router.post("/explain/{submission_id}")
+async def explain_submission(
+    submission_id: str,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """嵌入式 AI 解释卡 — 经理/财务点开报销时调用，返回结构化 JSON。
+
+    不是 SSE，不是对话 —— 单次请求 / 单次响应。这是"第三种 agent 形态"
+    的关键：审批是 10 秒/单的高吞吐决策，chat drawer 会降低吞吐。
+    """
+    if ctx.role not in ("manager", "finance_admin"):
+        raise HTTPException(status_code=403, detail="仅经理/财务可访问 AI 解释卡")
+    result = await compose_explanation(submission_id, ctx, db)
+    if result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@router.post("/qa/message")
+async def send_qa_message(
+    body: QAMessageBody,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """只读 Q&A 入口——"我的报销" drawer 走这条，tool 白名单是 employee_qa。
+
+    LLM 看不到也调不到 update_draft_field / extract_receipt_fields /
+    submit 相关能力，即便被 prompt injection 也只能读自己的数据。
+    """
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for event in run_agent(
+                user_message="",
+                draft_id=None,
+                ctx=ctx,
+                db=db,
+                agent_role="employee_qa",
+                messages_history=body.messages,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            err = {"type": "error", "message": str(exc)}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/drafts/{draft_id}/submit", status_code=202)
+async def submit_draft(
+    draft_id: str,
+    background_tasks: BackgroundTasks,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """把 draft 转正为正式 submission，走完整审批流程。"""
+    draft = await get_draft(db, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft 不存在")
+    if draft.employee_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="权限不足")
+    if draft.submitted_as:
+        raise HTTPException(status_code=409, detail=f"该 draft 已提交为 {draft.submitted_as}")
+    if not draft.receipt_url:
+        raise HTTPException(status_code=422, detail="请先上传发票")
+
+    fields = draft.fields or {}
+    for required in ("merchant", "amount", "date", "category"):
+        if not fields.get(required):
+            raise HTTPException(status_code=422, detail=f"缺少必填字段：{required}")
+
+    # 发票号去重
+    inv = fields.get("invoice_number")
+    if inv:
+        existing = await get_submission_by_invoice(db, inv)
+        if existing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"发票号 {inv} 已被报销过（单据 #{existing.id[:8]}）",
+            )
+
+    # 派生 department / cost_center / gl_account
+    emp = await get_employee(db, ctx.user_id)
+    department  = emp.department  if emp else None
+    cost_center = emp.cost_center if emp else None
+    gl_account  = (_POLICY.get("gl_mapping") or {}).get(fields.get("category"))
+
+    sub = await create_submission(db, {
+        "employee_id":    ctx.user_id,
+        "status":         "processing",
+        "amount":         float(fields["amount"]),
+        "currency":       fields.get("currency", "CNY"),
+        "category":       fields["category"],
+        "date":           fields["date"],
+        "merchant":       fields["merchant"],
+        "tax_amount":     float(fields.get("tax_amount") or 0) or None,
+        "project_code":   fields.get("project_code"),
+        "description":    fields.get("description"),
+        "receipt_url":    draft.receipt_url,
+        "invoice_number": inv,
+        "invoice_code":   fields.get("invoice_code"),
+        "department":     department,
+        "cost_center":    cost_center,
+        "gl_account":     gl_account,
+    })
+    await mark_draft_submitted(db, draft_id, sub.id)
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="draft_submitted",
+        resource_type="submission", resource_id=sub.id,
+        detail={
+            "draft_id": draft_id,
+            "field_sources": draft.field_sources,
+        },
+    )
+    background_tasks.add_task(_run_pipeline, sub.id, {
+        "employee_id": ctx.user_id,
+        "employee_name": emp.name if emp else None,
+        "department": department,
+        "city": emp.city if emp else None,
+        "level": emp.level if emp else None,
+        "amount": float(fields["amount"]),
+        "currency": fields.get("currency", "CNY"),
+        "category": fields["category"],
+        "date": fields["date"],
+        "merchant": fields["merchant"],
+        "tax_amount": float(fields.get("tax_amount") or 0) or None,
+        "description": fields.get("description"),
+        "invoice_number": inv,
+        "invoice_code": fields.get("invoice_code"),
+    })
+    return {
+        "id": sub.id,
+        "draft_id": draft_id,
+        "status": "processing",
+        "message": "草稿已转正为正式报销单，AI 审核中…",
+    }

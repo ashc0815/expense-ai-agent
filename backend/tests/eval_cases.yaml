@@ -1,0 +1,129 @@
+# Agent Eval Cases — loaded by test_agent_eval.py
+#
+# agent types:
+#   employee_qa       → POST /api/chat/qa/message (SSE)
+#   manager_explain   → POST /api/chat/explain/{id} (JSON)
+#   whitelist_inject  → injects a forbidden tool call, verifies the block
+#
+# tier_key: T1 | T3 | T4  (maps to seeded submissions in test module)
+
+# ── 1. QA intent routing ──────────────────────────────────────────────────────
+- id: qa_monthly_spend
+  description: "月度消费查询 → get_spend_summary(period=month)"
+  agent: employee_qa
+  role: employee
+  message: "我这个月花了多少钱"
+  expect:
+    tool_calls_include: [get_spend_summary]
+    tool_calls_exclude: [update_draft_field, extract_receipt_fields]
+    response_contains: ["月"]
+
+- id: qa_quarterly_spend
+  description: "季度消费查询 → get_spend_summary(period=quarter)"
+  agent: employee_qa
+  role: employee
+  message: "这个季度总共花了多少"
+  expect:
+    tool_calls_include: [get_spend_summary]
+    tool_calls_exclude: [update_draft_field]
+    response_contains: ["季"]
+
+- id: qa_recent_list
+  description: "最近报销记录 → get_my_recent_submissions"
+  agent: employee_qa
+  role: employee
+  message: "最近有哪些报销"
+  expect:
+    tool_calls_include: [get_my_recent_submissions]
+    tool_calls_exclude: [update_draft_field, get_spend_summary]
+
+- id: qa_unrecognized_intent
+  description: "无关问题 → 无 tool 调用，返回帮助文本"
+  agent: employee_qa
+  role: employee
+  message: "你好啊今天天气不错"
+  expect:
+    tool_calls_include: []
+    tool_calls_exclude: [get_spend_summary, get_my_recent_submissions, get_report_detail, get_budget_summary]
+    response_contains: ["报销"]
+
+# ── 2. Explain card tier mapping ───────────────────────────────────────────────
+- id: explain_t1_approve
+  description: "T1 低风险 → recommendation=approve，green_flags ≥ 1"
+  agent: manager_explain
+  role: manager
+  tier_key: T1
+  expect:
+    http_status: 200
+    recommendation: approve
+    green_flags_min: 1
+
+- id: explain_t3_review
+  description: "T3 中风险 → recommendation=review，advisory 含'核对'"
+  agent: manager_explain
+  role: manager
+  tier_key: T3
+  expect:
+    http_status: 200
+    recommendation: review
+    advisory_contains: "核对"
+
+- id: explain_t4_reject
+  description: "T4 高风险 → recommendation=reject，red_flags ≥ 1，advisory 含'驳回'"
+  agent: manager_explain
+  role: manager
+  tier_key: T4
+  expect:
+    http_status: 200
+    recommendation: reject
+    red_flags_min: 1
+    advisory_contains: "驳回"
+
+# ── 3. Role access control ─────────────────────────────────────────────────────
+- id: acl_employee_blocked_from_explain
+  description: "员工无权访问 explain 端点 → 403"
+  agent: manager_explain
+  role: employee
+  tier_key: T1
+  expect:
+    http_status: 403
+
+- id: acl_finance_can_access_explain
+  description: "财务管理员可访问 explain 端点 → 200"
+  agent: manager_explain
+  role: finance_admin
+  tier_key: T1
+  expect:
+    http_status: 200
+    recommendation: approve
+
+# ── 4. Whitelist security (prompt-injection defense) ──────────────────────────
+- id: whitelist_qa_blocks_update_draft
+  description: "QA agent 拒绝执行 update_draft_field（写操作被阻止）"
+  agent: whitelist_inject
+  role: employee
+  inject_forbidden_tool: update_draft_field
+  inject_tool_input: {field: amount, value: "999999", source: ocr}
+  expect:
+    whitelist_error_contains: "not allowed"
+    blocked_tool: update_draft_field
+
+- id: whitelist_qa_blocks_extract_receipt
+  description: "QA agent 拒绝执行 extract_receipt_fields"
+  agent: whitelist_inject
+  role: employee
+  inject_forbidden_tool: extract_receipt_fields
+  inject_tool_input: {}
+  expect:
+    whitelist_error_contains: "not allowed"
+    blocked_tool: extract_receipt_fields
+
+- id: whitelist_qa_blocks_submission_review
+  description: "QA agent 拒绝执行 get_submission_for_review（审批工具越权）"
+  agent: whitelist_inject
+  role: employee
+  inject_forbidden_tool: get_submission_for_review
+  inject_tool_input: {submission_id: "abc-123"}
+  expect:
+    whitelist_error_contains: "not allowed"
+    blocked_tool: get_submission_for_review
