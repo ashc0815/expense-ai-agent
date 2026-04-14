@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 import traceback
 from datetime import date, datetime, timezone
+from decimal import Decimal as _Decimal
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.middleware.auth import UserContext, require_auth, require_role
 from backend.api.routes.admin import _POLICY  # 为了拿 gl_mapping
+from backend.db import store as _store
 from backend.db.store import (
     create_audit_log, create_submission, get_employee, get_submission,
     get_submission_by_invoice, list_submissions, update_submission_analysis,
@@ -259,8 +261,6 @@ async def submit_expense(
     gl_account  = (_POLICY.get("gl_mapping") or {}).get(category)
 
     # ── 预算检查 ────────────────────────────────────────────────────
-    from backend.db import store as _store
-    from decimal import Decimal as _Decimal
     _budget_status: dict = {"configured": False}
     _budget_blocked = False
     try:
@@ -331,7 +331,6 @@ async def unblock_submission_endpoint(
     ctx: UserContext = Depends(require_role("finance_admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    from backend.db import store as _store
     sub = await _store.get_submission(db, submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="报销单不存在")
