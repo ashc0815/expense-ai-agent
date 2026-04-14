@@ -268,7 +268,11 @@
   if (amountInput) {
     amountInput.addEventListener('blur', async function() {
       const val = parseFloat(amountInput.value);
-      if (!val || val <= 0 || !_employeeCostCenter) return;
+      if (!val || val <= 0 || !_employeeCostCenter) {
+        var el = document.getElementById('budget-signal');
+        if (el) el.style.display = 'none';
+        return;
+      }
       try {
         const status = await api.getBudgetStatus(_employeeCostCenter, val);
         _showBudgetSignal(status);
