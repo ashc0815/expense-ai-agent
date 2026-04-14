@@ -225,6 +225,9 @@ async def init_db() -> None:
     """建表（幂等）。在 main.py startup 事件里调用。"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # 种植演示数据（幂等）
+    async with AsyncSessionLocal() as db:
+        await seed_budget_demo(db)
 
 
 # ── CRUD — submissions ────────────────────────────────────────────
@@ -808,3 +811,74 @@ async def unblock_submission(
     await db.commit()
     await db.refresh(sub)
     return sub
+
+
+# ── Demo 数据种子 ─────────────────────────────────────────────────
+
+async def seed_budget_demo(db: AsyncSession) -> None:
+    """种植演示预算数据。幂等——已存在时跳过。
+    ENG-TRAVEL: 10,000 Q2 预算，已消耗 87%（8,700）→ signal: info
+    MKT-EVENTS: 25,000 Q2 预算，已消耗 96%（24,000）→ signal: blocked
+    """
+    period = "2026-Q2"
+
+    # Global default policy (idempotent via upsert)
+    await upsert_budget_policy(db, None, 0.75, 0.95, "warn_only", "seed")
+
+    # ENG-TRAVEL budget
+    await upsert_cost_center_budget(db, "ENG-TRAVEL", period, Decimal("10000"), "seed")
+    # MKT-EVENTS budget (custom policy: block at 90%, over budget → block)
+    await upsert_cost_center_budget(db, "MKT-EVENTS", period, Decimal("25000"), "seed")
+    await upsert_budget_policy(db, "MKT-EVENTS", 0.75, 0.90, "block", "seed")
+
+    # Seed demo employees if they don't exist
+    for emp_id, name, cc in [
+        ("E001", "Zhang Wei", "ENG-TRAVEL"),
+        ("E002", "Li Mei",   "MKT-EVENTS"),
+        ("E003", "Wang Fang","ENG-TRAVEL"),
+    ]:
+        existing = await db.execute(select(Employee).where(Employee.id == emp_id))
+        if existing.scalar_one_or_none() is not None:
+            continue
+        db.add(Employee(
+            id=emp_id, name=name,
+            department="Engineering" if cc == "ENG-TRAVEL" else "Marketing",
+            cost_center=cc,
+        ))
+
+    await db.flush()
+
+    # Seed historical spend for ENG-TRAVEL (8700 total across 3 submissions in Q2)
+    for sub_id, emp_id, amt, date_str, merchant, category in [
+        ("seed-eng-1", "E001", "3800", "2026-04-05", "Marriott Shanghai", "accommodation"),
+        ("seed-eng-2", "E003", "2900", "2026-04-10", "Hilton Beijing", "accommodation"),
+        ("seed-eng-3", "E001", "2000", "2026-04-12", "Air China", "transport"),
+    ]:
+        existing = await db.execute(select(Submission).where(Submission.id == sub_id))
+        if existing.scalar_one_or_none() is not None:
+            continue
+        db.add(Submission(
+            id=sub_id, employee_id=emp_id, status="finance_approved",
+            amount=Decimal(amt), currency="CNY", category=category,
+            date=date_str, merchant=merchant,
+            receipt_url="/uploads/demo/receipt_01.jpg",
+            cost_center="ENG-TRAVEL", department="Engineering",
+        ))
+
+    # Seed historical spend for MKT-EVENTS (24000 total across 2 submissions in Q2)
+    for sub_id, emp_id, amt, date_str, merchant in [
+        ("seed-mkt-1", "E002", "14000", "2026-04-03", "Grand Hyatt Event"),
+        ("seed-mkt-2", "E002", "10000", "2026-04-08", "Shanghai Expo Center"),
+    ]:
+        existing = await db.execute(select(Submission).where(Submission.id == sub_id))
+        if existing.scalar_one_or_none() is not None:
+            continue
+        db.add(Submission(
+            id=sub_id, employee_id=emp_id, status="finance_approved",
+            amount=Decimal(amt), currency="CNY", category="entertainment",
+            date=date_str, merchant=merchant,
+            receipt_url="/uploads/demo/receipt_02.jpg",
+            cost_center="MKT-EVENTS", department="Marketing",
+        ))
+
+    await db.commit()
