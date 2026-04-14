@@ -10,7 +10,7 @@ DATABASE_URL 未设置时默认 sqlite+aiosqlite:///./concurshield.db
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import calendar
@@ -217,6 +217,26 @@ def _period_date_range(period: str) -> tuple[str, str]:
     else:
         year = int(period)
         return f"{year}-01-01", f"{year}-12-31"
+
+
+def _rolling_months(n: int) -> list[tuple[str, str]]:
+    """Return (start_date, end_date) ISO string pairs for the last n complete calendar months.
+
+    Returned newest-first: index 0 is last month, index n-1 is n months ago.
+    Example on 2026-04-14 with n=3:
+      [('2026-03-01', '2026-03-31'), ('2026-02-01', '2026-02-28'), ('2026-01-01', '2026-01-31')]
+    """
+    today = date.today()
+    result = []
+    year, month = today.year, today.month
+    for _ in range(n):
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+        last_day = calendar.monthrange(year, month)[1]
+        result.append((f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day:02d}"))
+    return result
 
 
 # ── 初始化 ────────────────────────────────────────────────────────
@@ -796,6 +816,48 @@ async def get_budget_status(
     }
     if projected_pct is not None:
         out["projected_pct"] = projected_pct
+
+    # ── rolling 3-month trend ──────────────────────────────────────────────
+    month_ranges = _rolling_months(3)
+    month_totals: list[float] = []
+    for m_start, m_end in month_ranges:
+        m_result = await db.execute(
+            select(func.sum(Submission.amount)).where(
+                Submission.cost_center == cost_center,
+                Submission.date >= m_start,
+                Submission.date <= m_end,
+                Submission.status.notin_(["rejected", "review_failed"]),
+            )
+        )
+        month_totals.append(float(m_result.scalar() or 0))
+
+    monthly_avg = sum(month_totals) / len(month_totals) if month_totals else 0.0
+    remaining = float(budget.total_amount) - spent_f
+
+    if monthly_avg > 0 and remaining > 0:
+        months_until_exhaust = remaining / monthly_avg
+        overrun_date = date.today() + timedelta(days=int(months_until_exhaust * 30))
+        estimated_overrun_date: Optional[str] = overrun_date.isoformat()
+    elif remaining <= 0:
+        months_until_exhaust = 0.0
+        estimated_overrun_date = date.today().isoformat()
+    else:
+        months_until_exhaust = None
+        estimated_overrun_date = None
+
+    if months_until_exhaust is not None and months_until_exhaust < 1.0:
+        overrun_risk = "high"
+    elif months_until_exhaust is not None and months_until_exhaust < 2.0:
+        overrun_risk = "moderate"
+    else:
+        overrun_risk = "ok"
+
+    out["trend"] = {
+        "monthly_avg": round(monthly_avg, 2),
+        "months": list(reversed(month_totals)),  # oldest → newest for sparkline
+        "overrun_risk": overrun_risk,
+        "estimated_overrun_date": estimated_overrun_date,
+    }
     return out
 
 
