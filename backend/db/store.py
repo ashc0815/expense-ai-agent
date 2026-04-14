@@ -657,12 +657,12 @@ async def upsert_budget_policy(
     over_budget_action: str,
     updated_by: str,
 ) -> BudgetPolicy:
+    if cost_center is not None:
+        _where = BudgetPolicy.cost_center == cost_center
+    else:
+        _where = BudgetPolicy.cost_center.is_(None)
     existing = await db.execute(
-        select(BudgetPolicy).where(
-            BudgetPolicy.cost_center == cost_center
-            if cost_center is not None
-            else BudgetPolicy.cost_center.is_(None)
-        )
+        select(BudgetPolicy).where(_where)
     )
     policy = existing.scalar_one_or_none()
     if policy is None:
@@ -755,7 +755,7 @@ async def get_budget_status(
             Submission.status.notin_(["rejected", "review_failed"]),
         )
     )
-    spent = spent_result.scalar() or Decimal("0")
+    spent = Decimal(str(spent_result.scalar() or 0))
 
     policy = await get_budget_policy(db, cost_center)
     info_threshold = policy.info_threshold if policy else 0.75
