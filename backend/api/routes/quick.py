@@ -1,6 +1,7 @@
 """Quick attest flow routes — upload, stream, attest."""
 from __future__ import annotations
 
+import io
 import json
 from typing import AsyncIterator
 
@@ -8,17 +9,31 @@ from fastapi import (
     APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile,
 )
 from fastapi.responses import StreamingResponse
+from starlette.datastructures import Headers
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.middleware.auth import UserContext, require_auth
 from backend.db.store import (
     create_draft, get_db, get_draft, insert_telemetry, update_draft_receipt,
 )
+from backend.pdf_splitter import SplitError, split
 from backend.quick.finalize import finalize_draft_to_submission
 from backend.quick.pipeline import run_quick_pipeline
 from backend.storage import get_storage
 
 router = APIRouter()
+
+
+def _is_pdf(file: UploadFile) -> bool:
+    if file.content_type == "application/pdf":
+        return True
+    name = (file.filename or "").lower()
+    return name.endswith(".pdf")
+
+
+def _wrap_pdf_bytes(data: bytes, filename: str) -> UploadFile:
+    headers = Headers({"content-type": "application/pdf"})
+    return UploadFile(file=io.BytesIO(data), filename=filename, headers=headers)
 
 
 @router.post("/upload", status_code=201)
@@ -28,6 +43,39 @@ async def quick_upload(
     db: AsyncSession = Depends(get_db),
     storage=Depends(get_storage),
 ):
+    original_name = file.filename or "receipt"
+
+    if _is_pdf(file):
+        content = await file.read()
+        try:
+            pages = split(content)
+        except SplitError:
+            pages = None
+
+        if pages is not None and len(pages) > 1:
+            stem = original_name[:-4] if original_name.lower().endswith(".pdf") else original_name
+            drafts: list[dict] = []
+            for idx, page_bytes in enumerate(pages, start=1):
+                page_name = f"{stem}-p{idx}.pdf"
+                draft = await create_draft(db, ctx.user_id)
+                draft.entry = "quick"
+                await db.commit()
+
+                synthetic = _wrap_pdf_bytes(page_bytes, page_name)
+                receipt_url = await storage.save(synthetic, page_name)
+                await update_draft_receipt(db, draft.id, receipt_url)
+                drafts.append({"draft_id": draft.id, "receipt_url": receipt_url})
+            return {"drafts": drafts}
+
+        # single-page PDF or split failure → fall through to single-upload path
+        single = _wrap_pdf_bytes(content, original_name if original_name.lower().endswith(".pdf") else f"{original_name}.pdf")
+        draft = await create_draft(db, ctx.user_id)
+        draft.entry = "quick"
+        await db.commit()
+        receipt_url = await storage.save(single, single.filename or "receipt.pdf")
+        await update_draft_receipt(db, draft.id, receipt_url)
+        return {"draft_id": draft.id, "receipt_url": receipt_url}
+
     draft = await create_draft(db, ctx.user_id)
     draft.entry = "quick"
     await db.commit()

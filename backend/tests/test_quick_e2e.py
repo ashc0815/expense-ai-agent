@@ -148,6 +148,31 @@ def test_hard_fail_returns_layer_3_hard(monkeypatch):
     assert r3.status_code == 422
 
 
+import io as _io
+from pypdf import PdfWriter as _PdfWriter
+
+
+def _make_pdf(pages: int) -> bytes:
+    w = _PdfWriter()
+    for _ in range(pages):
+        w.add_blank_page(width=200, height=200)
+    buf = _io.BytesIO()
+    w.write(buf)
+    return buf.getvalue()
+
+
+def test_multi_page_pdf_creates_multiple_drafts():
+    pdf = _make_pdf(2)
+    files = {"file": ("receipts.pdf", _io.BytesIO(pdf), "application/pdf")}
+    r = client.post("/api/quick/upload", files=files, headers=HEADERS)
+    assert r.status_code == 201
+    body = r.json()
+    assert "drafts" in body
+    assert len(body["drafts"]) == 2
+    for item in body["drafts"]:
+        assert "draft_id" in item
+
+
 def test_soft_fail_returns_layer_3_soft(monkeypatch):
     async def fake_ocr(args, ctx, db, draft_id):
         # Only amount present; merchant/date/invoice_number missing.
