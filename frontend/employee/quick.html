@@ -111,12 +111,55 @@ async function handleUpload(file) {
   const body = await r.json();
 
   if (body.drafts) {
-    for (const d of body.drafts) renderCardShell(d.draft_id, d.receipt_url);
+    for (const d of body.drafts) {
+      renderCardShell(d.draft_id, d.receipt_url);
+      wireAskRow(d.draft_id);
+    }
     for (const d of body.drafts) streamPipeline(d.draft_id);
   } else {
     renderCardShell(body.draft_id, body.receipt_url);
+    wireAskRow(body.draft_id);
     streamPipeline(body.draft_id);
   }
+}
+
+function wireAskRow(draftId) {
+  const card = document.getElementById("card-" + draftId);
+  const input = card.querySelector('[data-field="ask"]');
+
+  input.onkeydown = async (e) => {
+    if (e.key !== "Enter" || !input.value.trim()) return;
+    const q = input.value.trim();
+    input.value = "";
+    input.disabled = true;
+
+    const bubble = document.createElement("div");
+    bubble.style.cssText = "padding:.4rem .8rem;color:#475569;font-size:.75rem;background:#f8fafc";
+    bubble.textContent = "你: " + q;
+    card.querySelector(".ask-row").insertAdjacentElement("beforebegin", bubble);
+
+    const reply = document.createElement("div");
+    reply.style.cssText = bubble.style.cssText + ";color:#0f172a";
+    reply.textContent = "AI: 正在思考...";
+    card.querySelector(".ask-row").insertAdjacentElement("beforebegin", reply);
+
+    const r = await fetch(`/api/chat/drafts/${draftId}/message`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(window.__authHeaders ? window.__authHeaders() : {}),
+      },
+      body: JSON.stringify({ message: q }),
+    });
+    const text = await r.text();
+    const lines = text.split("\n").filter(l => l.startsWith("data: "));
+    const events = lines.map(l => { try { return JSON.parse(l.slice(6)); } catch { return null; } }).filter(Boolean);
+    const last = events.filter(e => e.type === "assistant_text").pop();
+    reply.textContent = "AI: " + (last ? last.text : "(无响应)");
+
+    input.disabled = false;
+    input.focus();
+  };
 }
 
 function renderCardShell(draftId, receiptUrl) {
