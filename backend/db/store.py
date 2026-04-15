@@ -145,6 +145,8 @@ class Draft(Base):
     # 完整对话历史（含 tool_use / tool_result），用于 agent 继续对话
     submitted_as   = Column(String(36),  nullable=True)
     # 转正后的 submission id（null 表示未提交）
+    layer          = Column(String(16),  nullable=True, default=None)
+    entry          = Column(String(16),  nullable=True, default=None)
     created_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                             onupdate=lambda: datetime.now(timezone.utc))
