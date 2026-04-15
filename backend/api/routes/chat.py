@@ -1395,6 +1395,26 @@ async def upload_receipt_to_draft(
     return _draft_dict(updated)
 
 
+class PatchDraftFieldBody(BaseModel):
+    field: str
+    value: Any
+    source: str = "user"
+
+
+@router.patch("/drafts/{draft_id}/field")
+async def patch_draft_field(
+    draft_id: str,
+    body: PatchDraftFieldBody,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await get_draft(db, draft_id)
+    if not draft or draft.employee_id != ctx.user_id:
+        raise HTTPException(status_code=404, detail="Draft 不存在")
+    await store_update_draft_field(db, draft_id, body.field, body.value, body.source)
+    return {"ok": True}
+
+
 @router.post("/drafts/{draft_id}/message")
 async def send_chat_message(
     draft_id: str,

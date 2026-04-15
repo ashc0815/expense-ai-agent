@@ -194,15 +194,49 @@ function finalizeCard(card, layer, draftId) {
     return;
   }
 
-  badge.className = "badge badge-ok";
-  badge.textContent = "✓ AI 已核对";
-  btn.disabled = false;
   btn.onclick = () => attest(draftId, btn);
 
   if (layer === "2") {
     badge.className = "badge badge-warn";
     badge.textContent = "⚠ 需 1 项确认";
+
+    const meta = card.querySelector('[data-field="meta"]');
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = '请选项目 ▾';
+    chip.onclick = () => pickProject(draftId, chip, btn);
+    meta.appendChild(document.createTextNode(' · '));
+    meta.appendChild(chip);
+
+    btn.disabled = true;
+  } else {
+    badge.className = "badge badge-ok";
+    badge.textContent = "✓ AI 已核对";
+    btn.disabled = false;
   }
+}
+
+async function pickProject(draftId, chip, btn) {
+  const code = prompt("请输入项目代码（如 PROJ-042）:");
+  if (!code) return;
+
+  const r = await fetch(`/api/chat/drafts/${draftId}/field`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...(window.__authHeaders ? window.__authHeaders() : {}),
+    },
+    body: JSON.stringify({ field: "project_code", value: code, source: "user" }),
+  });
+  if (!r.ok) { alert("保存失败"); return; }
+  chip.textContent = "✓ " + code;
+  chip.classList.add("done");
+  btn.disabled = false;
+
+  const card = btn.closest(".card");
+  const badge = card.querySelector('[data-field="badge"]');
+  badge.className = "badge badge-ok";
+  badge.textContent = "✓ AI 已核对";
 }
 
 function goManual(draftId) {
