@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from contextlib import asynccontextmanager
 
-from backend.api.routes import submissions, approvals, ocr, users, admin, employees, finance, chat, budget
+from backend.api.routes import submissions, approvals, ocr, users, admin, employees, finance, chat, budget, quick
 from backend.db.store import init_db
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
@@ -52,6 +52,7 @@ app.include_router(employees.router, prefix="/api/employees", tags=["employees"]
 app.include_router(finance.router, prefix="/api/finance", tags=["finance"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(budget.router, prefix="/api/budget", tags=["budget"])
+app.include_router(quick.router, prefix="/api/quick", tags=["quick"])
 
 
 # ── 前端静态文件 ──────────────────────────────────────────────────
