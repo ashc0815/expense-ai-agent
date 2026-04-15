@@ -22,7 +22,7 @@ def test_single_page_returns_one_item():
     pdf = _make_pdf(1)
     out = split(pdf)
     assert len(out) == 1
-    assert PdfReader(io.BytesIO(out[0])).pages.__len__() == 1
+    assert len(PdfReader(io.BytesIO(out[0])).pages) == 1
 
 
 def test_three_page_returns_three_items():
@@ -30,7 +30,7 @@ def test_three_page_returns_three_items():
     out = split(pdf)
     assert len(out) == 3
     for page_bytes in out:
-        assert PdfReader(io.BytesIO(page_bytes)).pages.__len__() == 1
+        assert len(PdfReader(io.BytesIO(page_bytes)).pages) == 1
 
 
 def test_garbage_raises_split_error():
