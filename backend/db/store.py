@@ -17,7 +17,7 @@ import calendar
 from decimal import Decimal
 
 from sqlalchemy import (
-    JSON, Boolean, Column, Date, DateTime, Float, Numeric, String, Text,
+    JSON, Boolean, Column, Date, DateTime, Float, Integer, Numeric, String, Text,
     UniqueConstraint, or_, select, func,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -193,6 +193,23 @@ class BudgetPolicy(Base):
     updated_at         = Column(DateTime(timezone=True),
                                 default=lambda: datetime.now(timezone.utc),
                                 onupdate=lambda: datetime.now(timezone.utc))
+
+
+class TelemetryEvent(Base):
+    __tablename__ = "telemetry_events"
+
+    id                  = Column(String(36), primary_key=True,
+                                 default=lambda: str(uuid.uuid4()))
+    draft_id            = Column(String(36), nullable=False, index=True)
+    entry               = Column(String(16), nullable=False)
+    final_layer         = Column(String(16), nullable=False)
+    ocr_confidence_min  = Column(Numeric(4, 3), nullable=True)
+    classify_confidence = Column(Numeric(4, 3), nullable=True)
+    fields_edited_count = Column(Integer, nullable=False, default=0)
+    time_to_attest_ms   = Column(Integer, nullable=True)
+    attest_or_abandoned = Column(String(16), nullable=False)
+    created_at          = Column(DateTime(timezone=True),
+                                 default=lambda: datetime.now(timezone.utc))
 
 
 # ── 预算期间工具 ──────────────────────────────────────────────────
@@ -875,6 +892,34 @@ async def unblock_submission(
     await db.commit()
     await db.refresh(sub)
     return sub
+
+
+# ── CRUD — telemetry ─────────────────────────────────────────────
+
+async def insert_telemetry(
+    db: AsyncSession,
+    *,
+    draft_id: str,
+    entry: str,
+    final_layer: str,
+    ocr_confidence_min: float | None,
+    classify_confidence: float | None,
+    fields_edited_count: int,
+    time_to_attest_ms: int | None,
+    attest_or_abandoned: str,
+) -> None:
+    ev = TelemetryEvent(
+        draft_id=draft_id,
+        entry=entry,
+        final_layer=final_layer,
+        ocr_confidence_min=ocr_confidence_min,
+        classify_confidence=classify_confidence,
+        fields_edited_count=fields_edited_count,
+        time_to_attest_ms=time_to_attest_ms,
+        attest_or_abandoned=attest_or_abandoned,
+    )
+    db.add(ev)
+    await db.commit()
 
 
 # ── Demo 数据种子 ─────────────────────────────────────────────────

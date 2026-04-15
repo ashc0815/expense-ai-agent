@@ -126,3 +126,27 @@ async def test_draft_has_layer_and_entry_columns(db: AsyncSession):
     reloaded = await get_draft(db, draft.id)
     assert reloaded.layer == "1"
     assert reloaded.entry == "quick"
+
+
+@pytest.mark.asyncio
+async def test_insert_telemetry_event(db):
+    from backend.db.store import insert_telemetry, TelemetryEvent
+    from sqlalchemy import select
+
+    await insert_telemetry(
+        db,
+        draft_id="draft-1",
+        entry="quick",
+        final_layer="1",
+        ocr_confidence_min=0.95,
+        classify_confidence=0.9,
+        fields_edited_count=0,
+        time_to_attest_ms=2800,
+        attest_or_abandoned="attest",
+    )
+
+    rows = (await db.execute(select(TelemetryEvent))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].draft_id == "draft-1"
+    assert rows[0].final_layer == "1"
+    assert rows[0].attest_or_abandoned == "attest"
