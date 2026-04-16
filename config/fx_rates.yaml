@@ -1,0 +1,10 @@
+# All rates expressed as: 1 <currency> = X CNY
+# To convert between non-CNY pairs: go through CNY as intermediary
+base: CNY
+rates:
+  CNY: 1.0
+  AUD: 4.70
+  USD: 7.25
+  EUR: 7.85
+  JPY: 0.048
+  GBP: 9.20
