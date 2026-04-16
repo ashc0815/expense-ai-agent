@@ -56,6 +56,7 @@ class Employee(Base):
     bank_account  = Column(String(50),  nullable=True)
     level         = Column(String(10),  nullable=True)          # L1-L7
     hire_date     = Column(Date,        nullable=True)
+    resignation_date = Column(Date,    nullable=True)
     city          = Column(String(50),  nullable=True, default="上海")
     home_currency = Column(String(3), nullable=False, default="CNY")
     created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -84,7 +85,7 @@ class Submission(Base):
     receipt_url      = Column(String(500), nullable=False)
 
     # ── 发票字段 (ERP 入账必需) ──────────────────────────────────
-    invoice_number   = Column(String(50),  nullable=True, unique=True)  # 发票号码 - 全局唯一
+    invoice_number   = Column(String(50),  nullable=True)               # 发票号码 — soft dedup only for MVP
     invoice_code     = Column(String(50),  nullable=True)               # 发票代码
     seller_tax_id    = Column(String(50),  nullable=True)               # 销方税号
     buyer_tax_id     = Column(String(50),  nullable=True)               # 购方税号
@@ -371,6 +372,28 @@ async def list_submissions(
         "page_size": page_size,
         "has_next": (page * page_size) < total,
     }
+
+
+async def list_recent_descriptions(
+    db: AsyncSession,
+    employee_id: str,
+    days: int = 30,
+    limit: int = 20,
+) -> list[str]:
+    """Return recent non-empty descriptions for an employee (for template detection)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()[:10]
+    result = await db.execute(
+        select(Submission.description)
+        .where(
+            Submission.employee_id == employee_id,
+            Submission.description.isnot(None),
+            Submission.description != "",
+            Submission.date >= cutoff,
+        )
+        .order_by(Submission.created_at.desc())
+        .limit(limit)
+    )
+    return [row[0] for row in result.all()]
 
 
 async def update_submission_status(
