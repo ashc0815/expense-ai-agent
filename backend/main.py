@@ -1,4 +1,4 @@
-"""ConcurShield API — FastAPI 入口。
+"""ExpenseFlow API — FastAPI 入口。
 
 启动：
     uvicorn backend.main:app --reload --port 8000
@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from contextlib import asynccontextmanager
 
-from backend.api.routes import submissions, approvals, ocr, users, admin, employees, finance, chat, budget, quick
+from backend.api.routes import submissions, approvals, ocr, users, admin, employees, finance, chat, budget, quick, reports, notifications, fx
 from backend.db.store import init_db
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
@@ -28,7 +28,7 @@ async def lifespan(_: "FastAPI"):
 
 app = FastAPI(
     lifespan=lifespan,
-    title="ConcurShield API",
+    title="ExpenseFlow API",
     version="0.1.0",
     description="AI 驱动的报销审核平台 — 员工提交 → 5-Skill 管道处理 → 经理审批",
 )
@@ -53,6 +53,9 @@ app.include_router(finance.router, prefix="/api/finance", tags=["finance"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(budget.router, prefix="/api/budget", tags=["budget"])
 app.include_router(quick.router, prefix="/api/quick", tags=["quick"])
+app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
+app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
+app.include_router(fx.router, prefix="/api/fx", tags=["fx"])
 
 
 # ── 前端静态文件 ──────────────────────────────────────────────────
