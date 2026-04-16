@@ -3,62 +3,131 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>快速报销 — ConcurShield</title>
+  <title>快速报销 — ExpenseFlow</title>
   <link rel="stylesheet" href="/shared/styles.css">
   <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
   <style>
-    .quick-wrap { max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+    .quick-wrap { max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
     .drop-zone {
-      border: 2px dashed #cbd5e1; border-radius: 12px; padding: 3rem 1rem;
+      border: 2px dashed #18b48e; border-radius: 12px; padding: 3rem 1rem;
       text-align: center; color: #64748b; cursor: pointer;
       transition: all 0.2s;
     }
-    .drop-zone:hover, .drop-zone.drag { border-color: #0f172a; background: #f8fafc; }
-    .card {
-      background: white; border: 1px solid #e2e8f0; border-radius: 12px;
-      overflow: hidden; margin-top: 1rem;
-    }
-    .card-row { display: flex; }
-    .thumb {
-      width: 96px; height: 120px;
-      background: linear-gradient(135deg, #ddd, #bbb);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 2rem;
-    }
-    .card-meta { flex: 1; padding: 0.9rem 1rem; }
-    .amount { font-size: 1.6rem; font-weight: 800; color: #0f172a; }
-    .merchant { color: #475569; margin-top: 0.15rem; }
-    .meta { color: #94a3b8; font-size: 0.8rem; margin-top: 0.2rem; }
-    .badge {
-      display: inline-block; padding: 0.15rem 0.4rem; border-radius: 4px;
-      font-size: 0.7rem; font-weight: 600; margin-top: 0.4rem;
-    }
-    .badge-ok { background: #dcfce7; color: #166534; }
-    .badge-pending { background: #f1f5f9; color: #64748b; }
-    .badge-warn { background: #fef3c7; color: #92400e; }
-    .card-footer {
-      padding: 0.6rem 1rem; background: #fafafa;
-      border-top: 1px solid #f1f5f9;
-    }
-    .btn-attest {
-      width: 100%; background: #0f172a; color: white;
-      padding: 0.7rem; border-radius: 8px; border: none;
-      font-weight: 600; font-size: 1rem; cursor: pointer;
-    }
-    .btn-attest:disabled { background: #cbd5e1; cursor: not-allowed; }
-    .chip {
-      display: inline-block; padding: 0.15rem 0.4rem;
-      background: #fef3c7; color: #92400e; border-radius: 4px;
-      font-size: 0.75rem; cursor: pointer; margin-right: 0.3rem;
-    }
-    .chip.done { background: #dcfce7; color: #166534; }
+    .drop-zone:hover, .drop-zone.drag { border-color: #129e7b; background: #e6f7f3; }
     .muted { color: #94a3b8; font-size: 0.75rem; }
-    .ask-row {
-      display: flex; gap: 0.4rem; padding: 0.5rem 1rem;
-      border-top: 1px dashed #f1f5f9;
+
+    /* existing lines */
+    .existing-line {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: .6rem .8rem; background: white; border: 1px solid #e2e8f0;
+      border-radius: 8px; margin-bottom: .4rem; font-size: .85rem;
     }
-    .ask-row input { flex: 1; border: none; outline: none;
-                     background: transparent; font-size: 0.8rem; }
+    .existing-line .el-merchant { flex:1; color:#0f172a; }
+    .existing-line .el-date { color:#94a3b8; font-size:.75rem; margin-right:.6rem; }
+    .existing-line .el-amount { font-weight:700; color:#0f172a; min-width:80px; text-align:right; }
+    .existing-line .el-status { font-size:.7rem; margin-left:.5rem; padding:.1rem .3rem; border-radius:4px; }
+    .el-status.draft { background:#fffbeb; color:#b45309; }
+    .el-status.in_report { background:#dbeafe; color:#1e40af; }
+    .existing-line:hover { background: #f8fafc; border-color: #0f172a; }
+
+    /* scanning progress */
+    .scan-card {
+      background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 1.2rem; margin-top: 1rem;
+    }
+    .scan-step {
+      display: flex; align-items: center; gap: .6rem;
+      padding: .4rem 0; font-size: .85rem; color: #94a3b8;
+    }
+    .scan-step.active { color: #0f172a; }
+    .scan-step.done { color: #16a34a; }
+    .scan-step .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; flex-shrink: 0;
+    }
+    .scan-step.active .dot { background: #18b48e; animation: pulse-dot 1s infinite; }
+    .scan-step.done .dot { background: #16a34a; }
+    @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+
+    /* form after scan */
+    .form-card {
+      background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 1.2rem; margin-top: 1rem;
+    }
+    .form-card h3 { font-size: 1rem; margin: 0 0 .8rem; color: #0f172a; }
+    .form-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: .6rem;
+    }
+    .form-group { display: flex; flex-direction: column; }
+    .form-group.full { grid-column: 1 / -1; }
+    .form-group label {
+      font-size: .75rem; color: #64748b; margin-bottom: .2rem; font-weight: 600;
+    }
+    .form-group input, .form-group select, .form-group textarea {
+      border: 1px solid #e2e8f0; border-radius: 8px; padding: .5rem .6rem;
+      font-size: .85rem; color: #0f172a; outline: none;
+      transition: border-color .2s;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+      border-color: #0f172a;
+    }
+    .form-group textarea { resize: vertical; min-height: 50px; }
+    .ai-filled {
+      background: #f0fdf4; border-color: #86efac;
+    }
+    .ai-badge {
+      display: inline-block; font-size: .65rem; background: #dcfce7; color: #166534;
+      padding: .1rem .3rem; border-radius: 3px; margin-left: .3rem; font-weight: 400;
+    }
+    .needs-confirm {
+      background: #fffbeb; border-color: #fcd34d;
+    }
+    .confirm-badge {
+      display: inline-block; font-size: .65rem; background: #fef3c7; color: #92400e;
+      padding: .1rem .3rem; border-radius: 3px; margin-left: .3rem; font-weight: 400;
+    }
+    .form-actions {
+      display: flex; gap: .5rem; margin-top: 1rem; justify-content: flex-end;
+    }
+    .btn-save {
+      background: #18b48e; color: white; border: none;
+      padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .9rem;
+    }
+    .btn-save:disabled { background: #cbd5e1; cursor: not-allowed; }
+    .btn-secondary {
+      background: white; color: #0f172a; border: 1px solid #cbd5e1;
+      padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .9rem;
+    }
+    .btn-continue {
+      background: #18b48e; color: white; border: none;
+      padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .9rem;
+    }
+    .receipt-preview-small {
+      width: 100%; max-height: 160px; object-fit: contain; border-radius: 8px;
+      border: 1px solid #e2e8f0; margin-bottom: .8rem;
+    }
+    .alert-error {
+      background: #fee2e2; color: #991b1b; padding: .5rem .8rem;
+      border-radius: 8px; font-size: .85rem; margin-top: .5rem;
+    }
+    .alert-dup {
+      background: #fef3c7; color: #92400e; padding: .5rem .8rem;
+      border-radius: 8px; font-size: .85rem; margin-top: .5rem;
+    }
+
+    /* system message style (extends shared chat styles) */
+    .chat-msg.system {
+      background: var(--brand-light, #e6f7f3); color: var(--brand-dark, #129e7b);
+      font-size: .78rem; border: 1px solid #bbf7d0;
+      align-self: flex-start; padding: .5rem .75rem;
+      border-radius: 8px; max-width: 85%;
+    }
+    .ai-needs-badge {
+      background: #f59e0b; color: white; font-size: .65rem; font-weight: 700;
+      padding: .15rem .4rem; border-radius: 10px; margin-left: .4rem;
+    }
   </style>
 </head>
 <body>
@@ -69,25 +138,51 @@
 
 <main class="quick-wrap">
   <h1 style="font-size:1.3rem;margin:0 0 1rem">快速报销</h1>
-  <p class="muted">拍一张 / 拖一张发票上来,AI 帮你把字段填好,你只需要确认提交。</p>
+  <p class="muted">拍一张 / 拖一张发票上来，AI 帮你把字段填好，你只需要确认提交。</p>
 
-  <div id="drop-zone" class="drop-zone">
-    <div style="font-size:2.5rem">📄</div>
-    <div>点击或拖拽发票图 / PDF 到这里</div>
-    <input id="file-input" type="file" accept="image/*,application/pdf" style="display:none">
+  <div id="existing-lines" style="display:none">
+    <h3 id="existing-title" style="font-size:1rem;margin:0 0 .5rem;color:#0f172a">已添加的发票</h3>
+    <div id="existing-list"></div>
+    <hr style="border:none;border-top:1px dashed #e2e8f0;margin:1rem 0">
   </div>
 
-  <div id="cards"></div>
+  <div id="upload-section">
+    <div id="drop-zone" class="drop-zone">
+      <div style="font-size:2.5rem">📄</div>
+      <div>点击或拖拽发票图 / PDF 到这里</div>
+      <input id="file-input" type="file" accept="image/*,application/pdf" style="display:none">
+    </div>
+  </div>
+
+  <div id="scan-section" style="display:none"></div>
+  <div id="form-section" style="display:none"></div>
+  <div id="success-section" style="display:none"></div>
 
   <p style="margin-top:2rem;text-align:center;font-size:.8rem">
     <a href="/employee/submit.html" class="muted">或者直接手动填表 →</a>
   </p>
 </main>
 
+<!-- AI Assistant (uses shared chat-drawer styles from styles.css) -->
+<button class="chat-toggle-btn" id="ai-fab" onclick="toggleAI()" style="display:none">💬</button>
+
+<aside class="chat-drawer" id="ai-drawer">
+  <div class="chat-header">
+    <div class="chat-title">AI 报销助手
+      <span class="ai-needs-badge" id="ai-needs-badge" style="display:none">需要协助</span>
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="toggleAI()">✕</button>
+  </div>
+  <div class="chat-messages" id="ai-messages"></div>
+  <div class="chat-input-wrap">
+    <input id="ai-input" placeholder="问 AI 助手..." onkeydown="if(event.key==='Enter')sendAI()">
+    <button id="ai-send" onclick="sendAI()">➤</button>
+  </div>
+</aside>
+
 <script>
 const dz = document.getElementById("drop-zone");
 const fi = document.getElementById("file-input");
-const cardsEl = document.getElementById("cards");
 
 dz.onclick = () => fi.click();
 fi.onchange = () => fi.files[0] && handleUpload(fi.files[0]);
@@ -98,213 +193,632 @@ dz.ondrop = e => {
   if (e.dataTransfer.files[0]) handleUpload(e.dataTransfer.files[0]);
 };
 
+const urlParams = new URLSearchParams(window.location.search);
+let CURRENT_REPORT_ID = urlParams.get("report_id") || null;
+
+let fxRates = {};
+let homeCurrency = "CNY";
+
+async function loadFxData() {
+  try {
+    const res = await fetch("/api/fx/rates");
+    if (res.ok) {
+      const data = await res.json();
+      fxRates = data.rates || {};
+    }
+  } catch(e) { console.warn("FX rates load failed", e); }
+}
+loadFxData();
+
+const CATEGORIES = [
+  { value: "meal", label: "餐饮" },
+  { value: "transport", label: "交通" },
+  { value: "accommodation", label: "住宿" },
+  { value: "entertainment", label: "招待" },
+  { value: "other", label: "其他" },
+];
+
+async function getAuth() {
+  return window.auth ? await window.auth.getHeaders() : {};
+}
+
+// ── Existing lines ──────────────────────────────────────────
+async function loadExistingLines() {
+  if (!CURRENT_REPORT_ID) return;
+  const r = await fetch(`/api/reports/${CURRENT_REPORT_ID}`, { headers: await getAuth() });
+  if (!r.ok) return;
+  const report = await r.json();
+  const lines = (report.lines || []).concat(
+    (report.pending_drafts || []).map(d => ({...d, _isDraft: true}))
+  );
+  if (!lines.length) return;
+
+  document.getElementById("existing-lines").style.display = "block";
+  document.getElementById("existing-title").textContent = `已添加的发票（${report.title}）`;
+  const CAT_LABELS = { meal:"餐饮", transport:"交通", accommodation:"住宿", entertainment:"招待", other:"其他" };
+  document.getElementById("existing-list").innerHTML = lines.map(l => {
+    const isDraft = l._isDraft || l.status === "draft";
+    const amt = l.amount != null ? `¥${Number(l.amount).toFixed(2)}` : "—";
+    const cat = l.category ? (CAT_LABELS[l.category] || l.category) : "";
+    const statusLabel = isDraft ? (l.merchant ? "待确认" : "扫描中") : "已保存";
+    const statusCls = isDraft ? "draft" : "in_report";
+    return `<div class="existing-line" onclick="openLineDetail('${l.id}', ${isDraft})" style="cursor:pointer">
+      <span class="el-date">${l.date || "—"}</span>
+      <span class="el-merchant">${l.merchant || "—"}${cat ? ` <span style="color:#94a3b8;font-size:.75rem">· ${cat}</span>` : ""}</span>
+      <span class="el-amount">${amt}</span>
+      <span class="el-status ${statusCls}">${statusLabel}</span>
+    </div>`;
+  }).join("");
+}
+loadExistingLines();
+
+// ── Upload ──────────────────────────────────────────────────
 async function handleUpload(file) {
-  cardsEl.innerHTML = "";
   const fd = new FormData();
   fd.append("file", file);
-
-  const r = await fetch("/api/quick/upload", {
-    method: "POST", body: fd,
-    headers: window.__authHeaders ? window.__authHeaders() : {},
-  });
+  const uploadUrl = CURRENT_REPORT_ID
+    ? `/api/quick/upload?report_id=${CURRENT_REPORT_ID}`
+    : "/api/quick/upload";
+  const r = await fetch(uploadUrl, { method: "POST", body: fd, headers: await getAuth() });
   if (!r.ok) { alert("上传失败: " + r.status); return; }
   const body = await r.json();
 
-  if (body.drafts) {
-    for (const d of body.drafts) {
-      renderCardShell(d.draft_id, d.receipt_url);
-      wireAskRow(d.draft_id);
-    }
-    for (const d of body.drafts) streamPipeline(d.draft_id);
-  } else {
-    renderCardShell(body.draft_id, body.receipt_url);
-    wireAskRow(body.draft_id);
-    streamPipeline(body.draft_id);
+  const drafts = body.drafts || [{ draft_id: body.draft_id, receipt_url: body.receipt_url }];
+  for (const d of drafts) {
+    showScanProgress(d.draft_id, file);
+    streamPipeline(d.draft_id, file);
   }
 }
 
-function wireAskRow(draftId) {
-  const card = document.getElementById("card-" + draftId);
-  const input = card.querySelector('[data-field="ask"]');
+// ── Scan progress ───────────────────────────────────────────
+function showScanProgress(draftId, file) {
+  document.getElementById("upload-section").style.display = "none";
+  document.getElementById("form-section").style.display = "none";
+  document.getElementById("success-section").style.display = "none";
 
-  input.onkeydown = async (e) => {
-    if (e.key !== "Enter" || !input.value.trim()) return;
-    const q = input.value.trim();
-    input.value = "";
-    input.disabled = true;
-
-    const bubble = document.createElement("div");
-    bubble.style.cssText = "padding:.4rem .8rem;color:#475569;font-size:.75rem;background:#f8fafc";
-    bubble.textContent = "你: " + q;
-    card.querySelector(".ask-row").insertAdjacentElement("beforebegin", bubble);
-
-    const reply = document.createElement("div");
-    reply.style.cssText = bubble.style.cssText + ";color:#0f172a";
-    reply.textContent = "AI: 正在思考...";
-    card.querySelector(".ask-row").insertAdjacentElement("beforebegin", reply);
-
-    const r = await fetch(`/api/chat/drafts/${draftId}/message`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(window.__authHeaders ? window.__authHeaders() : {}),
-      },
-      body: JSON.stringify({ message: q }),
-    });
-    const text = await r.text();
-    const lines = text.split("\n").filter(l => l.startsWith("data: "));
-    const events = lines.map(l => { try { return JSON.parse(l.slice(6)); } catch { return null; } }).filter(Boolean);
-    const last = events.filter(e => e.type === "assistant_text").pop();
-    reply.textContent = "AI: " + (last ? last.text : "(无响应)");
-
-    input.disabled = false;
-    input.focus();
-  };
-}
-
-function renderCardShell(draftId, receiptUrl) {
-  const div = document.createElement("div");
-  div.className = "card";
-  div.id = "card-" + draftId;
-  div.innerHTML = `
-    <div class="card-row">
-      <div class="thumb">🧾</div>
-      <div class="card-meta">
-        <div class="amount" data-field="amount">— — —</div>
-        <div class="merchant" data-field="merchant">识别中...</div>
-        <div class="meta" data-field="meta"></div>
-        <div class="badge badge-pending" data-field="badge">⏳ 处理中</div>
+  const el = document.getElementById("scan-section");
+  el.style.display = "block";
+  el.innerHTML = `
+    <div class="scan-card" id="scan-${draftId}">
+      ${file.type.startsWith("image/")
+        ? `<img src="${URL.createObjectURL(file)}" class="receipt-preview-small">`
+        : `<div style="text-align:center;padding:1rem;color:#64748b;font-size:2rem">📄 ${file.name}</div>`
+      }
+      <div class="scan-step active" id="step-ocr-${draftId}">
+        <span class="dot"></span> 正在识别发票内容...
+      </div>
+      <div class="scan-step" id="step-classify-${draftId}">
+        <span class="dot"></span> 分类费用类型
+      </div>
+      <div class="scan-step" id="step-dedupe-${draftId}">
+        <span class="dot"></span> 查重发票号
+      </div>
+      <div class="scan-step" id="step-budget-${draftId}">
+        <span class="dot"></span> 检查预算
       </div>
     </div>
-    <div class="card-footer">
-      <button class="btn-attest" disabled>提交</button>
-    </div>
-    <div class="ask-row">
-      <input placeholder="问 AI（仅限这张票）..." data-field="ask">
-    </div>
   `;
-  cardsEl.appendChild(div);
 }
 
-function streamPipeline(draftId) {
-  const card = document.getElementById("card-" + draftId);
+function markScanStep(draftId, step, status) {
+  const el = document.getElementById(`step-${step}-${draftId}`);
+  if (!el) return;
+  el.className = `scan-step ${status}`;
+  if (status === "done") {
+    el.querySelector(".dot").style.animation = "none";
+  }
+}
+
+// ── Pipeline stream ─────────────────────────────────────────
+const draftData = {};
+
+function streamPipeline(draftId, file) {
+  draftData[draftId] = { file, fields: {}, sources: {}, isDuplicate: false };
   const es = new EventSource(`/api/quick/stream/${draftId}`);
-  let layer = null;
 
   es.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
-    handleEvent(card, ev, draftId);
-    if (ev.type === "card_ready") {
-      layer = ev.layer;
-      finalizeCard(card, layer, draftId);
+
+    if (ev.type === "ocr_done") {
+      markScanStep(draftId, "ocr", "done");
+      markScanStep(draftId, "classify", "active");
+      const d = draftData[draftId];
+      if (ev.merchant) { d.fields.merchant = ev.merchant; d.sources.merchant = "ai"; }
+      if (ev.amount)   { d.fields.amount = ev.amount; d.sources.amount = "ai"; }
+      if (ev.date)     { d.fields.date = ev.date; d.sources.date = "ai"; }
+    } else if (ev.type === "ocr_failed") {
+      markScanStep(draftId, "ocr", "done");
+      const el = document.getElementById(`step-ocr-${draftId}`);
+      if (el) { el.style.color = "#dc2626"; el.innerHTML = `<span class="dot" style="background:#dc2626"></span> 识别失败：${ev.error || '未知错误'}`; }
+    } else if (ev.type === "classify_done") {
+      markScanStep(draftId, "classify", "done");
+      markScanStep(draftId, "dedupe", "active");
+      if (ev.category) {
+        draftData[draftId].fields.category = ev.category;
+        draftData[draftId].sources.category = "ai";
+      }
+    } else if (ev.type === "dedupe_done") {
+      markScanStep(draftId, "dedupe", "done");
+      markScanStep(draftId, "budget", "active");
+      draftData[draftId].isDuplicate = ev.is_duplicate;
+    } else if (ev.type === "budget_done") {
+      markScanStep(draftId, "budget", "done");
+      draftData[draftId].budgetSignal = ev.signal;
+    } else if (ev.type === "card_ready") {
       es.close();
+      draftData[draftId].layer = ev.layer;
+      fetchDraftAndShowForm(draftId);
     }
   };
-  es.onerror = () => es.close();
+  es.onerror = () => {
+    es.close();
+    fetchDraftAndShowForm(draftId);
+  };
 }
 
-function handleEvent(card, ev, draftId) {
-  if (ev.type === "ocr_done") {
-    card.querySelector('[data-field="amount"]').textContent = "¥" + (ev.amount || "—");
-    card.querySelector('[data-field="merchant"]').textContent =
-      (ev.merchant || "—") + " · ——";
-  } else if (ev.type === "classify_done") {
-    const merchant = card.querySelector('[data-field="merchant"]').textContent.split(" · ")[0];
-    card.querySelector('[data-field="merchant"]').textContent =
-      merchant + " · " + (ev.category || "—");
-  } else if (ev.type === "budget_done") {
-    const meta = card.querySelector('[data-field="meta"]');
-    meta.textContent = ev.signal === "ok" ? "预算 ok" : "⚠ 预算 " + ev.signal;
+async function fetchDraftAndShowForm(draftId) {
+  const r = await fetch(`/api/chat/drafts/${draftId}`, { headers: await getAuth() });
+  if (r.ok) {
+    const draft = await r.json();
+    const d = draftData[draftId];
+    const fields = draft.fields || {};
+    const sources = draft.field_sources || {};
+    d.fields = { ...d.fields, ...fields };
+    d.sources = { ...d.sources, ...sources };
+    d.receiptUrl = draft.receipt_url;
   }
+  showForm(draftId);
 }
 
-function finalizeCard(card, layer, draftId) {
-  const badge = card.querySelector('[data-field="badge"]');
-  const btn = card.querySelector('.btn-attest');
+// ── FX helpers ──────────────────────────────────────────────
+function onQuickCurrencyChange(draftId) {
+  const sel = document.getElementById(`qf-currency-${draftId}`);
+  const fxRow = document.getElementById(`fx-row-${draftId}`);
+  if (!sel || !fxRow) return;
+  const newCurrency = sel.value;
 
-  if (layer === "3_hard") {
-    window.location.href = `/employee/submit.html?from=quick&draft_id=${draftId}`;
-    return;
-  }
-  if (layer === "3_soft") {
-    badge.className = "badge badge-warn";
-    badge.textContent = "⚠ 需完整填写";
-    card.querySelector('.card-footer').innerHTML = `
-      <button class="btn-attest" onclick="goManual('${draftId}')">手动填表</button>
-      <button class="btn-attest" style="background:#64748b;margin-top:.4rem"
-              onclick="resetUpload()">重拍</button>
-    `;
+  if (newCurrency === homeCurrency) {
+    fxRow.style.display = "none";
     return;
   }
 
-  btn.onclick = () => attest(draftId, btn);
+  fxRow.style.display = "block";
+  const fromRate = fxRates[newCurrency] || 1;
+  const toRate = fxRates[homeCurrency] || 1;
+  const rate = (fromRate / toRate).toFixed(6);
 
-  if (layer === "2") {
-    badge.className = "badge badge-warn";
-    badge.textContent = "⚠ 需 1 项确认";
+  document.getElementById(`fx-label-${draftId}`).textContent = `1 ${newCurrency} =`;
+  document.getElementById(`fx-rate-${draftId}`).value = rate;
+  document.getElementById(`fx-converted-${draftId}`).textContent = `${homeCurrency}`;
+  updateQuickConverted(draftId);
+}
 
-    const meta = card.querySelector('[data-field="meta"]');
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    chip.textContent = '请选项目 ▾';
-    chip.onclick = () => pickProject(draftId, chip, btn);
-    meta.appendChild(document.createTextNode(' · '));
-    meta.appendChild(chip);
+function updateQuickConverted(draftId) {
+  const rateInput = document.getElementById(`fx-rate-${draftId}`);
+  const amountInput = document.getElementById(`qf-amount-${draftId}`);
+  const converted = document.getElementById(`fx-converted-${draftId}`);
+  if (!rateInput || !amountInput || !converted) return;
 
-    btn.disabled = true;
+  const rate = parseFloat(rateInput.value);
+  const amount = parseFloat(amountInput.value);
+  if (!isNaN(rate) && !isNaN(amount)) {
+    converted.textContent = `≈ ${homeCurrency} ${(amount * rate).toFixed(2)}`;
   } else {
-    badge.className = "badge badge-ok";
-    badge.textContent = "✓ AI 已核对";
-    btn.disabled = false;
+    converted.textContent = `${homeCurrency}`;
   }
 }
 
-async function pickProject(draftId, chip, btn) {
-  const code = prompt("请输入项目代码（如 PROJ-042）:");
-  if (!code) return;
+// ── Editable form ───────────────────────────────────────────
+function showForm(draftId) {
+  document.getElementById("scan-section").style.display = "none";
+  document.getElementById("upload-section").style.display = "none";
+  document.getElementById("success-section").style.display = "none";
 
-  const r = await fetch(`/api/chat/drafts/${draftId}/field`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      ...(window.__authHeaders ? window.__authHeaders() : {}),
-    },
-    body: JSON.stringify({ field: "project_code", value: code, source: "user" }),
+  const d = draftData[draftId];
+  const f = d.fields;
+  const s = d.sources;
+  const el = document.getElementById("form-section");
+  el.style.display = "block";
+
+  function fieldClass(key) {
+    return s[key] === "ai" || s[key] === "ocr" || s[key] === "pipeline" ? "ai-filled" : "";
+  }
+  function badge(key) {
+    if (s[key] === "ai" || s[key] === "ocr" || s[key] === "pipeline")
+      return `<span class="ai-badge">AI</span>`;
+    if (!f[key] && ["merchant","amount","date","category"].includes(key))
+      return `<span class="confirm-badge">需填写</span>`;
+    return "";
+  }
+
+  const catOptions = CATEGORIES.map(c =>
+    `<option value="${c.value}" ${f.category === c.value ? 'selected' : ''}>${c.label}</option>`
+  ).join("");
+
+  el.innerHTML = `
+    <div class="form-card" id="form-${draftId}">
+      <h3>确认发票信息 ${d.isDuplicate ? '<span style="color:#dc2626;font-size:.8rem">⚠ 可能重复</span>' : ''}</h3>
+
+      ${d.receiptUrl
+        ? `<img src="${d.receiptUrl}" class="receipt-preview-small">`
+        : d.file && d.file.type.startsWith("image/")
+          ? `<img src="${URL.createObjectURL(d.file)}" class="receipt-preview-small">`
+          : ""
+      }
+
+      ${d.isDuplicate ? '<div class="alert-dup">⚠ 该发票号可能已存在，请确认后再保存。</div>' : ''}
+
+      <div class="form-grid">
+        <div class="form-group">
+          <label>商户名称 * ${badge("merchant")}</label>
+          <input id="qf-merchant-${draftId}" value="${f.merchant || ''}"
+            class="${fieldClass("merchant")}" placeholder="如：海底捞" required>
+        </div>
+        <div class="form-group">
+          <label>金额 * ${badge("amount")}</label>
+          <input id="qf-amount-${draftId}" type="number" step="0.01" min="0.01"
+            value="${f.amount || ''}" class="${fieldClass("amount")}" placeholder="0.00" required
+            oninput="updateQuickConverted('${draftId}')">
+        </div>
+        <div class="form-group">
+          <label>货币 ${badge("currency")}</label>
+          <select id="qf-currency-${draftId}" class="${fieldClass("currency")}" onchange="onQuickCurrencyChange('${draftId}')">
+            ${[["CNY","人民币"],["AUD","澳元"],["USD","美元"],["EUR","欧元"],["JPY","日元"],["GBP","英镑"]].map(([c,l]) =>
+              `<option value="${c}" ${(f.currency||'CNY')===c?'selected':''}>${c} — ${l}</option>`
+            ).join("")}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>费用类别 * ${badge("category")}</label>
+          <select id="qf-category-${draftId}" class="${fieldClass("category")}" required>
+            <option value="">— 请选择 —</option>
+            ${catOptions}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>消费日期 * ${badge("date")}</label>
+          <input id="qf-date-${draftId}" type="date"
+            value="${f.date || ''}" class="${fieldClass("date")}" required>
+        </div>
+        <div class="form-group">
+          <label>税额 ${badge("tax_amount")}</label>
+          <input id="qf-tax-${draftId}" type="number" step="0.01" min="0"
+            value="${f.tax_amount || ''}" class="${fieldClass("tax_amount")}" placeholder="可选">
+        </div>
+        <div class="form-group">
+          <label>发票号码 ${badge("invoice_number")}</label>
+          <input id="qf-invoice-number-${draftId}" value="${f.invoice_number || ''}"
+            class="${fieldClass("invoice_number")}" placeholder="可选 · 用于查重">
+        </div>
+        <div class="form-group">
+          <label>发票代码 ${badge("invoice_code")}</label>
+          <input id="qf-invoice-code-${draftId}" value="${f.invoice_code || ''}"
+            class="${fieldClass("invoice_code")}" placeholder="可选">
+        </div>
+        <div class="form-group">
+          <label>项目代码</label>
+          <input id="qf-project-${draftId}" value="${f.project_code || ''}" placeholder="可选，如 PROJ-042">
+        </div>
+        <div class="form-group full">
+          <label>备注说明</label>
+          <textarea id="qf-desc-${draftId}" rows="2" placeholder="可选：补充消费说明">${f.description || ''}</textarea>
+        </div>
+      </div>
+
+      <div id="fx-row-${draftId}" style="display:none; margin-top:.6rem; padding:.6rem .8rem; background:#f0fdf9; border-radius:8px; font-size:.85rem;">
+        <span id="fx-label-${draftId}"></span>
+        <input id="fx-rate-${draftId}" type="number" step="0.000001"
+               style="width:90px; margin:0 .3rem; padding:.2rem .4rem; border:1px solid #e2e8f0; border-radius:4px; font-size:.85rem;"
+               oninput="updateQuickConverted('${draftId}')">
+        <span id="fx-converted-${draftId}" style="margin-left:.5rem; color:#64748b;"></span>
+      </div>
+
+      <div id="form-alert-${draftId}"></div>
+
+      <div class="form-actions">
+        <button class="btn-secondary" onclick="resetAndUploadNew()">重新上传</button>
+        <button class="btn-save" id="save-btn-${draftId}" onclick="saveToReport('${draftId}')">
+          保存到报销单
+        </button>
+      </div>
+    </div>
+  `;
+
+  const currencyVal = f.currency || "CNY";
+  if (currencyVal !== homeCurrency) {
+    setTimeout(() => onQuickCurrencyChange(draftId), 0);
+  }
+
+  showAIAssistant(draftId);
+}
+
+// ── Save: sync fields back to draft, then attest ────────────
+async function saveToReport(draftId) {
+  const btn = document.getElementById(`save-btn-${draftId}`);
+  const alertEl = document.getElementById(`form-alert-${draftId}`);
+  alertEl.innerHTML = "";
+
+  const fields = {
+    merchant: document.getElementById(`qf-merchant-${draftId}`).value.trim(),
+    amount: document.getElementById(`qf-amount-${draftId}`).value,
+    currency: document.getElementById(`qf-currency-${draftId}`).value,
+    category: document.getElementById(`qf-category-${draftId}`).value,
+    date: document.getElementById(`qf-date-${draftId}`).value,
+    tax_amount: document.getElementById(`qf-tax-${draftId}`).value || null,
+    invoice_number: document.getElementById(`qf-invoice-number-${draftId}`).value.trim() || null,
+    invoice_code: document.getElementById(`qf-invoice-code-${draftId}`).value.trim() || null,
+    project_code: document.getElementById(`qf-project-${draftId}`).value.trim() || null,
+    description: document.getElementById(`qf-desc-${draftId}`).value.trim() || null,
+  };
+
+  const fxInput = document.getElementById(`fx-rate-${draftId}`);
+  if (fxInput && fxInput.value && document.getElementById(`qf-currency-${draftId}`).value !== homeCurrency) {
+    fields.exchange_rate = parseFloat(fxInput.value);
+  }
+
+  if (!fields.merchant || !fields.amount || !fields.date || !fields.category) {
+    alertEl.innerHTML = '<div class="alert-error">请填写所有必填字段（商户、金额、日期、类别）</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "保存中...";
+
+  const authH = await getAuth();
+  for (const [key, val] of Object.entries(fields)) {
+    if (val === null || val === undefined) continue;
+    await fetch(`/api/chat/drafts/${draftId}/field`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authH },
+      body: JSON.stringify({ field: key, value: val, source: "user" }),
+    });
+  }
+
+  const r = await fetch(`/api/quick/attest/${draftId}`, {
+    method: "POST", headers: authH,
   });
-  if (!r.ok) { alert("保存失败"); return; }
-  chip.textContent = "✓ " + code;
-  chip.classList.add("done");
-  btn.disabled = false;
+  if (!r.ok) {
+    let msg = "保存失败: " + r.status;
+    try {
+      const body = await r.json();
+      if (r.status === 422 && body.detail) {
+        msg = (body.detail.includes("已被报销过") || body.detail.startsWith("发票号"))
+          ? "重复发票，无法保存" : body.detail;
+      }
+    } catch {}
+    alertEl.innerHTML = `<div class="alert-error">${msg}</div>`;
+    btn.disabled = false;
+    btn.textContent = "保存到报销单";
+    return;
+  }
+  const body = await r.json();
+  const reportId = body.report_id;
+  if (!CURRENT_REPORT_ID) CURRENT_REPORT_ID = reportId;
 
-  const card = btn.closest(".card");
-  const badge = card.querySelector('[data-field="badge"]');
-  badge.className = "badge badge-ok";
-  badge.textContent = "✓ AI 已核对";
+  await loadExistingLines();
+  showSuccess(draftId, reportId);
 }
 
-function goManual(draftId) {
-  window.location.href = `/employee/submit.html?from=quick&draft_id=${draftId}`;
+function showSuccess(draftId, reportId) {
+  document.getElementById("form-section").style.display = "none";
+  document.getElementById("scan-section").style.display = "none";
+  document.getElementById("ai-drawer").classList.remove("open");
+  document.getElementById("ai-fab").style.display = "none";
+
+  const el = document.getElementById("success-section");
+  el.style.display = "block";
+  el.innerHTML = `
+    <div class="form-card" style="text-align:center; padding:2rem">
+      <div style="font-size:2rem; margin-bottom:.5rem">✓</div>
+      <div style="font-weight:700; font-size:1.1rem; color:#16a34a; margin-bottom:.8rem">已保存到报销单</div>
+      <div class="form-actions" style="justify-content:center">
+        <button class="btn-continue" onclick="continueAdding('${reportId}')">继续添加</button>
+        <button class="btn-save" onclick="goToReport('${reportId}')">查看报销单 →</button>
+      </div>
+    </div>
+  `;
 }
-function resetUpload() {
-  cardsEl.innerHTML = "";
+
+function resetAndUploadNew() {
+  document.getElementById("form-section").style.display = "none";
+  document.getElementById("scan-section").style.display = "none";
+  document.getElementById("success-section").style.display = "none";
+  document.getElementById("upload-section").style.display = "block";
+  document.getElementById("ai-drawer").classList.remove("open");
+  document.getElementById("ai-fab").style.display = "none";
   fi.value = "";
 }
 
-async function attest(draftId, btn) {
-  btn.disabled = true;
-  btn.textContent = "提交中...";
-  const r = await fetch(`/api/quick/attest/${draftId}`, {
-    method: "POST",
-    headers: window.__authHeaders ? window.__authHeaders() : {},
-  });
-  if (!r.ok) {
-    alert("提交失败: " + r.status);
-    btn.disabled = false;
-    btn.textContent = "提交";
-    return;
+function continueAdding(reportId) {
+  window.location.href = `/employee/quick.html?report_id=${reportId}`;
+}
+function goToReport(reportId) {
+  window.location.href = `/employee/report.html?report_id=${reportId}`;
+}
+function openLineDetail(lineId, isDraft) {
+  window.location.href = `/employee/report.html?report_id=${CURRENT_REPORT_ID}&line=${lineId}&draft=${isDraft}`;
+}
+
+// ── AI Assistant ─────────────────────────────────────────────
+let currentDraftIdForAI = null;
+let aiStreaming = false;
+
+function toggleAI() {
+  const drawer = document.getElementById("ai-drawer");
+  drawer.classList.toggle("open");
+}
+
+function appendAIMsg(role, text) {
+  const el = document.getElementById("ai-messages");
+  const div = document.createElement("div");
+  div.className = `chat-msg ${role}`;
+  div.innerHTML = text.replace(/\n/g, "<br>");
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+  return div;
+}
+
+function showAIAssistant(draftId) {
+  currentDraftIdForAI = draftId;
+  const fab = document.getElementById("ai-fab");
+  fab.style.display = "flex";
+
+  const d = draftData[draftId];
+  const f = d.fields;
+  const required = { merchant: "商户名称", amount: "金额", date: "消费日期", category: "费用类别" };
+  const missing = [];
+  for (const [key, label] of Object.entries(required)) {
+    if (!f[key]) missing.push(label);
   }
-  btn.textContent = "✓ 已提交";
-  setTimeout(() => window.location.href = "/employee/my-reports.html", 1200);
+
+  document.getElementById("ai-messages").innerHTML = "";
+
+  if (missing.length > 0) {
+    // Proactively open and show help
+    document.getElementById("ai-drawer").classList.add("open");
+    document.getElementById("ai-needs-badge").style.display = "inline";
+    fab.classList.add("pulse");
+
+    appendAIMsg("assistant",
+      `扫描完成！我已识别出部分字段信息。<br><br>` +
+      `还缺少以下必填项：<b>${missing.join("、")}</b><br><br>` +
+      `我可以帮你补全 —— 请告诉我缺少的信息，或者你也可以直接在表单中手动填写。`
+    );
+
+    // Auto-ask AI to try filling missing fields
+    autoFillMissing(draftId, missing);
+  } else {
+    // All fields filled, just show a success note
+    appendAIMsg("assistant",
+      `所有必填字段已识别完成！请确认信息无误后点击「保存到报销单」。<br><br>` +
+      `如有疑问可随时问我。`
+    );
+    document.getElementById("ai-needs-badge").style.display = "none";
+  }
+}
+
+async function autoFillMissing(draftId, missingLabels) {
+  const msg = `发票扫描后仍缺少：${missingLabels.join("、")}。请根据发票图片帮我识别并补全这些字段。`;
+  await runAIChat(draftId, msg, true);
+}
+
+async function sendAI() {
+  const input = document.getElementById("ai-input");
+  const text = input.value.trim();
+  if (!text || !currentDraftIdForAI) return;
+  input.value = "";
+  appendAIMsg("user", text);
+  await runAIChat(currentDraftIdForAI, text, false);
+}
+
+async function runAIChat(draftId, message, isAuto) {
+  if (aiStreaming) return;
+  aiStreaming = true;
+  document.getElementById("ai-send").disabled = true;
+
+  if (!isAuto) appendAIMsg("user", message);
+
+  const thinkingEl = appendAIMsg("assistant", "正在思考...");
+
+  try {
+    const authH = await getAuth();
+    const r = await fetch(`/api/chat/drafts/${draftId}/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authH },
+      body: JSON.stringify({ message }),
+    });
+    const text = await r.text();
+    const lines = text.split("\n").filter(l => l.startsWith("data: "));
+    const events = lines.map(l => {
+      try { return JSON.parse(l.slice(6)); } catch { return null; }
+    }).filter(Boolean);
+
+    thinkingEl.remove();
+
+    let hasFieldUpdate = false;
+    for (const ev of events) {
+      if (ev.type === "assistant_text" && ev.text) {
+        appendAIMsg("assistant", ev.text);
+      } else if (ev.type === "draft_updated" && ev.fields) {
+        hasFieldUpdate = true;
+        syncFieldsToForm(draftId, ev.fields);
+        const updated = Object.keys(ev.fields).filter(k => ev.fields[k]);
+        if (updated.length) {
+          appendAIMsg("system", `已更新字段：${updated.join("、")}`);
+        }
+      } else if (ev.type === "tool_result" && ev.result) {
+        if (ev.result.field && ev.result.ok) {
+          hasFieldUpdate = true;
+          syncSingleField(draftId, ev.result.field, ev.result.value);
+          appendAIMsg("system", `已填写：${ev.result.field} = ${ev.result.value}`);
+        }
+      }
+    }
+
+    // Always re-fetch draft and sync all fields to form after chat
+    const dr = await fetch(`/api/chat/drafts/${draftId}`, { headers: authH });
+    if (dr.ok) {
+      const draft = await dr.json();
+      const fields = draft.fields || {};
+      syncFieldsToForm(draftId, fields);
+      if (!hasFieldUpdate && Object.values(fields).some(v => v)) {
+        const filled = Object.entries(fields).filter(([k,v]) => v).map(([k]) => k);
+        if (filled.length) appendAIMsg("system", `已同步字段：${filled.join("、")}`);
+      }
+    }
+    checkMissingFields(draftId);
+  } catch (err) {
+    thinkingEl.remove();
+    appendAIMsg("assistant", "连接失败：" + err.message);
+  } finally {
+    aiStreaming = false;
+    document.getElementById("ai-send").disabled = false;
+  }
+}
+
+function syncFieldsToForm(draftId, fields) {
+  const map = {
+    merchant: `qf-merchant-${draftId}`,
+    amount: `qf-amount-${draftId}`,
+    currency: `qf-currency-${draftId}`,
+    category: `qf-category-${draftId}`,
+    date: `qf-date-${draftId}`,
+    tax_amount: `qf-tax-${draftId}`,
+    invoice_number: `qf-invoice-number-${draftId}`,
+    invoice_code: `qf-invoice-code-${draftId}`,
+    project_code: `qf-project-${draftId}`,
+    description: `qf-desc-${draftId}`,
+  };
+  for (const [key, val] of Object.entries(fields)) {
+    const el = document.getElementById(map[key]);
+    if (el && val) {
+      el.value = val;
+      el.classList.add("ai-filled");
+      el.style.transition = "background .5s";
+    }
+  }
+}
+
+function syncSingleField(draftId, field, value) {
+  syncFieldsToForm(draftId, { [field]: value });
+}
+
+function checkMissingFields(draftId) {
+  const required = {
+    merchant: `qf-merchant-${draftId}`,
+    amount: `qf-amount-${draftId}`,
+    date: `qf-date-${draftId}`,
+    category: `qf-category-${draftId}`,
+  };
+  let allFilled = true;
+  for (const [key, id] of Object.entries(required)) {
+    const el = document.getElementById(id);
+    if (!el || !el.value) allFilled = false;
+  }
+  if (allFilled) {
+    document.getElementById("ai-needs-badge").style.display = "none";
+    document.getElementById("ai-fab").classList.remove("pulse");
+  }
 }
 </script>
 </body>
