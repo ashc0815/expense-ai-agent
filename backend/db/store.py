@@ -57,6 +57,7 @@ class Employee(Base):
     level         = Column(String(10),  nullable=True)          # L1-L7
     hire_date     = Column(Date,        nullable=True)
     city          = Column(String(50),  nullable=True, default="上海")
+    home_currency = Column(String(3), nullable=False, default="CNY")
     created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                            onupdate=lambda: datetime.now(timezone.utc))
@@ -119,6 +120,13 @@ class Submission(Base):
     budget_unblocked_by  = Column(String(64), nullable=True)
     budget_unblocked_at  = Column(DateTime(timezone=True), nullable=True)
 
+    # ── 报销单关联 (多笔打包成一张报销单) ─────────────────────────
+    report_id        = Column(String(36),  nullable=True, index=True)
+
+    # ── 汇率 ────────────────────────────────────────────────────────
+    exchange_rate    = Column(Numeric(10, 6), nullable=True)   # 1 invoice_currency = X home_currency
+    converted_amount = Column(Numeric(12, 2), nullable=True)   # amount * exchange_rate
+
     # ── 时间戳 ──────────────────────────────────────────────────
     created_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
@@ -147,6 +155,7 @@ class Draft(Base):
     # 转正后的 submission id（null 表示未提交）
     layer          = Column(String(16),  nullable=True, default=None)
     entry          = Column(String(16),  nullable=True, default=None)
+    report_id      = Column(String(36),  nullable=True, index=True)
     created_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                             onupdate=lambda: datetime.now(timezone.utc))
@@ -210,6 +219,44 @@ class TelemetryEvent(Base):
     attest_or_abandoned = Column(String(16), nullable=False)
     created_at          = Column(DateTime(timezone=True),
                                  default=lambda: datetime.now(timezone.utc))
+
+
+class Report(Base):
+    """报销单 — 多笔 submission / draft 打包成一张，员工提交审批。
+
+    状态:
+      open      — 开放式购物车,员工可继续添加/编辑
+      pending   — 已提交,等待经理审批
+      approved  — 经理已批准
+      rejected  — 经理已拒绝
+      withdrawn — 已撤回 (从 pending/approved 回到 open)
+    """
+    __tablename__ = "reports"
+
+    id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    employee_id   = Column(String(64),  nullable=False, index=True)
+    title         = Column(String(255), nullable=False, default="新建报销单")
+    status        = Column(String(16),  nullable=False, default="open")
+    submitted_at  = Column(DateTime(timezone=True), nullable=True)
+    withdrawn_at  = Column(DateTime(timezone=True), nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at    = Column(DateTime(timezone=True),
+                            default=lambda: datetime.now(timezone.utc),
+                            onupdate=lambda: datetime.now(timezone.utc))
+
+
+class Notification(Base):
+    """站内通知 — 经理收到撤回等事件时的提醒。"""
+    __tablename__ = "notifications"
+
+    id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    recipient_id  = Column(String(64),  nullable=False, index=True)
+    kind          = Column(String(32),  nullable=False)   # report_withdrawn | ...
+    title         = Column(String(255), nullable=False)
+    body          = Column(Text,        nullable=True)
+    link          = Column(String(500), nullable=True)
+    read_at       = Column(DateTime(timezone=True), nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 # ── 预算期间工具 ──────────────────────────────────────────────────
@@ -611,6 +658,155 @@ async def mark_draft_submitted(
     return draft
 
 
+# ── CRUD — reports ───────────────────────────────────────────────
+
+async def create_report(
+    db: AsyncSession, employee_id: str, title: str = "新建报销单"
+) -> Report:
+    report = Report(employee_id=employee_id, title=title, status="open")
+    db.add(report)
+    await db.commit()
+    await db.refresh(report)
+    return report
+
+
+async def get_report(db: AsyncSession, report_id: str) -> Optional[Report]:
+    result = await db.execute(select(Report).where(Report.id == report_id))
+    return result.scalar_one_or_none()
+
+
+async def list_reports_for_employee(
+    db: AsyncSession, employee_id: str, status: Optional[str] = None
+) -> list[Report]:
+    stmt = select(Report).where(Report.employee_id == employee_id)
+    if status:
+        stmt = stmt.where(Report.status == status)
+    stmt = stmt.order_by(Report.updated_at.desc())
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_or_create_open_report(
+    db: AsyncSession, employee_id: str
+) -> Report:
+    """Most-recent open report for the employee, or a fresh one."""
+    stmt = (
+        select(Report)
+        .where(Report.employee_id == employee_id, Report.status == "open")
+        .order_by(Report.updated_at.desc())
+    )
+    result = await db.execute(stmt)
+    existing = result.scalars().first()
+    if existing:
+        return existing
+    return await create_report(db, employee_id)
+
+
+async def list_report_submissions(
+    db: AsyncSession, report_id: str
+) -> list[Submission]:
+    result = await db.execute(
+        select(Submission)
+        .where(Submission.report_id == report_id)
+        .order_by(Submission.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def list_report_drafts(
+    db: AsyncSession, report_id: str
+) -> list[Draft]:
+    """Drafts attached to a report that haven't been finalized yet."""
+    result = await db.execute(
+        select(Draft)
+        .where(Draft.report_id == report_id, Draft.submitted_as.is_(None))
+        .order_by(Draft.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def set_report_status(
+    db: AsyncSession,
+    report_id: str,
+    status: str,
+    *,
+    submitted_at: Optional[datetime] = None,
+    withdrawn_at: Optional[datetime] = None,
+) -> Optional[Report]:
+    report = await get_report(db, report_id)
+    if not report:
+        return None
+    report.status = status
+    if submitted_at is not None:
+        report.submitted_at = submitted_at
+    if withdrawn_at is not None:
+        report.withdrawn_at = withdrawn_at
+    report.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(report)
+    return report
+
+
+async def attach_draft_to_report(
+    db: AsyncSession, draft_id: str, report_id: str
+) -> Optional[Draft]:
+    draft = await get_draft(db, draft_id)
+    if not draft:
+        return None
+    draft.report_id = report_id
+    draft.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(draft)
+    return draft
+
+
+# ── CRUD — notifications ─────────────────────────────────────────
+
+async def create_notification(
+    db: AsyncSession,
+    *,
+    recipient_id: str,
+    kind: str,
+    title: str,
+    body: Optional[str] = None,
+    link: Optional[str] = None,
+) -> Notification:
+    n = Notification(
+        recipient_id=recipient_id, kind=kind,
+        title=title, body=body, link=link,
+    )
+    db.add(n)
+    await db.commit()
+    await db.refresh(n)
+    return n
+
+
+async def list_notifications(
+    db: AsyncSession, recipient_id: str, *, unread_only: bool = False
+) -> list[Notification]:
+    stmt = select(Notification).where(Notification.recipient_id == recipient_id)
+    if unread_only:
+        stmt = stmt.where(Notification.read_at.is_(None))
+    stmt = stmt.order_by(Notification.created_at.desc())
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def mark_notification_read(
+    db: AsyncSession, notification_id: str
+) -> Optional[Notification]:
+    result = await db.execute(
+        select(Notification).where(Notification.id == notification_id)
+    )
+    n = result.scalar_one_or_none()
+    if not n:
+        return None
+    n.read_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(n)
+    return n
+
+
 # ── 凭证号生成 — YYYYMM-NNNN，按月重置 ────────────────────────────
 
 async def next_voucher_number(db: AsyncSession) -> str:
@@ -941,10 +1137,10 @@ async def seed_budget_demo(db: AsyncSession) -> None:
     await upsert_budget_policy(db, "MKT-EVENTS", 0.75, 0.90, "block", "seed")
 
     # Seed demo employees if they don't exist
-    for emp_id, name, cc in [
-        ("E001", "Zhang Wei", "ENG-TRAVEL"),
-        ("E002", "Li Mei",   "MKT-EVENTS"),
-        ("E003", "Wang Fang","ENG-TRAVEL"),
+    for emp_id, name, cc, hc in [
+        ("E001", "Zhang Wei", "ENG-TRAVEL", "CNY"),
+        ("E002", "Li Mei",   "MKT-EVENTS", "AUD"),
+        ("E003", "Wang Fang","ENG-TRAVEL", "CNY"),
     ]:
         existing = await db.execute(select(Employee).where(Employee.id == emp_id))
         if existing.scalar_one_or_none() is not None:
@@ -953,6 +1149,7 @@ async def seed_budget_demo(db: AsyncSession) -> None:
             id=emp_id, name=name,
             department="Engineering" if cc == "ENG-TRAVEL" else "Marketing",
             cost_center=cc,
+            home_currency=hc,
         ))
 
     await db.flush()
