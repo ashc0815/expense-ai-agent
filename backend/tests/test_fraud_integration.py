@@ -1,11 +1,12 @@
-"""Integration test — full fraud pipeline with rules 1-14."""
+"""Integration test — full fraud pipeline with rules 1-20."""
 from __future__ import annotations
 
+from datetime import date
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from backend.services.fraud_rules import SubmissionRow
+from backend.services.fraud_rules import EmployeeRow, SubmissionRow
 from skills.skill_fraud_check import process_report_async
 
 
@@ -85,3 +86,75 @@ async def test_level2_rules_silent_on_clean_submission():
                     "person_amount_mismatch", "vague_description"}
     rules_hit = {s["rule"] for s in result["fraud_signals"]}
     assert not (rules_hit & level2_rules), f"Clean submission should not trigger Level 2 rules, got {rules_hit & level2_rules}"
+
+
+# ── Level 4 integration tests ──
+
+
+_NEUTRAL_LLM = {
+    "template_score": 0,
+    "template_evidence": "",
+    "contradiction_found": False,
+    "contradiction_evidence": "",
+    "extracted_person_count": None,
+    "per_person_amount": None,
+    "person_amount_reasonable": True,
+    "person_amount_evidence": "",
+    "vagueness_score": 0,
+    "vagueness_evidence": "",
+}
+
+
+@pytest.mark.asyncio
+async def test_collusion_pattern_fires():
+    """Rule 15: alternating employees at same merchant should trigger collusion."""
+    with patch(
+        "skills.skill_fraud_check.analyze_submission",
+        new=AsyncMock(return_value=_NEUTRAL_LLM),
+    ), patch(
+        "skills.skill_fraud_check.list_recent_descriptions",
+        new=AsyncMock(return_value=[]),
+    ):
+        subs = [
+            SubmissionRow(
+                id=f"s{i}", employee_id="A" if i % 2 == 0 else "B",
+                amount=290, currency="CNY", category="meal",
+                date=f"2026-04-{i+1:02d}", merchant="海底捞",
+                description="商务午餐",
+            )
+            for i in range(4)
+        ]
+        result = await process_report_async(
+            submissions=subs,
+            employee_id="A",
+            db=None,
+            company_rows=subs,
+        )
+    rules_hit = {s["rule"] for s in result["fraud_signals"]}
+    assert "collusion_pattern" in rules_hit
+
+
+@pytest.mark.asyncio
+async def test_ghost_employee_fires():
+    """Rule 20: submissions after resignation should trigger ghost employee."""
+    emp = EmployeeRow(id="ghost-1", department="工程部",
+                      resignation_date=date(2026, 3, 1))
+    with patch(
+        "skills.skill_fraud_check.analyze_submission",
+        new=AsyncMock(return_value=_NEUTRAL_LLM),
+    ), patch(
+        "skills.skill_fraud_check.list_recent_descriptions",
+        new=AsyncMock(return_value=[]),
+    ):
+        result = await process_report_async(
+            submissions=[SubmissionRow(
+                id="s1", employee_id="ghost-1", amount=500, currency="CNY",
+                category="meal", date="2026-04-10", merchant="海底捞",
+                description="商务午餐",
+            )],
+            employee_id="ghost-1",
+            db=None,
+            employee_row=emp,
+        )
+    rules_hit = {s["rule"] for s in result["fraud_signals"]}
+    assert "ghost_employee" in rules_hit

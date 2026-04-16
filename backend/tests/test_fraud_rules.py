@@ -1,4 +1,4 @@
-"""Tests for fraud_rules.py — scenarios 1-10 with mock data."""
+"""Tests for fraud_rules.py — scenarios 1-20 with mock data."""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -7,22 +7,29 @@ import pytest
 
 from backend.services.fraud_rules import (
     DEFAULT_CONFIG,
+    ApprovalRow,
     EmployeeRow,
     FraudSignal,
     SubmissionRow,
+    rule_approver_collusion,
+    rule_collusion_pattern,
     rule_consecutive_invoices,
     rule_description_template,
     rule_duplicate_attendee,
     rule_fx_arbitrage,
     rule_geo_conflict,
+    rule_ghost_employee,
     rule_merchant_category_mismatch,
     rule_person_amount_mismatch,
     rule_pre_resignation_rush,
+    rule_rationalized_personal,
     rule_receipt_contradiction,
     rule_round_amount,
+    rule_seasonal_anomaly,
     rule_threshold_proximity,
     rule_timestamp_conflict,
     rule_vague_description,
+    rule_vendor_frequency,
     rule_weekend_frequency,
 )
 
@@ -505,4 +512,213 @@ class TestVagueDescription:
         llm_analysis = {"vagueness_score": 55, "vagueness_evidence": "somewhat vague"}
         config = {**DEFAULT_CONFIG, "vagueness_threshold": 50}
         signals = rule_vague_description([sub], llm_analysis, config)
+        assert len(signals) == 1
+
+
+# ── 场景 15: Collusion pattern — 轮流报销拆单 ──
+
+class TestCollusionPattern:
+    def test_alternating_same_merchant_flags(self):
+        """A and B take turns expensing meals at the same merchant."""
+        subs = [
+            _sub(id="s1", employee_id="A", amount=290, category="meal",
+                 dt="2026-04-01", merchant="海底捞"),
+            _sub(id="s2", employee_id="B", amount=285, category="meal",
+                 dt="2026-04-03", merchant="海底捞"),
+            _sub(id="s3", employee_id="A", amount=295, category="meal",
+                 dt="2026-04-07", merchant="海底捞"),
+            _sub(id="s4", employee_id="B", amount=280, category="meal",
+                 dt="2026-04-10", merchant="海底捞"),
+        ]
+        signals = rule_collusion_pattern(subs)
+        assert len(signals) >= 1
+        assert signals[0].rule == "collusion_pattern"
+        assert signals[0].score == 75
+
+    def test_same_employee_not_flagged(self):
+        subs = [
+            _sub(id=f"s{i}", employee_id="A", amount=290, category="meal",
+                 dt=f"2026-04-{i+1:02d}", merchant="海底捞")
+            for i in range(4)
+        ]
+        signals = rule_collusion_pattern(subs)
+        assert len(signals) == 0
+
+    def test_below_threshold_not_flagged(self):
+        subs = [
+            _sub(id="s1", employee_id="A", amount=290, category="meal",
+                 dt="2026-04-01", merchant="海底捞"),
+            _sub(id="s2", employee_id="B", amount=285, category="meal",
+                 dt="2026-04-03", merchant="海底捞"),
+        ]
+        # Only 2 submissions — below min_pair_count default of 3
+        signals = rule_collusion_pattern(subs)
+        assert len(signals) == 0
+
+
+# ── 场景 16: 合理化的私人消费 ──
+
+class TestRationalizedPersonal:
+    def test_weekend_resort_multiple_categories_flags(self):
+        subs = [
+            _sub(id="s1", employee_id="A", amount=500, category="accommodation",
+                 dt="2026-04-12", merchant="三亚亚特兰蒂斯",
+                 description="会议室租用费"),  # Saturday
+            _sub(id="s2", employee_id="A", amount=200, category="office",
+                 dt="2026-04-12", merchant="三亚亚特兰蒂斯",
+                 description="商务中心使用费"),
+        ]
+        signals = rule_rationalized_personal(subs)
+        assert len(signals) == 1
+        assert signals[0].rule == "rationalized_personal"
+        assert signals[0].score == 70
+
+    def test_weekday_same_merchant_not_flagged(self):
+        subs = [
+            _sub(id="s1", employee_id="A", amount=500, category="accommodation",
+                 dt="2026-04-14", merchant="香格里拉酒店",  # Monday
+                 description="会议室租用费"),
+            _sub(id="s2", employee_id="A", amount=200, category="office",
+                 dt="2026-04-14", merchant="香格里拉酒店",
+                 description="商务中心使用费"),
+        ]
+        signals = rule_rationalized_personal(subs)
+        assert len(signals) == 0
+
+    def test_single_item_not_flagged(self):
+        subs = [
+            _sub(id="s1", employee_id="A", amount=500, category="accommodation",
+                 dt="2026-04-12", merchant="三亚亚特兰蒂斯",
+                 description="住宿"),
+        ]
+        signals = rule_rationalized_personal(subs)
+        assert len(signals) == 0
+
+
+# ── 场景 17: 供应商频率异常 ──
+
+class TestVendorFrequency:
+    def test_high_frequency_single_vendor_flags(self):
+        """Same vendor 8 times."""
+        subs = [
+            _sub(id=f"s{i}", employee_id="A", amount=150, category="meal",
+                 dt=f"2026-04-{i+1:02d}", merchant="小李便利店")
+            for i in range(8)
+        ]
+        signals = rule_vendor_frequency(subs)
+        assert len(signals) == 1
+        assert signals[0].rule == "vendor_frequency"
+        assert signals[0].score == 65
+
+    def test_normal_frequency_passes(self):
+        subs = [
+            _sub(id=f"s{i}", employee_id="A", amount=150, category="meal",
+                 dt=f"2026-04-{i*7+1:02d}", merchant="星巴克")
+            for i in range(3)
+        ]
+        signals = rule_vendor_frequency(subs)
+        assert len(signals) == 0
+
+    def test_different_merchants_not_flagged(self):
+        subs = [
+            _sub(id=f"s{i}", employee_id="A", amount=150, category="meal",
+                 dt=f"2026-04-{i+1:02d}", merchant=f"餐厅{i}")
+            for i in range(8)
+        ]
+        signals = rule_vendor_frequency(subs)
+        assert len(signals) == 0
+
+
+# ── 场景 18: 季节性异常 ──
+
+class TestSeasonalAnomaly:
+    def test_q4_spike_flags(self):
+        """Q4 spend is 4x the average of other quarters."""
+        quarter_totals = {
+            "2025-Q1": 5000, "2025-Q2": 6000,
+            "2025-Q3": 5500, "2025-Q4": 25000,
+        }
+        signals = rule_seasonal_anomaly(quarter_totals, current_quarter="2025-Q4")
+        assert len(signals) == 1
+        assert signals[0].rule == "seasonal_anomaly"
+        assert signals[0].score == 60
+
+    def test_uniform_spending_passes(self):
+        quarter_totals = {
+            "2025-Q1": 5000, "2025-Q2": 6000,
+            "2025-Q3": 5500, "2025-Q4": 6500,
+        }
+        signals = rule_seasonal_anomaly(quarter_totals, current_quarter="2025-Q4")
+        assert len(signals) == 0
+
+    def test_insufficient_history_passes(self):
+        quarter_totals = {"2025-Q4": 25000}
+        signals = rule_seasonal_anomaly(quarter_totals, current_quarter="2025-Q4")
+        assert len(signals) == 0
+
+
+# ── 场景 19: 审批人与报销人的默契 ──
+
+class TestApproverCollusion:
+    def test_fast_approval_never_rejected_flags(self):
+        """Approver always approves emp-A in <3 min, but takes 15 min for others."""
+        approvals = [
+            ApprovalRow(submission_id="s1", employee_id="A", approver_id="mgr-1",
+                        approved=True, duration_seconds=90),
+            ApprovalRow(submission_id="s2", employee_id="A", approver_id="mgr-1",
+                        approved=True, duration_seconds=120),
+            ApprovalRow(submission_id="s3", employee_id="A", approver_id="mgr-1",
+                        approved=True, duration_seconds=100),
+            ApprovalRow(submission_id="s4", employee_id="B", approver_id="mgr-1",
+                        approved=True, duration_seconds=900),
+            ApprovalRow(submission_id="s5", employee_id="B", approver_id="mgr-1",
+                        approved=False, duration_seconds=1200),
+        ]
+        signals = rule_approver_collusion(approvals, target_employee="A")
+        assert len(signals) == 1
+        assert signals[0].rule == "approver_collusion"
+        assert signals[0].score == 70
+
+    def test_normal_approval_speed_passes(self):
+        approvals = [
+            ApprovalRow(submission_id="s1", employee_id="A", approver_id="mgr-1",
+                        approved=True, duration_seconds=900),
+            ApprovalRow(submission_id="s2", employee_id="A", approver_id="mgr-1",
+                        approved=True, duration_seconds=800),
+            ApprovalRow(submission_id="s3", employee_id="A", approver_id="mgr-1",
+                        approved=True, duration_seconds=850),
+            ApprovalRow(submission_id="s4", employee_id="B", approver_id="mgr-1",
+                        approved=True, duration_seconds=850),
+        ]
+        signals = rule_approver_collusion(approvals, target_employee="A")
+        assert len(signals) == 0
+
+
+# ── 场景 20: Ghost Employee — 已离职员工仍在报销 ──
+
+class TestGhostEmployee:
+    def test_resigned_employee_submitting_flags(self):
+        sub = _sub(employee_id="A", dt="2026-04-10")
+        emp = _emp(id="A", resignation_date=date(2026, 3, 15))
+        signals = rule_ghost_employee([sub], emp)
+        assert len(signals) == 1
+        assert signals[0].rule == "ghost_employee"
+        assert signals[0].score == 90
+
+    def test_active_employee_passes(self):
+        sub = _sub(employee_id="A", dt="2026-04-10")
+        emp = _emp(id="A", resignation_date=None)
+        signals = rule_ghost_employee([sub], emp)
+        assert len(signals) == 0
+
+    def test_submission_before_resignation_passes(self):
+        sub = _sub(employee_id="A", dt="2026-03-01")
+        emp = _emp(id="A", resignation_date=date(2026, 3, 15))
+        signals = rule_ghost_employee([sub], emp)
+        assert len(signals) == 0
+
+    def test_no_last_activity_uses_resignation_date(self):
+        sub = _sub(employee_id="A", dt="2026-04-10")
+        emp = _emp(id="A", resignation_date=date(2026, 3, 15))
+        signals = rule_ghost_employee([sub], emp)
         assert len(signals) == 1

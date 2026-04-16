@@ -46,6 +46,16 @@ class EmployeeRow:
     resignation_date: Optional[date] = None
 
 
+@dataclass
+class ApprovalRow:
+    """Approval record for approver behavior analysis."""
+    submission_id: str
+    employee_id: str
+    approver_id: str
+    approved: bool
+    duration_seconds: float  # time from submission to approval action
+
+
 # ── 可配置阈值 ──────────────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
@@ -72,6 +82,12 @@ DEFAULT_CONFIG = {
     "template_score_threshold": 70,     # 场景11: 模板化评分阈值
     "vagueness_threshold": 60,          # 场景14: 模糊度阈值
     "vagueness_suspicious_categories": ["gift", "entertainment", "supplies", "other"],  # 场景14
+    # ── Level 4: Agent 上下文推理 (场景 15-20) ──
+    "collusion_min_pair_count": 3,      # 场景15: 至少 N 笔才算轮流
+    "vendor_frequency_threshold": 6,    # 场景17: 同一商户出现 ≥ N 次
+    "seasonal_spike_multiplier": 2.5,   # 场景18: 季度金额超均值 N 倍
+    "approver_speed_ratio": 3.0,        # 场景19: 审批速度比值
+    "approver_min_samples": 3,          # 场景19: 至少 N 条审批记录
 }
 
 
@@ -535,3 +551,278 @@ def rule_vague_description(
         evidence=f"备注模糊度 {vagueness}/100 且类别为 {flagged[0].category}: {evidence}",
         details={"vagueness_score": vagueness, "category": flagged[0].category},
     )]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 15: Collusion pattern — 轮流报销拆单规避审批
+# ═══════════════════════════════════════════════════════════════════
+
+def rule_collusion_pattern(
+    all_submissions: Sequence[SubmissionRow],
+    config: dict = DEFAULT_CONFIG,
+) -> list[FraudSignal]:
+    """A 和 B 轮流请客报销同一商户，每次在各自限额内。
+
+    检测同一商户 + 同一类别，有 ≥2 个不同员工交替提交 ≥N 笔。
+    """
+    min_count = config.get("collusion_min_pair_count", 3)
+    signals = []
+
+    by_merchant_cat: dict[str, list[SubmissionRow]] = defaultdict(list)
+    for s in all_submissions:
+        key = f"{s.merchant}|{s.category}"
+        by_merchant_cat[key].append(s)
+
+    for key, group in by_merchant_cat.items():
+        employees = {s.employee_id for s in group}
+        if len(employees) < 2:
+            continue
+        if len(group) < min_count:
+            continue
+
+        # Check for alternating pattern
+        sorted_group = sorted(group, key=lambda s: s.date)
+        alternations = 0
+        for i in range(1, len(sorted_group)):
+            if sorted_group[i].employee_id != sorted_group[i - 1].employee_id:
+                alternations += 1
+
+        # If most transitions are between different employees, it's suspicious
+        if alternations >= min_count - 1:
+            merchant, cat = key.split("|", 1)
+            signals.append(FraudSignal(
+                rule="collusion_pattern",
+                score=75,
+                evidence=f"商户「{merchant}」{len(group)} 笔 {cat} 由 {len(employees)} 人交替提交（{alternations} 次切换）",
+                details={
+                    "merchant": merchant,
+                    "category": cat,
+                    "employees": list(employees),
+                    "count": len(group),
+                    "alternations": alternations,
+                },
+            ))
+    return signals
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 16: 合理化的私人消费 — 周末度假村 + 多笔商务标签
+# ═══════════════════════════════════════════════════════════════════
+
+_RESORT_KEYWORDS = ("度假", "resort", "温泉", "spa", "亚特兰蒂斯", "club med",
+                    "悦榕庄", "安缦", "丽思卡尔顿", "万豪", "希尔顿")
+
+def rule_rationalized_personal(
+    submissions: Sequence[SubmissionRow],
+    config: dict = DEFAULT_CONFIG,
+) -> list[FraudSignal]:
+    """周末在度假型商户有 ≥2 笔不同类别的商务支出 → 可能是私人消费包装。"""
+    signals = []
+
+    by_date_merchant: dict[str, list[SubmissionRow]] = defaultdict(list)
+    for s in submissions:
+        key = f"{s.employee_id}|{s.date}|{s.merchant}"
+        by_date_merchant[key].append(s)
+
+    for key, group in by_date_merchant.items():
+        if len(group) < 2:
+            continue
+        categories = {s.category for s in group}
+        if len(categories) < 2:
+            continue
+
+        sample = group[0]
+        try:
+            d = date.fromisoformat(sample.date)
+        except ValueError:
+            continue
+        if d.weekday() < 5:  # Not weekend
+            continue
+
+        merchant_lower = sample.merchant.lower()
+        is_resort = any(kw in merchant_lower for kw in _RESORT_KEYWORDS)
+        if not is_resort:
+            continue
+
+        total = sum(s.amount for s in group)
+        signals.append(FraudSignal(
+            rule="rationalized_personal",
+            score=70,
+            evidence=f"周末 {sample.date} 在度假型商户「{sample.merchant}」有 {len(group)} 笔不同类别支出共 {total:.0f}",
+            details={
+                "date": sample.date,
+                "merchant": sample.merchant,
+                "categories": list(categories),
+                "total": total,
+                "count": len(group),
+            },
+        ))
+    return signals
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 17: 供应商频率异常 — 单一小商户频繁报销
+# ═══════════════════════════════════════════════════════════════════
+
+def rule_vendor_frequency(
+    submissions: Sequence[SubmissionRow],
+    config: dict = DEFAULT_CONFIG,
+) -> list[FraudSignal]:
+    """某员工频繁在同一商户报销，频率异常。暗示可能存在关联交易。"""
+    threshold = config.get("vendor_frequency_threshold", 6)
+    signals = []
+
+    by_merchant: dict[str, list[SubmissionRow]] = defaultdict(list)
+    for s in submissions:
+        by_merchant[s.merchant].append(s)
+
+    for merchant, group in by_merchant.items():
+        if len(group) >= threshold:
+            total = sum(s.amount for s in group)
+            signals.append(FraudSignal(
+                rule="vendor_frequency",
+                score=65,
+                evidence=f"商户「{merchant}」在 {len(group)} 笔报销中出现，合计 {total:.0f}",
+                details={
+                    "merchant": merchant,
+                    "count": len(group),
+                    "total": total,
+                },
+            ))
+    return signals
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 18: 季节性异常 — 某季度报销金额明显偏离
+# ═══════════════════════════════════════════════════════════════════
+
+def rule_seasonal_anomaly(
+    quarter_totals: dict[str, float],
+    current_quarter: str,
+    config: dict = DEFAULT_CONFIG,
+) -> list[FraudSignal]:
+    """某员工某季度的报销金额是其他季度均值的 N 倍以上。"""
+    multiplier = config.get("seasonal_spike_multiplier", 2.5)
+    signals = []
+
+    current_amount = quarter_totals.get(current_quarter, 0)
+    other_amounts = [v for k, v in quarter_totals.items() if k != current_quarter and v > 0]
+
+    if len(other_amounts) < 2:
+        return signals
+
+    avg_other = sum(other_amounts) / len(other_amounts)
+    if avg_other <= 0:
+        return signals
+
+    ratio = current_amount / avg_other
+    if ratio >= multiplier:
+        signals.append(FraudSignal(
+            rule="seasonal_anomaly",
+            score=60,
+            evidence=f"{current_quarter} 报销 {current_amount:.0f} 是其他季度均值 {avg_other:.0f} 的 {ratio:.1f} 倍",
+            details={
+                "current_quarter": current_quarter,
+                "current_amount": current_amount,
+                "avg_other": avg_other,
+                "ratio": ratio,
+            },
+        ))
+    return signals
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 19: 审批人与报销人的默契 — 审批速度/模式异常
+# ═══════════════════════════════════════════════════════════════════
+
+def rule_approver_collusion(
+    approvals: Sequence[ApprovalRow],
+    target_employee: str,
+    config: dict = DEFAULT_CONFIG,
+) -> list[FraudSignal]:
+    """某审批人对特定下属的审批平均时间远低于其他人，且从未驳回。"""
+    speed_ratio = config.get("approver_speed_ratio", 3.0)
+    min_samples = config.get("approver_min_samples", 3)
+    signals = []
+
+    by_approver: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for a in approvals:
+        by_approver[a.approver_id][a.employee_id].append(a)
+
+    for approver_id, emp_map in by_approver.items():
+        target_records = emp_map.get(target_employee, [])
+        other_records = [a for eid, recs in emp_map.items()
+                         if eid != target_employee for a in recs]
+
+        if len(target_records) < min_samples or not other_records:
+            continue
+
+        target_avg = sum(a.duration_seconds for a in target_records) / len(target_records)
+        other_avg = sum(a.duration_seconds for a in other_records) / len(other_records)
+
+        if other_avg <= 0:
+            continue
+
+        ratio = other_avg / target_avg if target_avg > 0 else float("inf")
+        never_rejected = all(a.approved for a in target_records)
+
+        if ratio >= speed_ratio and never_rejected:
+            signals.append(FraudSignal(
+                rule="approver_collusion",
+                score=70,
+                evidence=(
+                    f"审批人 {approver_id} 对员工 {target_employee} 平均审批 {target_avg:.0f}s"
+                    f"（其他人 {other_avg:.0f}s, {ratio:.1f}x 更快），且从未驳回"
+                ),
+                details={
+                    "approver_id": approver_id,
+                    "target_employee": target_employee,
+                    "target_avg_seconds": target_avg,
+                    "other_avg_seconds": other_avg,
+                    "speed_ratio": ratio,
+                    "target_count": len(target_records),
+                    "never_rejected": True,
+                },
+            ))
+    return signals
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 20: Ghost Employee — 已离职员工仍在报销
+# ═══════════════════════════════════════════════════════════════════
+
+def rule_ghost_employee(
+    submissions: Sequence[SubmissionRow],
+    employee: EmployeeRow,
+    last_active_date: Optional[date] = None,
+) -> list[FraudSignal]:
+    """员工已离职但仍有报销提交。
+
+    last_active_date: 最后一次打卡/登录/薪资发放日期（可选增强信号）。
+    如果没有 last_active_date，仅依赖 resignation_date。
+    """
+    if not employee.resignation_date:
+        return []
+
+    signals = []
+    cutoff = last_active_date or employee.resignation_date
+
+    for s in submissions:
+        try:
+            d = date.fromisoformat(s.date)
+        except ValueError:
+            continue
+        if d > cutoff:
+            days_after = (d - cutoff).days
+            signals.append(FraudSignal(
+                rule="ghost_employee",
+                score=90,
+                evidence=f"员工 {employee.id} 离职后 {days_after} 天仍有报销（{s.date}）",
+                details={
+                    "employee_id": employee.id,
+                    "resignation_date": employee.resignation_date.isoformat(),
+                    "submission_date": s.date,
+                    "days_after": days_after,
+                },
+            ))
+    return signals

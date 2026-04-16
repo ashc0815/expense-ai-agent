@@ -1730,7 +1730,7 @@ git commit -m "feat: add rule 20 — ghost employee detection"
 - Modify: `skills/skill_fraud_check.py`
 - Modify: `backend/tests/test_fraud_integration.py`
 
-- [ ] **Step 1: Add Level 4 rules to `process_report_async`**
+- [x] **Step 1: Add Level 4 rules to `process_report_async`**
 
 In `skills/skill_fraud_check.py`, update `process_report_async` to include Level 4 rules after the Level 2 block:
 
@@ -1783,7 +1783,7 @@ from backend.services.fraud_rules import (
     all_signals.extend(rule_ghost_employee(submissions, emp_row))
 ```
 
-- [ ] **Step 2: Add integration test for Level 4 rules**
+- [x] **Step 2: Add integration test for Level 4 rules**
 
 Append to `backend/tests/test_fraud_integration.py`:
 
@@ -1852,12 +1852,12 @@ async def test_ghost_employee_fires():
     assert "ghost_employee" in rules_hit
 ```
 
-- [ ] **Step 3: Run all integration tests**
+- [x] **Step 3: Run all integration tests**
 
 Run: `cd /Users/ashleychen/ExpenseFlow && python3 -m pytest backend/tests/test_fraud_integration.py -v`
 Expected: All tests PASS
 
-- [ ] **Step 4: Run full test suite**
+- [x] **Step 4: Run full test suite**
 
 Run: `cd /Users/ashleychen/ExpenseFlow && python3 -m pytest backend/tests/ -v --tb=short`
 Expected: All pass, no regressions
@@ -1875,12 +1875,12 @@ git commit -m "feat: wire Level 4 rules 15-20 into fraud pipeline"
 
 **Files:** None (testing only)
 
-- [ ] **Step 1: Run complete test suite**
+- [x] **Step 1: Run complete test suite**
 
 Run: `cd /Users/ashleychen/ExpenseFlow && python3 -m pytest backend/tests/ tests/ -v --tb=short`
 Expected: All pass
 
-- [ ] **Step 2: Verify rule count**
+- [x] **Step 2: Verify rule count**
 
 Run: `cd /Users/ashleychen/ExpenseFlow && python3 -c "
 from backend.services import fraud_rules as fr

@@ -396,6 +396,64 @@ async def list_recent_descriptions(
     return [row[0] for row in result.all()]
 
 
+async def list_submissions_by_merchant(
+    db: AsyncSession,
+    merchant: str,
+    days: int = 90,
+    limit: int = 100,
+) -> list:
+    """All submissions to a given merchant across all employees (for collusion/vendor rules)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()[:10]
+    result = await db.execute(
+        select(Submission)
+        .where(Submission.merchant == merchant, Submission.date >= cutoff)
+        .order_by(Submission.created_at.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_approvals_by_approver(
+    db: AsyncSession,
+    approver_id: str,
+    days: int = 90,
+) -> list:
+    """All submissions approved by a given approver (for approval pattern analysis)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()[:10]
+    result = await db.execute(
+        select(Submission)
+        .where(
+            Submission.approver_id == approver_id,
+            Submission.approved_at.isnot(None),
+            Submission.date >= cutoff,
+        )
+        .order_by(Submission.approved_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def list_employee_submissions_by_quarter(
+    db: AsyncSession,
+    employee_id: str,
+) -> dict[str, float]:
+    """Return {quarter_label: total_amount} for seasonal analysis."""
+    result = await db.execute(
+        select(Submission.date, Submission.amount)
+        .where(Submission.employee_id == employee_id)
+        .order_by(Submission.date)
+    )
+    rows = result.all()
+    quarter_totals: dict[str, float] = {}
+    for row_date, amount in rows:
+        try:
+            d = date.fromisoformat(row_date) if isinstance(row_date, str) else row_date
+            q = f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+            quarter_totals[q] = quarter_totals.get(q, 0) + float(amount)
+        except (ValueError, TypeError):
+            continue
+    return quarter_totals
+
+
 async def update_submission_status(
     db: AsyncSession,
     submission_id: str,

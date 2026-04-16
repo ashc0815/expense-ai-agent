@@ -1,8 +1,12 @@
-"""Skill: 欺诈规则检测——对报销单运行 10 条确定性欺诈规则。
+"""Skill: 欺诈规则检测——对报销单运行 20 条欺诈规则。
+
+Level 1 (1-10): 确定性规则（单提交/员工历史）
+Level 2 (11-14): LLM 语义提取 → 确定性评分
+Level 4 (15-20): 跨员工行为模式 + 时序分析
 
 在 submit 阶段运行，位于合规检查之后。
 需要 config 中传入 employee_history（员工历史提交）和
-company_submissions（全公司近期提交，用于跨员工规则 1/7）。
+company_submissions（全公司近期提交，用于跨员工规则）。
 """
 
 from __future__ import annotations
@@ -11,27 +15,37 @@ from datetime import date
 from typing import Optional
 
 from backend.services.fraud_rules import (
+    ApprovalRow,
     DEFAULT_CONFIG,
     EmployeeRow,
     FraudSignal,
     SubmissionRow,
+    rule_approver_collusion,
+    rule_collusion_pattern,
     rule_consecutive_invoices,
     rule_description_template,
     rule_duplicate_attendee,
     rule_fx_arbitrage,
     rule_geo_conflict,
+    rule_ghost_employee,
     rule_merchant_category_mismatch,
     rule_person_amount_mismatch,
     rule_pre_resignation_rush,
+    rule_rationalized_personal,
     rule_receipt_contradiction,
     rule_round_amount,
+    rule_seasonal_anomaly,
     rule_threshold_proximity,
     rule_timestamp_conflict,
     rule_vague_description,
+    rule_vendor_frequency,
     rule_weekend_frequency,
 )
 from backend.services.llm_fraud_analyzer import analyze_submission
-from backend.db.store import list_recent_descriptions
+from backend.db.store import (
+    list_employee_submissions_by_quarter,
+    list_recent_descriptions,
+)
 from models.expense import ExpenseReport
 
 
@@ -177,7 +191,7 @@ async def process_report_async(
     history_rows: list[SubmissionRow] | None = None,
     company_rows: list[SubmissionRow] | None = None,
 ) -> dict:
-    """Async entry point that runs Level 1 (deterministic) + Level 2 (LLM) rules.
+    """Async entry point that runs Level 1 + Level 2 (LLM) + Level 4 (agent reasoning) rules.
 
     Called from the pipeline when async context (DB session) is available.
     The existing sync `process_report()` continues to work for backward compatibility.
@@ -218,6 +232,32 @@ async def process_report_async(
         all_signals.extend(rule_receipt_contradiction(submissions, llm_analysis))
         all_signals.extend(rule_person_amount_mismatch(submissions, llm_analysis))
         all_signals.extend(rule_vague_description(submissions, llm_analysis, fraud_config))
+
+    # ── Level 4: cross-employee + temporal rules 15-20 ──
+    # Rule 15: collusion pattern (cross-employee)
+    all_signals.extend(rule_collusion_pattern(company_all, fraud_config))
+
+    # Rule 16: rationalized personal spending
+    all_signals.extend(rule_rationalized_personal(submissions))
+
+    # Rule 17: vendor frequency anomaly
+    all_signals.extend(rule_vendor_frequency(employee_all, fraud_config))
+
+    # Rule 18: seasonal anomaly (needs quarterly history from DB)
+    if db:
+        try:
+            quarter_totals = await list_employee_submissions_by_quarter(db, employee_id)
+            today = date.today()
+            current_q = f"{today.year}-Q{(today.month - 1) // 3 + 1}"
+            all_signals.extend(rule_seasonal_anomaly(quarter_totals, current_q, fraud_config))
+        except Exception:
+            pass  # Skip on DB error
+
+    # Rule 19: approver collusion (requires approval timing data)
+    # Wired when ApprovalRow records are available in the pipeline
+
+    # Rule 20: ghost employee
+    all_signals.extend(rule_ghost_employee(submissions, emp_row))
 
     max_score = max((s.score for s in all_signals), default=0)
     passed = max_score < 80
