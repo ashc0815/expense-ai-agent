@@ -438,7 +438,8 @@ function updateQuickConverted(draftId) {
 }
 
 // ── Editable form ───────────────────────────────────────────
-function showForm(draftId) {
+async function showForm(draftId) {
+  await loadOpenReports();
   document.getElementById("scan-section").style.display = "none";
   document.getElementById("upload-section").style.display = "none";
   document.getElementById("success-section").style.display = "none";
