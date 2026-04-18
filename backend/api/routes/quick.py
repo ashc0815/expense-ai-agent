@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 from fastapi import (
     APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile,
@@ -113,6 +113,7 @@ async def quick_stream(
 async def quick_attest(
     draft_id: str,
     background_tasks: BackgroundTasks,
+    report_id: Optional[str] = None,
     ctx: UserContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
@@ -127,7 +128,7 @@ async def quick_attest(
             detail=f"当前 layer={draft.layer}，无法直接 attest；请走 submit.html",
         )
 
-    sub_id, _report_id = await save_draft_as_report_line(draft_id, ctx, db)
+    sub_id, _report_id = await save_draft_as_report_line(draft_id, ctx, db, report_id=report_id)
 
     try:
         await insert_telemetry(

@@ -267,6 +267,18 @@ async function loadExistingLines() {
 }
 loadExistingLines();
 
+// ── Load open reports for selector ──────────────────────────
+let openReports = [];
+async function loadOpenReports() {
+  try {
+    const r = await fetch("/api/reports", { headers: await getAuth() });
+    if (!r.ok) return;
+    const list = await r.json();
+    openReports = (list || []).filter(rpt => rpt.status === "open");
+  } catch {}
+}
+loadOpenReports();
+
 // ── Upload ──────────────────────────────────────────────────
 async function handleUpload(file) {
   const fd = new FormData();
@@ -553,6 +565,17 @@ function showForm(draftId) {
         <span id="fx-converted-${draftId}" style="margin-left:.5rem; color:#64748b;"></span>
       </div>
 
+      <div id="report-selector-${draftId}" style="margin-top:.8rem; padding:.8rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;">
+        <label style="font-size:.85rem; font-weight:600; color:#475569; display:block; margin-bottom:.4rem">保存到</label>
+        <select id="qf-report-${draftId}" style="width:100%; padding:.4rem .6rem; border:1px solid #d1d5db; border-radius:6px; font-size:.85rem;">
+          <option value="">新建报销单</option>
+          ${openReports.filter(rpt => !CURRENT_REPORT_ID || rpt.id === CURRENT_REPORT_ID).length > 0 || !CURRENT_REPORT_ID
+            ? openReports.map(rpt => `<option value="${rpt.id}" ${CURRENT_REPORT_ID === rpt.id ? 'selected' : ''}>${rpt.title}（${rpt.line_count || 0} 笔）</option>`).join("")
+            : ""
+          }
+        </select>
+      </div>
+
       <div id="form-alert-${draftId}"></div>
 
       <div class="form-actions">
@@ -612,7 +635,12 @@ async function saveToReport(draftId) {
     });
   }
 
-  const r = await fetch(`/api/quick/attest/${draftId}`, {
+  const selEl = document.getElementById(`qf-report-${draftId}`);
+  const selectedReportId = selEl ? selEl.value : (CURRENT_REPORT_ID || "");
+  const attestUrl = selectedReportId
+    ? `/api/quick/attest/${draftId}?report_id=${encodeURIComponent(selectedReportId)}`
+    : `/api/quick/attest/${draftId}`;
+  const r = await fetch(attestUrl, {
     method: "POST", headers: authH,
   });
   if (!r.ok) {
