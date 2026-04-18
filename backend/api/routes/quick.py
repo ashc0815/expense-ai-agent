@@ -17,7 +17,7 @@ from backend.db.store import (
     create_draft, get_db, get_draft, insert_telemetry, update_draft_receipt,
 )
 from backend.pdf_splitter import SplitError, split
-from backend.quick.finalize import finalize_draft_to_submission
+from backend.quick.finalize import save_draft_as_report_line
 from backend.quick.pipeline import run_quick_pipeline
 from backend.storage import get_storage
 
@@ -127,7 +127,7 @@ async def quick_attest(
             detail=f"当前 layer={draft.layer}，无法直接 attest；请走 submit.html",
         )
 
-    sub_id = await finalize_draft_to_submission(draft_id, ctx, db, background_tasks)
+    sub_id, _report_id = await save_draft_as_report_line(draft_id, ctx, db)
 
     try:
         await insert_telemetry(

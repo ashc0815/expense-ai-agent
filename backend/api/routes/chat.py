@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.middleware.auth import UserContext, require_auth
 from backend.api.routes.admin import _POLICY
 from backend.api.routes.submissions import _run_pipeline, _sub_dict
-from backend.quick.finalize import finalize_draft_to_submission
+from backend.quick.finalize import save_draft_as_report_line
 from backend.db.store import (
     append_draft_messages, create_audit_log, create_draft, create_submission,
     get_db, get_draft, get_employee, get_submission, get_submission_by_invoice,
@@ -1655,13 +1655,12 @@ async def submit_draft(
     ctx: UserContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """把 draft 转正为正式 submission，走完整审批流程。"""
-    sub_id = await finalize_draft_to_submission(
-        draft_id, ctx, db, background_tasks,
-    )
+    """把 draft 转正为报销单行项。"""
+    sub_id, report_id = await save_draft_as_report_line(draft_id, ctx, db)
     return {
         "id": sub_id,
         "draft_id": draft_id,
-        "status": "processing",
-        "message": "草稿已转正为正式报销单，AI 审核中…",
+        "report_id": report_id,
+        "status": "in_report",
+        "message": "草稿已保存到报销单，请在报销单中提交审批。",
     }
