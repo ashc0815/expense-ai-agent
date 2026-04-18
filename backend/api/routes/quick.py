@@ -144,4 +144,4 @@ async def quick_attest(
     except Exception:
         pass  # telemetry must not block attest
 
-    return {"id": sub_id, "draft_id": draft_id, "status": "processing"}
+    return {"id": sub_id, "draft_id": draft_id, "report_id": _report_id, "status": "processing"}
