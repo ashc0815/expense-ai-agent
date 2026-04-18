@@ -28,6 +28,14 @@ class UserContext:
     user_id: str
     roles: list          # e.g. ["employee", "manager"]
 
+    @property
+    def role(self) -> str:
+        if "finance_admin" in self.roles:
+            return "finance_admin"
+        if "manager" in self.roles:
+            return "manager"
+        return "employee"
+
     def has_role(self, role: str) -> bool:
         return role in self.roles
 
