@@ -70,7 +70,7 @@ class Submission(Base):
     id               = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     employee_id      = Column(String(64),  nullable=False)
     status           = Column(String(50),  nullable=False, default="processing")
-    # processing | reviewed | manager_approved | finance_approved | exported | rejected | review_failed
+    # processing | reviewed | manager_approved | finance_approved | exported | rejected | review_failed | needs_revision
 
     # ── 用户填写 / OCR 提取 ──────────────────────────────────────
     amount           = Column(Numeric(12, 2), nullable=False)
@@ -230,6 +230,7 @@ class Report(Base):
       pending   — 已提交,等待经理审批
       approved  — 经理已批准
       rejected  — 经理已拒绝
+      needs_revision — 经理退回修改
       withdrawn — 已撤回 (从 pending/approved 回到 open)
     """
     __tablename__ = "reports"
@@ -237,13 +238,48 @@ class Report(Base):
     id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     employee_id   = Column(String(64),  nullable=False, index=True)
     title         = Column(String(255), nullable=False, default="新建报销单")
-    status        = Column(String(16),  nullable=False, default="open")
+    status        = Column(String(20),  nullable=False, default="open")
+    revision_reason = Column(String(500), nullable=True)
     submitted_at  = Column(DateTime(timezone=True), nullable=True)
     withdrawn_at  = Column(DateTime(timezone=True), nullable=True)
     created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at    = Column(DateTime(timezone=True),
                             default=lambda: datetime.now(timezone.utc),
                             onupdate=lambda: datetime.now(timezone.utc))
+
+
+class LLMTrace(Base):
+    """LLM 调用追踪 — 记录每次 LLM 调用的完整上下文，用于 eval 和 debug。"""
+    __tablename__ = "llm_traces"
+
+    id              = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    component       = Column(String(50),  nullable=False, index=True)   # fraud_rule_11, ambiguity_detector, ocr
+    submission_id   = Column(String(36),  nullable=True, index=True)    # 关联的报销单
+    model           = Column(String(50),  nullable=False)               # gpt-4o, claude-sonnet-4-20250514, MiniMax-M2
+    prompt          = Column(JSON,        nullable=False)               # 完整 messages 数组
+    response        = Column(Text,        nullable=True)                # LLM 原始返回
+    parsed_output   = Column(JSON,        nullable=True)                # 结构化解析结果
+    latency_ms      = Column(Integer,     nullable=True)
+    token_usage     = Column(JSON,        nullable=True)                # {"input": N, "output": N}
+    error           = Column(Text,        nullable=True)                # 错误信息（如有）
+    created_at      = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class EvalRun(Base):
+    """Eval 运行记录 — 每次 eval 执行的汇总结果。"""
+    __tablename__ = "eval_runs"
+
+    id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    started_at    = Column(DateTime(timezone=True), nullable=False)
+    finished_at   = Column(DateTime(timezone=True), nullable=True)
+    total_cases   = Column(Integer, nullable=True)
+    passed_cases  = Column(Integer, nullable=True)
+    pass_rate     = Column(Float,   nullable=True)
+    results       = Column(JSON,    nullable=True)    # [{case_id, component, passed, score, latency_ms, error}]
+    trigger       = Column(String(50), nullable=False, default="manual")  # manual | ci | pytest
+    run_metadata  = Column("metadata", JSON, nullable=True)  # 6 factors: prompt_version, model, sampling, config, parsing, dataset
+    component_metrics = Column(JSON, nullable=True)  # per-component P/R/F1: {comp: {正确标记, 误报, 漏报, 正确放行, precision, recall, f1}}
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Notification(Base):
