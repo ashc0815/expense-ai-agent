@@ -34,6 +34,11 @@
                         { background: #dcfce7; color: #166534; }
     .rstatus.rejected  { background: #fee2e2; color: #991b1b; }
     .rstatus.withdrawn { background: #f1f5f9; color: #475569; }
+    .rstatus.needs_revision { background: #fff7ed; color: #c2410c; }
+    .revision-banner {
+      background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px;
+      padding: .6rem .8rem; margin: 0 1.2rem .5rem; font-size: .82rem; color: #c2410c;
+    }
     .rstatus.exported  { background: #e0e7ff; color: #3730a3; }
 
     .line-list { list-style: none; padding: 0; margin: 0; }
@@ -100,7 +105,7 @@ const fmtMoney = (c, a) => `${c || "CNY"} ${Number(a || 0).toFixed(2)}`;
 const STATUS_LABEL = {
   open: "开放中", pending: "审批中",
   approved: "已批准", manager_approved: "经理已批", finance_approved: "财务已批",
-  rejected: "已拒绝", withdrawn: "已撤回", exported: "已入账",
+  rejected: "已拒绝", needs_revision: "需修改", withdrawn: "已撤回", exported: "已入账",
 };
 
 async function load() {
@@ -121,7 +126,7 @@ function render(items) {
     return;
   }
   items.sort((a, b) => {
-    const order = { open: 0, pending: 1, approved: 2, manager_approved: 2,
+    const order = { open: 0, needs_revision: 0.5, pending: 1, approved: 2, manager_approved: 2,
                     finance_approved: 2, rejected: 3, withdrawn: 4, exported: 5 };
     return (order[a.status] ?? 9) - (order[b.status] ?? 9);
   });
@@ -153,7 +158,12 @@ function renderCard(r) {
     actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">查看详情</a>`);
     actions.push(`<button class="btn-danger" onclick="event.stopPropagation();withdrawReport('${r.id}')">撤回</button>`);
   }
-  if (!isOpen && !isPendingOrApproved) {
+  const isNeedsRevision = r.status === "needs_revision";
+  if (isNeedsRevision) {
+    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">修改</a>`);
+    actions.push(`<button class="btn-primary" onclick="event.stopPropagation();resubmitReport('${r.id}')">重新提交</button>`);
+  }
+  if (!isOpen && !isPendingOrApproved && !isNeedsRevision) {
     actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">查看详情</a>`);
   }
 
@@ -167,6 +177,7 @@ function renderCard(r) {
         <span class="rstatus ${r.status}">${STATUS_LABEL[r.status] || r.status}</span>
       </div>
       ${linesHTML}
+      ${r.status === "needs_revision" && r.revision_reason ? `<div class="revision-banner">退回原因：${r.revision_reason}</div>` : ""}
       <div class="report-foot">
         <div class="total">合计 ${total}</div>
         <div class="actions">${actions.join("")}</div>
@@ -216,6 +227,23 @@ async function withdrawReport(reportId) {
   const body = await r.json();
   if (body.was_approved) {
     alert("已撤回（之前为已批准状态），经理将收到通知。");
+  }
+  await load();
+}
+
+async function resubmitReport(reportId) {
+  if (!confirm("确认重新提交？所有发票将重新进入审核流程。")) return;
+  const r = await fetch(`/api/reports/${reportId}/resubmit`, {
+    method: "POST", headers: await authH(),
+  });
+  if (!r.ok) {
+    let msg = "重新提交失败: " + r.status;
+    try {
+      const body = await r.json();
+      if (body.detail) msg = body.detail;
+    } catch {}
+    alert(msg);
+    return;
   }
   await load();
 }
