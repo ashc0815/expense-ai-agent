@@ -329,7 +329,9 @@ const draftData = {};
 
 function streamPipeline(draftId, file) {
   draftData[draftId] = { file, fields: {}, sources: {}, isDuplicate: false };
-  const es = new EventSource(`/api/quick/stream/${draftId}`);
+  const u = window.auth ? window.auth.getUser() : null;
+  const qs = u ? `?_uid=${encodeURIComponent(u.id)}&_role=${encodeURIComponent((u.roles||[u.role||"employee"]).join(","))}` : "";
+  const es = new EventSource(`/api/quick/stream/${draftId}${qs}`);
 
   es.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
