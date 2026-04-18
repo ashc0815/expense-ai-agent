@@ -38,6 +38,7 @@ def _report_dict(r) -> dict:
         "id": r.id,
         "title": r.title,
         "status": r.status,
+        "revision_reason": r.revision_reason,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
@@ -350,6 +351,10 @@ class ApproveReportBody(BaseModel):
     comment: Optional[str] = None
 
 
+class ReturnReportBody(BaseModel):
+    reason: str
+
+
 @router.post("/{report_id}/approve")
 async def approve_report(
     report_id: str,
@@ -430,6 +435,125 @@ async def reject_report(
         detail={"comment": body.comment, "line_count": len(subs)},
     )
     return await _report_payload(db, report)
+
+
+@router.post("/{report_id}/return")
+async def return_report_for_revision(
+    report_id: str,
+    body: ReturnReportBody,
+    ctx: UserContext = Depends(require_role("manager", "finance_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await get_report(db, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报销单不存在")
+    if report.employee_id == ctx.user_id:
+        raise HTTPException(status_code=403, detail="不能退回自己的报销单")
+    if report.status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前状态 {report.status}，不可退回",
+        )
+
+    subs = await list_report_submissions(db, report_id)
+    actionable = ("processing", "reviewed", "review_failed")
+    now = datetime.now(timezone.utc)
+    for s in subs:
+        if s.status in actionable:
+            s.status = "needs_revision"
+            s.approver_id = ctx.user_id
+            s.approver_comment = body.reason
+            s.updated_at = now
+
+    report.status = "needs_revision"
+    report.revision_reason = body.reason
+    report.updated_at = now
+    await db.commit()
+
+    await create_notification(
+        db,
+        recipient_id=report.employee_id,
+        kind="report_returned",
+        title=f"报销单「{report.title}」被退回修改",
+        body=f"退回原因：{body.reason}",
+        link=f"/employee/report.html?report_id={report_id}",
+    )
+
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="report_returned",
+        resource_type="report", resource_id=report_id,
+        detail={"reason": body.reason, "line_count": len(subs)},
+    )
+    return await _report_payload(db, report)
+
+
+@router.post("/{report_id}/resubmit")
+async def resubmit_report(
+    report_id: str,
+    background_tasks: BackgroundTasks,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await get_report(db, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报销单不存在")
+    if report.employee_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="权限不足")
+    if report.status != "needs_revision":
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前状态 {report.status}，不可重新提交",
+        )
+
+    subs = await list_report_submissions(db, report_id)
+    lines = [s for s in subs if s.status == "needs_revision"]
+    if not lines:
+        raise HTTPException(status_code=422, detail="没有需要重新提交的发票")
+
+    emp = await get_employee(db, ctx.user_id)
+
+    now = datetime.now(timezone.utc)
+    for s in lines:
+        s.status = "processing"
+        s.approver_id = None
+        s.approver_comment = None
+        s.approved_at = None
+        s.audit_report = None
+        s.risk_score = None
+        s.tier = None
+        s.updated_at = now
+
+    report.status = "pending"
+    report.revision_reason = None
+    report.submitted_at = now
+    report.updated_at = now
+    await db.commit()
+
+    from backend.api.routes.submissions import _run_pipeline
+    for s in lines:
+        background_tasks.add_task(_run_pipeline, s.id, {
+            "employee_id":    ctx.user_id,
+            "employee_name":  emp.name if emp else None,
+            "department":     s.department,
+            "city":           emp.city if emp else None,
+            "level":          emp.level if emp else None,
+            "amount":         float(s.amount),
+            "currency":       s.currency,
+            "category":       s.category,
+            "date":           s.date,
+            "merchant":       s.merchant,
+            "tax_amount":     float(s.tax_amount) if s.tax_amount is not None else None,
+            "description":    s.description,
+            "invoice_number": s.invoice_number,
+            "invoice_code":   s.invoice_code,
+        })
+
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="report_resubmitted",
+        resource_type="report", resource_id=report_id,
+        detail={"line_count": len(lines)},
+    )
+    return {"report_id": report_id, "status": "pending", "lines": len(lines)}
 
 
 # ── Line-item edit (finance) ─────────────────────────────────────
