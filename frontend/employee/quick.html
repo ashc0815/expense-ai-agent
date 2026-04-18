@@ -117,17 +117,6 @@
       border-radius: 8px; font-size: .85rem; margin-top: .5rem;
     }
 
-    /* system message style (extends shared chat styles) */
-    .chat-msg.system {
-      background: var(--brand-light, #e6f7f3); color: var(--brand-dark, #129e7b);
-      font-size: .78rem; border: 1px solid #bbf7d0;
-      align-self: flex-start; padding: .5rem .75rem;
-      border-radius: 8px; max-width: 85%;
-    }
-    .ai-needs-badge {
-      background: #f59e0b; color: white; font-size: .65rem; font-weight: 700;
-      padding: .15rem .4rem; border-radius: 10px; margin-left: .4rem;
-    }
   </style>
 </head>
 <body>
@@ -158,27 +147,8 @@
   <div id="form-section" style="display:none"></div>
   <div id="success-section" style="display:none"></div>
 
-  <p style="margin-top:2rem;text-align:center;font-size:.8rem">
-    <a href="/employee/submit.html" class="muted">或者直接手动填表 →</a>
-  </p>
 </main>
 
-<!-- AI Assistant (uses shared chat-drawer styles from styles.css) -->
-<button class="chat-toggle-btn" id="ai-fab" onclick="toggleAI()" style="display:none">💬</button>
-
-<aside class="chat-drawer" id="ai-drawer">
-  <div class="chat-header">
-    <div class="chat-title">AI 报销助手
-      <span class="ai-needs-badge" id="ai-needs-badge" style="display:none">需要协助</span>
-    </div>
-    <button class="btn btn-ghost btn-sm" onclick="toggleAI()">✕</button>
-  </div>
-  <div class="chat-messages" id="ai-messages"></div>
-  <div class="chat-input-wrap">
-    <input id="ai-input" placeholder="问 AI 助手..." onkeydown="if(event.key==='Enter')sendAI()">
-    <button id="ai-send" onclick="sendAI()">➤</button>
-  </div>
-</aside>
 
 <script>
 const dz = document.getElementById("drop-zone");
@@ -528,8 +498,6 @@ function showForm(draftId) {
   if (currencyVal !== homeCurrency) {
     setTimeout(() => onQuickCurrencyChange(draftId), 0);
   }
-
-  showAIAssistant(draftId);
 }
 
 // ── Save: sync fields back to draft, then attest ────────────
@@ -602,8 +570,6 @@ async function saveToReport(draftId) {
 function showSuccess(draftId, reportId) {
   document.getElementById("form-section").style.display = "none";
   document.getElementById("scan-section").style.display = "none";
-  document.getElementById("ai-drawer").classList.remove("open");
-  document.getElementById("ai-fab").style.display = "none";
 
   const el = document.getElementById("success-section");
   el.style.display = "block";
@@ -624,8 +590,6 @@ function resetAndUploadNew() {
   document.getElementById("scan-section").style.display = "none";
   document.getElementById("success-section").style.display = "none";
   document.getElementById("upload-section").style.display = "block";
-  document.getElementById("ai-drawer").classList.remove("open");
-  document.getElementById("ai-fab").style.display = "none";
   fi.value = "";
 }
 
@@ -639,187 +603,6 @@ function openLineDetail(lineId, isDraft) {
   window.location.href = `/employee/report.html?report_id=${CURRENT_REPORT_ID}&line=${lineId}&draft=${isDraft}`;
 }
 
-// ── AI Assistant ─────────────────────────────────────────────
-let currentDraftIdForAI = null;
-let aiStreaming = false;
-
-function toggleAI() {
-  const drawer = document.getElementById("ai-drawer");
-  drawer.classList.toggle("open");
-}
-
-function appendAIMsg(role, text) {
-  const el = document.getElementById("ai-messages");
-  const div = document.createElement("div");
-  div.className = `chat-msg ${role}`;
-  div.innerHTML = text.replace(/\n/g, "<br>");
-  el.appendChild(div);
-  el.scrollTop = el.scrollHeight;
-  return div;
-}
-
-function showAIAssistant(draftId) {
-  currentDraftIdForAI = draftId;
-  const fab = document.getElementById("ai-fab");
-  fab.style.display = "flex";
-
-  const d = draftData[draftId];
-  const f = d.fields;
-  const required = { merchant: "商户名称", amount: "金额", date: "消费日期", category: "费用类别" };
-  const missing = [];
-  for (const [key, label] of Object.entries(required)) {
-    if (!f[key]) missing.push(label);
-  }
-
-  document.getElementById("ai-messages").innerHTML = "";
-
-  if (missing.length > 0) {
-    // Proactively open and show help
-    document.getElementById("ai-drawer").classList.add("open");
-    document.getElementById("ai-needs-badge").style.display = "inline";
-    fab.classList.add("pulse");
-
-    appendAIMsg("assistant",
-      `扫描完成！我已识别出部分字段信息。<br><br>` +
-      `还缺少以下必填项：<b>${missing.join("、")}</b><br><br>` +
-      `我可以帮你补全 —— 请告诉我缺少的信息，或者你也可以直接在表单中手动填写。`
-    );
-
-    // Auto-ask AI to try filling missing fields
-    autoFillMissing(draftId, missing);
-  } else {
-    // All fields filled, just show a success note
-    appendAIMsg("assistant",
-      `所有必填字段已识别完成！请确认信息无误后点击「保存到报销单」。<br><br>` +
-      `如有疑问可随时问我。`
-    );
-    document.getElementById("ai-needs-badge").style.display = "none";
-  }
-}
-
-async function autoFillMissing(draftId, missingLabels) {
-  const msg = `发票扫描后仍缺少：${missingLabels.join("、")}。请根据发票图片帮我识别并补全这些字段。`;
-  await runAIChat(draftId, msg, true);
-}
-
-async function sendAI() {
-  const input = document.getElementById("ai-input");
-  const text = input.value.trim();
-  if (!text || !currentDraftIdForAI) return;
-  input.value = "";
-  appendAIMsg("user", text);
-  await runAIChat(currentDraftIdForAI, text, false);
-}
-
-async function runAIChat(draftId, message, isAuto) {
-  if (aiStreaming) return;
-  aiStreaming = true;
-  document.getElementById("ai-send").disabled = true;
-
-  if (!isAuto) appendAIMsg("user", message);
-
-  const thinkingEl = appendAIMsg("assistant", "正在思考...");
-
-  try {
-    const authH = await getAuth();
-    const r = await fetch(`/api/chat/drafts/${draftId}/message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authH },
-      body: JSON.stringify({ message }),
-    });
-    const text = await r.text();
-    const lines = text.split("\n").filter(l => l.startsWith("data: "));
-    const events = lines.map(l => {
-      try { return JSON.parse(l.slice(6)); } catch { return null; }
-    }).filter(Boolean);
-
-    thinkingEl.remove();
-
-    let hasFieldUpdate = false;
-    for (const ev of events) {
-      if (ev.type === "assistant_text" && ev.text) {
-        appendAIMsg("assistant", ev.text);
-      } else if (ev.type === "draft_updated" && ev.fields) {
-        hasFieldUpdate = true;
-        syncFieldsToForm(draftId, ev.fields);
-        const updated = Object.keys(ev.fields).filter(k => ev.fields[k]);
-        if (updated.length) {
-          appendAIMsg("system", `已更新字段：${updated.join("、")}`);
-        }
-      } else if (ev.type === "tool_result" && ev.result) {
-        if (ev.result.field && ev.result.ok) {
-          hasFieldUpdate = true;
-          syncSingleField(draftId, ev.result.field, ev.result.value);
-          appendAIMsg("system", `已填写：${ev.result.field} = ${ev.result.value}`);
-        }
-      }
-    }
-
-    // Always re-fetch draft and sync all fields to form after chat
-    const dr = await fetch(`/api/chat/drafts/${draftId}`, { headers: authH });
-    if (dr.ok) {
-      const draft = await dr.json();
-      const fields = draft.fields || {};
-      syncFieldsToForm(draftId, fields);
-      if (!hasFieldUpdate && Object.values(fields).some(v => v)) {
-        const filled = Object.entries(fields).filter(([k,v]) => v).map(([k]) => k);
-        if (filled.length) appendAIMsg("system", `已同步字段：${filled.join("、")}`);
-      }
-    }
-    checkMissingFields(draftId);
-  } catch (err) {
-    thinkingEl.remove();
-    appendAIMsg("assistant", "连接失败：" + err.message);
-  } finally {
-    aiStreaming = false;
-    document.getElementById("ai-send").disabled = false;
-  }
-}
-
-function syncFieldsToForm(draftId, fields) {
-  const map = {
-    merchant: `qf-merchant-${draftId}`,
-    amount: `qf-amount-${draftId}`,
-    currency: `qf-currency-${draftId}`,
-    category: `qf-category-${draftId}`,
-    date: `qf-date-${draftId}`,
-    tax_amount: `qf-tax-${draftId}`,
-    invoice_number: `qf-invoice-number-${draftId}`,
-    invoice_code: `qf-invoice-code-${draftId}`,
-    project_code: `qf-project-${draftId}`,
-    description: `qf-desc-${draftId}`,
-  };
-  for (const [key, val] of Object.entries(fields)) {
-    const el = document.getElementById(map[key]);
-    if (el && val) {
-      el.value = val;
-      el.classList.add("ai-filled");
-      el.style.transition = "background .5s";
-    }
-  }
-}
-
-function syncSingleField(draftId, field, value) {
-  syncFieldsToForm(draftId, { [field]: value });
-}
-
-function checkMissingFields(draftId) {
-  const required = {
-    merchant: `qf-merchant-${draftId}`,
-    amount: `qf-amount-${draftId}`,
-    date: `qf-date-${draftId}`,
-    category: `qf-category-${draftId}`,
-  };
-  let allFilled = true;
-  for (const [key, id] of Object.entries(required)) {
-    const el = document.getElementById(id);
-    if (!el || !el.value) allFilled = false;
-  }
-  if (allFilled) {
-    document.getElementById("ai-needs-badge").style.display = "none";
-    document.getElementById("ai-fab").classList.remove("pulse");
-  }
-}
 </script>
 </body>
 </html>
