@@ -37,8 +37,8 @@ _VAGUE_WORDS: list[str] = [
     "费用", "相关", "补贴", "报销",
 ]
 
-# 因素权重
-_WEIGHTS = {
+# 硬编码默认权重（兜底）
+_FALLBACK_WEIGHTS = {
     "description_vague": 0.25,
     "amount_boundary":   0.20,
     "pattern_anomaly":   0.25,
@@ -46,8 +46,35 @@ _WEIGHTS = {
     "city_mismatch":     0.15,
 }
 
-# LLM 触发阈值
-_LLM_TRIGGER_THRESHOLD = 50
+_FALLBACK_LLM_TRIGGER_THRESHOLD = 50
+
+
+def _load_weights() -> dict[str, float]:
+    """Load ambiguity weights from eval_config.json, fallback to hardcoded."""
+    try:
+        from backend.services.config_loader import load_ambiguity_weights
+        w = load_ambiguity_weights()
+        if w:
+            return w
+    except Exception:
+        pass
+    return dict(_FALLBACK_WEIGHTS)
+
+
+def _load_trigger_threshold() -> int:
+    """Load LLM trigger threshold from eval_config.json, fallback to hardcoded."""
+    try:
+        from backend.services.config_loader import load_ambiguity_trigger_threshold
+        return load_ambiguity_trigger_threshold()
+    except Exception:
+        return _FALLBACK_LLM_TRIGGER_THRESHOLD
+
+
+# 因素权重 — loaded from shared config
+_WEIGHTS = _load_weights()
+
+# LLM 触发阈值 — loaded from shared config
+_LLM_TRIGGER_THRESHOLD = _load_trigger_threshold()
 
 
 class AmbiguityDetector:

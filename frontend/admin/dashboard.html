@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>数据统计 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>
+    window.AUTH_MODE = "mock"; window.API_BASE = "";
+    if (!localStorage.getItem("mock_role")) { localStorage.setItem("mock_role", "finance_admin"); }
+  </script>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="page">
+
+  <div style="display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:1.5rem">
+    <div>
+      <h1 style="font-size:1.25rem; font-weight:800; letter-spacing:-.4px" data-i18n="dash.title">报销概览</h1>
+      <div style="font-size:.8rem; color:var(--gray-400); margin-top:.2rem" data-i18n="dash.subtitle">
+        实时数据 · 今日更新
+      </div>
+    </div>
+    <button class="btn btn-outline btn-sm" onclick="api.exportCsv()" data-i18n="dash.export-btn">
+      ↓ 导出 CSV
+    </button>
+  </div>
+
+  <!-- KPI cards -->
+  <div class="stats-grid" id="kpi-grid">
+    <div class="stat-card"><div class="stat-value" style="color:var(--gray-200)">—</div>
+      <div class="stat-label" data-i18n="dash.loading">加载中…</div></div>
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; margin-top:1.25rem">
+
+    <!-- Status breakdown -->
+    <div class="card">
+      <div class="card-title" data-i18n="dash.status-chart">按状态分布</div>
+      <div id="status-chart"></div>
+    </div>
+
+    <!-- Tier breakdown -->
+    <div class="card">
+      <div class="card-title" data-i18n="dash.tier-chart">AI 风险等级分布</div>
+      <div id="tier-chart"></div>
+    </div>
+  </div>
+
+</main>
+
+<script src="/shared/api.js"></script>
+<script>
+(function () {
+  const STATUS_META = {
+    processing:       { label: t('status.processing'),       color: '#3b82f6', bg: '#dbeafe' },
+    reviewed:         { label: t('status.reviewed'),         color: '#7c3aed', bg: '#ede9fe' },
+    manager_approved: { label: t('status.manager_approved'), color: '#0891b2', bg: '#cffafe' },
+    finance_approved: { label: t('status.finance_approved'), color: '#16a34a', bg: '#dcfce7' },
+    exported:         { label: t('status.exported'),         color: '#059669', bg: '#d1fae5' },
+    approved:         { label: t('status.approved'),         color: '#16a34a', bg: '#dcfce7' },
+    rejected:         { label: t('status.rejected'),         color: '#dc2626', bg: '#fee2e2' },
+    review_failed:    { label: t('status.review_failed'),    color: '#d97706', bg: '#fef3c7' },
+  };
+  const TIER_META = {
+    T1:{ label: t('dash.tier.t1'), color:'var(--t1)', bg:'var(--t1-bg)' },
+    T2:{ label: t('dash.tier.t2'), color:'var(--t2)', bg:'var(--t2-bg)' },
+    T3:{ label: t('dash.tier.t3'), color:'var(--t3)', bg:'var(--t3-bg)' },
+    T4:{ label: t('dash.tier.t4'), color:'var(--t4)', bg:'var(--t4-bg)' },
+  };
+
+  async function load() {
+    try {
+      const s = await api.getStats();
+      renderKPI(s);
+      renderBarChart('status-chart', s.by_status, STATUS_META, s.total_submissions);
+      renderBarChart('tier-chart',   s.by_tier,   TIER_META,   s.total_submissions);
+    } catch (err) {
+      document.getElementById('kpi-grid').innerHTML =
+        `<div class="alert alert-error">${t('dash.load-fail')}${err.message}</div>`;
+    }
+  }
+
+  function renderKPI(s) {
+    const bs = s.by_status || {};
+    const pendingMgr     = (bs.reviewed || 0) + (bs.review_failed || 0);
+    const pendingFinance = bs.manager_approved || 0;
+    const pendingExport  = bs.finance_approved || 0;
+    const exported       = bs.exported || 0;
+
+    document.getElementById('kpi-grid').innerHTML = `
+      <div class="stat-card">
+        <div class="stat-value">${s.total_submissions}</div>
+        <div class="stat-label">${t('dash.kpi.total')}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" style="color:var(--success)">¥${
+          s.total_amount_cny.toLocaleString('zh-CN', {maximumFractionDigits:0})}</div>
+        <div class="stat-label">${t('dash.kpi.total-amount')}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" style="color:var(--brand)">${pendingMgr}</div>
+        <div class="stat-label">${t('dash.kpi.pending-mgr')}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" style="color:#0891b2">${pendingFinance}</div>
+        <div class="stat-label">${t('dash.kpi.pending-finance')}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" style="color:var(--brand-dark)">${pendingExport}</div>
+        <div class="stat-label">${t('dash.kpi.pending-export')}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" style="color:#059669">${exported}</div>
+        <div class="stat-label">${t('status.exported')}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${s.avg_risk_score ? s.avg_risk_score.toFixed(1) : '—'}</div>
+        <div class="stat-label">${t('dash.kpi.avg-risk')}</div>
+      </div>
+    `;
+  }
+
+  function renderBarChart(containerId, dataObj, meta, total) {
+    const el = document.getElementById(containerId);
+    const entries = Object.entries(dataObj).filter(([,v]) => v > 0);
+    if (!entries.length) {
+      el.innerHTML = `<div style="color:var(--gray-300);font-size:.875rem;padding:.5rem 0">
+        ${t('dash.no-data')}</div>`;
+      return;
+    }
+    const max = Math.max(...entries.map(([,v]) => v));
+    el.innerHTML = entries.map(([key, count]) => {
+      const m   = meta[key] || { label: key, color: 'var(--gray-400)', bg: 'var(--gray-100)' };
+      const pct = total ? ((count / total) * 100).toFixed(1) : 0;
+      const barW= max ? ((count / max) * 100).toFixed(1) : 0;
+      return `
+        <div style="margin-bottom:.65rem">
+          <div style="display:flex;justify-content:space-between;
+            font-size:.8rem;margin-bottom:.25rem">
+            <span style="font-weight:500;color:var(--gray-700)">${m.label}</span>
+            <span style="color:var(--gray-400)">${count} &nbsp;(${pct}%)</span>
+          </div>
+          <div style="height:8px;background:var(--gray-100);border-radius:99px;overflow:hidden">
+            <div style="height:100%;width:${barW}%;background:${m.color};
+              border-radius:99px;transition:width .5s ease"></div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

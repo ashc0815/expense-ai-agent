@@ -1,0 +1,97 @@
+<h2>决策 ③ 用户上传后,等 card 出现的时候看到什么?</h2>
+<p class="subtitle">从按下"上传"到 card 准备好,中间要跑 OCR + 分类 + 查重 + 预算检查 4 个 tool,体感 2-5 秒。这几秒用户看到的东西决定了"感觉是 agent 在工作"还是"感觉卡住了"。</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="blocking" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="padding:.8rem;background:#f8fafc;border-radius:8px;font-size:.7rem">
+        <div style="background:white;border:1px solid #e2e8f0;padding:.8rem;border-radius:4px;min-height:140px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.5rem">
+          <div style="width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#0f172a;border-radius:50%;animation:spin 1s linear infinite"></div>
+          <div style="font-weight:600;color:#0f172a">正在处理...</div>
+          <div style="color:#64748b;font-size:.65rem">通常 2-5 秒</div>
+        </div>
+      </div>
+      <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    </div>
+    <div class="card-body">
+      <h3>A · 阻塞 loader(一个转圈)</h3>
+      <p>按下上传后,整个页面变成"处理中"状态,成功后一次性显示 card。</p>
+      <div style="margin-top:.4rem;font-size:.72rem;color:#64748b">
+        <b>好处</b>:最简单,一屏只有一个状态,没歧义<br>
+        <b>代价</b>:2-5 秒的"没反应"体感会让人怀疑是不是卡了
+      </div>
+    </div>
+  </div>
+
+  <div class="card" data-choice="progressive" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="padding:.8rem;background:#f8fafc;border-radius:8px;font-size:.68rem">
+        <div style="background:white;border:1px solid #e2e8f0;padding:.6rem;border-radius:4px">
+          <div style="display:flex;gap:.5rem;align-items:flex-start">
+            <div style="width:36px;height:44px;background:linear-gradient(135deg,#ddd,#bbb);border-radius:3px;flex-shrink:0"></div>
+            <div style="flex:1">
+              <div style="color:#64748b;font-size:.6rem">🔍 识别发票...</div>
+              <div style="color:#0f172a;font-weight:700;margin-top:.15rem">¥358 · 海底捞</div>
+              <div style="color:#64748b;font-size:.6rem;margin-top:.15rem">⏳ 分类中...</div>
+              <div style="color:#64748b;font-size:.6rem">⏳ 查重中...</div>
+            </div>
+          </div>
+          <div style="margin-top:.4rem;height:3px;background:#e2e8f0;border-radius:2px;overflow:hidden">
+            <div style="width:60%;height:100%;background:#0f172a"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B · 渐进式填充 card</h3>
+      <p>card 立刻出现,但字段一个一个"点亮"——金额先出(OCR 最快)→ 分类填上 → 预算徽章亮起。完成前按钮灰着。</p>
+      <div style="margin-top:.4rem;font-size:.72rem;color:#64748b">
+        <b>好处</b>:每 500ms 都有视觉反馈,感觉 agent 在"当面做事";技术上和 tool_call SSE 事件天然对齐<br>
+        <b>代价</b>:实现复杂,要和 agent 的 streaming 事件耦合;card 在动会让一部分用户想"等它稳了再点"
+      </div>
+    </div>
+  </div>
+
+  <div class="card" data-choice="optimistic" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="padding:.8rem;background:#f8fafc;border-radius:8px;font-size:.68rem">
+        <div style="background:white;border:1px solid #e2e8f0;padding:.6rem;border-radius:4px">
+          <div style="background:#eff6ff;border:1px solid #bfdbfe;padding:.4rem;border-radius:4px;color:#1e40af;font-size:.62rem;margin-bottom:.4rem">
+            ✓ 已收到,正在后台处理
+          </div>
+          <div style="display:flex;gap:.4rem;align-items:center;padding:.3rem 0">
+            <div style="width:28px;height:34px;background:linear-gradient(135deg,#ddd,#bbb);border-radius:2px"></div>
+            <div style="flex:1">
+              <div style="height:6px;background:#e2e8f0;border-radius:2px;width:70%;margin-bottom:.2rem"></div>
+              <div style="height:6px;background:#e2e8f0;border-radius:2px;width:50%"></div>
+            </div>
+            <div style="font-size:.55rem;color:#64748b">处理中...</div>
+          </div>
+          <div style="border-top:1px solid #f1f5f9;padding-top:.3rem;margin-top:.3rem">
+            <div style="font-size:.55rem;color:#94a3b8">可以再上传下一张 👇</div>
+            <div style="border:2px dashed #cbd5e1;margin-top:.2rem;padding:.4rem;text-align:center;color:#94a3b8;font-size:.6rem;border-radius:3px">📄</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C · 乐观 + 队列(Ramp 本尊)</h3>
+      <p>上传完立刻返回"已收到",进到一个"待处理/已就绪"的列表页。card ready 后 badge 变绿,用户再点进去提交。同时可以继续上传下一张。</p>
+      <div style="margin-top:.4rem;font-size:.72rem;color:#64748b">
+        <b>好处</b>:彻底去除"等"的感觉,批量报销场景无敌(出差回来 10 张票)<br>
+        <b>代价</b>:页面结构完全重设计,不再是单张流程;需要一个"草稿列表页"承载队列;单张场景会被迫多一步(上传→列表→点卡)
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:1.5rem;padding:1rem;background:#eff6ff;border-radius:6px;font-size:.82rem;color:#1e3a8a;line-height:1.5">
+  <b>我的倾向:B(渐进式填充)</b><br>
+  理由:<br>
+  • 你现在的 agent 本来就是 SSE streaming 的(<code>assistant_text</code>、<code>tool_call</code>、<code>tool_result</code>、<code>draft_updated</code>),直接把这些事件映射到 card 的字段上,技术上顺水推舟<br>
+  • 2-5 秒里让用户看到"¥358 出来了 → 分类在跑 → 预算检查完成",体感就是"AI 正在帮我做 due diligence",这是整个产品叙事的核心<br>
+  • C 是 Ramp 本身的做法,但它对应的是"员工一次报 20 张票 + 有 inbox 心智"的企业;你的场景大部分是"单张即刻报",列表页反而多一步<br><br>
+  <b>需要确认一件事</b>:如果选 B,提交按钮在所有 tool 还没跑完时应该是灰的(不能点),还是始终亮着(用户可以在 AI 还在检查时就抢先提交)?我的默认是<b>灰着</b>——防止用户跳过查重/预算检查。
+</div>

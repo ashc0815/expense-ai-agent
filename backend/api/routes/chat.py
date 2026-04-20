@@ -197,6 +197,15 @@ _TOOL_DEFS: dict[str, dict] = {
             "required": [],
         },
     },
+    "get_policy_rules": {
+        "name": "get_policy_rules",
+        "description": "获取公司报销政策规则：费用类别、限额标准（按城市等级×员工等级）、发票要求、付款规则等。员工问报销政策相关问题时调用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
 }
 
 TOOL_REGISTRY: dict[str, list[str]] = {
@@ -216,6 +225,7 @@ TOOL_REGISTRY: dict[str, list[str]] = {
         "get_report_detail",
         "get_spend_summary",
         "get_budget_summary",
+        "get_policy_rules",
     ],
     # 经理/财务审批页 AI 解释卡——读取审计报告 + 员工历史，组装一段
     # 结构化解释。完全只读：没有任何写能力，没有 update_draft，没有 submit。
@@ -279,11 +289,16 @@ async def _gpt4o_ocr(receipt_url: str) -> Optional[dict]:
                     {"type": "image_url",
                      "image_url": {"url": f"data:{mime};base64,{b64}"}},
                     {"type": "text", "text": (
-                        "识别这张中国增值税发票，提取字段并以 JSON 返回（无法识别的字段设为 null）：\n"
-                        '{"merchant":"销售方名称","amount":价税合计数字,"date":"YYYY-MM-DD",'
-                        '"currency":"CNY","tax_amount":税额数字,"invoice_number":"发票号码",'
-                        '"invoice_code":"发票代码","seller_tax_id":"销售方税号",'
-                        '"description":"货物或服务名称"}\n只返回 JSON，不要任何解释。'
+                        "Identify this receipt or invoice (any language/format) and extract fields as JSON. "
+                        "Set unrecognizable fields to null:\n"
+                        '{"merchant":"store or seller name","amount":total number,"date":"YYYY-MM-DD",'
+                        '"currency":"3-letter code e.g. USD/CNY/AUD","tax_amount":tax number,'
+                        '"invoice_number":"receipt or invoice number",'
+                        '"invoice_code":"invoice code (Chinese fapiao only, else null)",'
+                        '"seller_tax_id":"seller tax ID if present",'
+                        '"description":"items or services purchased",'
+                        '"category":"one of: 餐饮, 交通, 住宿, 办公用品, 通讯, 其他"}\n'
+                        "Return ONLY the JSON object, no explanation."
                     )},
                 ],
             }],
@@ -664,6 +679,64 @@ async def tool_get_budget_summary(
         return {"error": f"预算摘要获取失败：{_e}"}
 
 
+async def tool_get_policy_rules(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """读取公司报销政策配置，返回结构化规则摘要。"""
+    import yaml as _yaml
+    _cfg_dir = Path(__file__).resolve().parent.parent.parent.parent / "config"
+    try:
+        with open(_cfg_dir / "policy.yaml", "r", encoding="utf-8") as f:
+            policy = _yaml.safe_load(f)
+        with open(_cfg_dir / "expense_types.yaml", "r", encoding="utf-8") as f:
+            types = _yaml.safe_load(f)
+    except FileNotFoundError:
+        return {"error": "政策配置文件未找到"}
+
+    limits = policy.get("limits", {})
+    limit_text = []
+    for key, tiers in limits.items():
+        name = key.replace("_", " ")
+        for tier, levels in tiers.items():
+            vals = ", ".join(f"{lv}: ¥{v}" if v != "不限" else f"{lv}: 不限" for lv, v in levels.items())
+            limit_text.append(f"{name} ({tier}): {vals}")
+
+    expense_cats = []
+    for cat_id, cat in types.get("expense_types", {}).items():
+        for sub in cat.get("subtypes", []):
+            flags = []
+            if sub.get("requires_invoice"):
+                flags.append("需发票")
+            if sub.get("requires_attendee_list"):
+                flags.append("需参会人员名单")
+            expense_cats.append(f"{cat['name_zh']}/{sub['name_zh']} — {'、'.join(flags) if flags else '无特殊要求'}")
+
+    city_tiers = policy.get("city_tiers", {})
+    city_info = []
+    for tier, data in city_tiers.items():
+        cities = data.get("cities", [])
+        city_info.append(f"{tier}: {', '.join(str(c) for c in cities)}")
+
+    payment = policy.get("payment", {})
+    tolerance = policy.get("tolerance", {})
+
+    return {
+        "company": policy.get("company_info", {}).get("name", ""),
+        "employee_levels": [lv["id"] + " " + lv["name"] for lv in policy.get("employee_levels", [])],
+        "city_tiers": city_info,
+        "limits": limit_text,
+        "expense_categories": expense_cats,
+        "payment_rules": {
+            "bank_transfer_threshold": f"≥¥{payment.get('bank_transfer_threshold', 5000)} 走银行转账",
+            "petty_cash_max": f"<¥{payment.get('petty_cash_max', 5000)} 可走备用金",
+        },
+        "tolerance_rules": {
+            "warning_threshold": f"超标 ≤¥{tolerance.get('warning_threshold', 50)} 为警告（可通过）",
+            "reject_above": f"超标 >¥{tolerance.get('reject_above', 50)} 为拒绝",
+        },
+    }
+
+
 TOOL_HANDLERS = {
     "extract_receipt_fields":            tool_extract_receipt_fields,
     "suggest_category":                  tool_suggest_category,
@@ -676,6 +749,7 @@ TOOL_HANDLERS = {
     "update_draft_field":                tool_update_draft_field,
     "check_budget_status":               tool_check_budget_status,
     "get_budget_summary":                tool_get_budget_summary,
+    "get_policy_rules":                  tool_get_policy_rules,
 }
 
 
@@ -829,6 +903,7 @@ class MockLLM(BaseLLM):
         summary = self._find_tool_result(messages, "get_spend_summary")
         detail  = self._find_tool_result(messages, "get_report_detail")
         recent  = self._find_tool_result(messages, "get_my_recent_submissions")
+        policy  = self._find_tool_result(messages, "get_policy_rules")
 
         if summary is not None:
             return LLMResponse(text=self._fmt_summary(summary), stop_reason="end_turn")
@@ -836,6 +911,8 @@ class MockLLM(BaseLLM):
             return LLMResponse(text=self._fmt_detail(detail), stop_reason="end_turn")
         if recent is not None:
             return LLMResponse(text=self._fmt_recent(recent), stop_reason="end_turn")
+        if policy is not None:
+            return LLMResponse(text=self._fmt_policy(policy), stop_reason="end_turn")
 
         # 否则根据最新 user 文本决定要调哪个 tool
         last_idx = self._find_last(messages, role="user", text_not_tool=True)
@@ -844,7 +921,14 @@ class MockLLM(BaseLLM):
         spend_kws  = ("花", "总共", "消费", "多少", "spend", "summary", "汇总")
         detail_kws = ("详情", "状态", "那笔", "这笔", "上笔", "上一笔", "上次")
         recent_kws = ("最近", "历史", "recent", "list", "有哪些")
+        policy_kws = ("政策", "规定", "限额", "标准", "policy", "报销政策", "能报", "可以报", "允许")
 
+        if any(k in text for k in policy_kws):
+            return LLMResponse(
+                text="我帮你查一下公司报销政策…",
+                tool_calls=[self._tool_call("get_policy_rules", {})],
+                stop_reason="tool_use",
+            )
         if any(k in text for k in spend_kws):
             period = "quarter" if any(k in text for k in ("季度", "quarter", "本季", "这季")) else "month"
             return LLMResponse(
@@ -865,7 +949,8 @@ class MockLLM(BaseLLM):
                 "• 我这个月花了多少？\n"
                 "• 本季度的消费汇总是多少？\n"
                 "• 最近有哪些报销记录？\n"
-                "• 上一笔报销是什么状态？"
+                "• 上一笔报销是什么状态？\n"
+                "• 报销政策是什么？限额多少？"
             ),
             stop_reason="end_turn",
         )
@@ -921,6 +1006,31 @@ class MockLLM(BaseLLM):
                 f"{i}. {it.get('merchant', '—')} · ¥{it.get('amount', 0):,.2f} · "
                 f"{it.get('category', '—')} · {it.get('date', '—')} · {it.get('status', '—')}"
             )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _fmt_policy(p: dict) -> str:
+        if p.get("error"):
+            return f"查询失败：{p['error']}"
+        lines = [f"📋 **{p.get('company', '')}** 报销政策"]
+        lines.append("")
+        lines.append("**费用类别及要求：**")
+        for cat in p.get("expense_categories", []):
+            lines.append(f"• {cat}")
+        lines.append("")
+        lines.append("**限额标准（按城市等级×员工等级）：**")
+        for lim in p.get("limits", []):
+            lines.append(f"• {lim}")
+        lines.append("")
+        lines.append("**付款规则：**")
+        pr = p.get("payment_rules", {})
+        for v in pr.values():
+            lines.append(f"• {v}")
+        lines.append("")
+        lines.append("**超标处理：**")
+        tr = p.get("tolerance_rules", {})
+        for v in tr.values():
+            lines.append(f"• {v}")
         return "\n".join(lines)
 
     # ── helpers ──

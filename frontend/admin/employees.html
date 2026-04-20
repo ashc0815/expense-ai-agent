@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>员工档案 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>
+    window.AUTH_MODE = "mock"; window.API_BASE = "";
+    if (!localStorage.getItem("mock_role")) { localStorage.setItem("mock_role", "finance_admin"); }
+  </script>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="page-wide">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem">
+    <div>
+      <h1 style="font-size:1.25rem; font-weight:700; margin:0" data-i18n="emp.title">员工档案</h1>
+      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem" data-i18n="emp.subtitle">
+        部门 / 成本中心 / 银行账号 — 提交报销时自动派生到入账字段
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="openModal()" data-i18n="emp.new-btn">+ 新建员工</button>
+  </div>
+
+  <div id="alert-box"></div>
+
+  <div class="card">
+    <div id="list-body">
+      <div style="text-align:center; padding:2rem"><span class="spinner"></span></div>
+    </div>
+  </div>
+</main>
+
+<!-- 模态框 -->
+<div id="modal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="max-width:520px; width:520px">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem">
+      <div class="card-title" style="margin:0" id="modal-title">新建员工</div>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal()">✕</button>
+    </div>
+    <form id="emp-form">
+      <div class="form-grid">
+        <div class="form-group">
+          <label data-i18n="emp.field-id">工号 *</label>
+          <input id="f-id" required>
+        </div>
+        <div class="form-group">
+          <label data-i18n="emp.field-name">姓名 *</label>
+          <input id="f-name" required>
+        </div>
+        <div class="form-group">
+          <label data-i18n="emp.field-email">邮箱</label>
+          <input id="f-email" type="email">
+        </div>
+        <div class="form-group">
+          <label data-i18n="emp.field-level">职级</label>
+          <select id="f-level">
+            <option value="">—</option>
+            <option>L1</option><option>L2</option><option>L3</option>
+            <option>L4</option><option>L5</option><option>L6</option><option>L7</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label data-i18n="emp.field-dept">部门 *</label>
+          <input id="f-dept" required placeholder="如：研发部">
+        </div>
+        <div class="form-group">
+          <label data-i18n="emp.field-cc">成本中心 *</label>
+          <input id="f-cc" required placeholder="如：CC-RD">
+        </div>
+        <div class="form-group">
+          <label data-i18n="emp.field-city">城市</label>
+          <input id="f-city" placeholder="上海">
+        </div>
+        <div class="form-group">
+          <label data-i18n="emp.field-mgr">直属经理工号</label>
+          <input id="f-mgr" placeholder="如：mgr-001">
+        </div>
+      </div>
+      <div class="form-group">
+        <label data-i18n="emp.field-bank">银行账号</label>
+        <input id="f-bank" placeholder="6222 0212 3456 7890 123">
+      </div>
+      <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:1rem">
+        <button type="button" class="btn btn-outline" onclick="closeModal()" data-i18n="btn.cancel">取消</button>
+        <button type="submit" class="btn btn-primary" data-i18n="btn.save">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/shared/api.js"></script>
+<script>
+(function () {
+  let editingId = null;
+
+  async function load() {
+    try {
+      const data = await api.listEmployees({ page_size: 200 });
+      render(data.items);
+    } catch (err) {
+      document.getElementById('list-body').innerHTML =
+        `<div class="alert alert-error">${t('emp.load-fail')}${err.message}</div>`;
+    }
+  }
+
+  function render(items) {
+    if (!items.length) {
+      document.getElementById('list-body').innerHTML =
+        `<div style="text-align:center; padding:2rem; color:var(--gray-400)">
+          ${t('emp.empty')}
+        </div>`;
+      return;
+    }
+    document.getElementById('list-body').innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>${t('emp.col-id')}</th><th>${t('emp.col-name')}</th><th>${t('emp.col-dept')}</th><th>${t('emp.col-cc')}</th>
+            <th>${t('emp.col-level')}</th><th>${t('emp.col-email')}</th><th>${t('emp.col-mgr')}</th><th>${t('emp.col-action')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(e => `
+            <tr>
+              <td><code>${e.id}</code></td>
+              <td>${e.name}</td>
+              <td>${e.department}</td>
+              <td><code>${e.cost_center}</code></td>
+              <td>${e.level || '—'}</td>
+              <td style="font-size:.8rem; color:var(--gray-400)">${e.email || '—'}</td>
+              <td>${e.manager_id || '—'}</td>
+              <td>
+                <button class="btn btn-ghost btn-sm" onclick='window._edit(${JSON.stringify(e)})'>${t('emp.btn-edit')}</button>
+                <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="window._del('${e.id}')">${t('emp.btn-del')}</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  window.openModal = function() {
+    editingId = null;
+    document.getElementById('modal-title').textContent = t('emp.modal-title-new');
+    document.getElementById('f-id').disabled = false;
+    document.getElementById('emp-form').reset();
+    document.getElementById('modal').style.display = 'flex';
+  };
+
+  window.closeModal = function() {
+    document.getElementById('modal').style.display = 'none';
+  };
+
+  window._edit = function(e) {
+    editingId = e.id;
+    document.getElementById('modal-title').textContent = t('emp.modal-title-edit') + ' ' + e.id;
+    document.getElementById('f-id').value = e.id;
+    document.getElementById('f-id').disabled = true;
+    document.getElementById('f-name').value = e.name || '';
+    document.getElementById('f-email').value = e.email || '';
+    document.getElementById('f-level').value = e.level || '';
+    document.getElementById('f-dept').value = e.department || '';
+    document.getElementById('f-cc').value = e.cost_center || '';
+    document.getElementById('f-city').value = e.city || '';
+    document.getElementById('f-mgr').value = e.manager_id || '';
+    document.getElementById('f-bank').value = e.bank_account || '';
+    document.getElementById('modal').style.display = 'flex';
+  };
+
+  window._del = async function(id) {
+    if (!confirm(t('emp.confirm-del') + ' ' + id + '？')) return;
+    try {
+      await api.deleteEmployee(id);
+      await load();
+    } catch (err) { alert(t('emp.del-fail') + err.message); }
+  };
+
+  document.getElementById('emp-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const data = {
+      id:           document.getElementById('f-id').value,
+      name:         document.getElementById('f-name').value,
+      email:        document.getElementById('f-email').value || null,
+      level:        document.getElementById('f-level').value || null,
+      department:   document.getElementById('f-dept').value,
+      cost_center:  document.getElementById('f-cc').value,
+      city:         document.getElementById('f-city').value || '上海',
+      manager_id:   document.getElementById('f-mgr').value || null,
+      bank_account: document.getElementById('f-bank').value || null,
+    };
+    try {
+      if (editingId) {
+        const { id, ...payload } = data;
+        await api.updateEmployee(editingId, payload);
+      } else {
+        await api.createEmployee(data);
+      }
+      closeModal();
+      await load();
+    } catch (err) {
+      alert(t('emp.save-fail') + err.message);
+    }
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

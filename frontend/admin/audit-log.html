@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>审计日志 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>
+    window.AUTH_MODE = "mock"; window.API_BASE = "";
+    if (!localStorage.getItem("mock_role")) { localStorage.setItem("mock_role", "finance_admin"); }
+  </script>
+</head>
+<body>
+  <div id="nav-root"></div>
+  <script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+  <script src="/shared/nav.js"></script>
+
+  <main class="page">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem">
+        <div class="card-title" style="margin:0" data-i18n="audit.title">审计日志</div>
+        <div style="display:flex; gap:.5rem">
+          <input id="actor-filter" placeholder="操作人 ID" style="padding:.35rem .6rem; font-size:.85rem;
+            border:1px solid #e5e7eb; border-radius:8px; width:140px">
+          <select id="action-filter" style="padding:.35rem .6rem; font-size:.85rem;
+            border:1px solid #e5e7eb; border-radius:8px">
+            <option value="" data-i18n="audit.action-all">全部操作</option>
+            <option value="submission_created" data-i18n="audit.action.created">提交报销</option>
+            <option value="submission_approved" data-i18n="audit.action.approved">批准报销</option>
+            <option value="submission_rejected" data-i18n="audit.action.rejected">拒绝报销</option>
+            <option value="ai_review_complete" data-i18n="audit.action.ai-complete">AI 审核完成</option>
+            <option value="ai_review_failed" data-i18n="audit.action.ai-failed">AI 审核失败</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="load()" data-i18n="audit.btn-search">查询</button>
+        </div>
+      </div>
+
+      <div id="list-body">
+        <div style="text-align:center;padding:2rem"><span class="spinner"></span></div>
+      </div>
+      <div id="pagination" class="pagination"></div>
+    </div>
+  </main>
+
+  <script src="/shared/api.js"></script>
+  <script>
+  (function () {
+    let currentPage = 1;
+
+    async function load() {
+      const params = {
+        page: currentPage,
+        page_size: 20,
+      };
+      const actor = document.getElementById("actor-filter").value.trim();
+      const action = document.getElementById("action-filter").value;
+      if (actor) params.actor_id = actor;
+      if (action) params.action = action;
+
+      try {
+        const data = await api.getAuditLog(params);
+        renderList(data);
+      } catch (err) {
+        document.getElementById("list-body").innerHTML =
+          `<div class="alert alert-error">${t('audit.load-fail')}${err.message}</div>`;
+      }
+    }
+
+    function renderList({ items, total }) {
+      if (!items.length) {
+        document.getElementById("list-body").innerHTML =
+          `<div style="text-align:center;padding:2rem;color:#9ca3af">${t('audit.empty')}</div>`;
+        document.getElementById("pagination").innerHTML = "";
+        return;
+      }
+
+      const actionLabels = {
+        submission_created:  t('audit.action.created'),
+        submission_approved: t('audit.action.approved'),
+        submission_rejected: t('audit.action.rejected'),
+        ai_review_complete:  t('audit.action.ai-complete'),
+        ai_review_failed:    t('audit.action.ai-failed'),
+      };
+
+      document.getElementById("list-body").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>${t('audit.col-time')}</th><th>${t('audit.col-actor')}</th><th>${t('audit.col-action')}</th>
+              <th>${t('audit.col-resource')}</th><th>${t('audit.col-resource-id')}</th><th>${t('audit.col-detail')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map(log => `
+              <tr>
+                <td style="white-space:nowrap">${log.created_at ? log.created_at.slice(0,19).replace("T"," ") : ""}</td>
+                <td>${log.actor_id}</td>
+                <td>${actionLabels[log.action] || log.action}</td>
+                <td>${log.resource_type}</td>
+                <td style="font-family:monospace; font-size:.8rem">${(log.resource_id||"").slice(0,8)}</td>
+                <td style="font-size:.8rem; color:#6b7280">
+                  ${log.detail ? JSON.stringify(log.detail).slice(0, 60) : ""}
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>`;
+
+      const totalPages = Math.ceil(total / 20);
+      let pages = "";
+      for (let i = 1; i <= totalPages; i++) {
+        pages += `<button class="page-btn${i === currentPage ? " active" : ""}"
+          onclick="window._goPage(${i})">${i}</button>`;
+      }
+      document.getElementById("pagination").innerHTML = pages;
+    }
+
+    window._goPage = function (p) { currentPage = p; load(); };
+    window.load = load;
+    load();
+  })();
+  </script>
+</body>
+</html>

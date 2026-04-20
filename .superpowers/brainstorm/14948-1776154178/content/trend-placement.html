@@ -1,0 +1,99 @@
+<h2>预算趋势洞察放在哪里？</h2>
+<p class="subtitle">同样的数据，不同的落点 — 选一个或告诉我你想组合</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>AI 助手主动说（My Reports 聊天气泡）</h3>
+      <p>打开「我的报销」时，AI 在预算提示后再补一句趋势预测。</p>
+      <div class="mockup" style="margin-top:.75rem">
+        <div class="mockup-header">AI 助手 — My Reports</div>
+        <div class="mockup-body" style="padding:.75rem; font-size:.82rem; display:flex; flex-direction:column; gap:.5rem">
+          <div style="background:#eff6ff; border-radius:8px; border-bottom-left-radius:2px; padding:.6rem .8rem; max-width:88%">
+            <div style="font-size:.7rem; color:#6b7280; margin-bottom:.2rem">AI 助手</div>
+            <div>📊 ENG-TRAVEL 本季度已用 <strong>87%</strong>（¥8,700 / ¥10,000）</div>
+            <div style="margin-top:.35rem; font-size:.78rem; color:#4b5563">按过去 3 个月月均 ¥2,175 的节奏，<strong>预计 5 月底超标</strong>。剩余 55 天，还有 ¥1,300 可用。</div>
+          </div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:.5rem">
+        <div class="pros"><h4>优点</h4><ul><li>零额外 UI，沿用现有聊天体验</li><li>agent 深度融合，可追问</li></ul></div>
+        <div class="cons"><h4>缺点</h4><ul><li>聊天收起就看不到</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>预算策略管理页加趋势栏（finance admin）</h3>
+      <p>admin/budget-policy.html 的表格里，每个成本中心加一列「预计超标时间」。</p>
+      <div class="mockup" style="margin-top:.75rem">
+        <div class="mockup-header">Budget Policy — Q2 2026</div>
+        <div class="mockup-body" style="padding:.75rem; font-size:.78rem">
+          <table style="width:100%; border-collapse:collapse">
+            <thead>
+              <tr style="border-bottom:1px solid #e5e7eb; color:#9ca3af; text-align:left; font-size:.72rem">
+                <th style="padding:.35rem .5rem">成本中心</th>
+                <th style="padding:.35rem .5rem">预算</th>
+                <th style="padding:.35rem .5rem">已用</th>
+                <th style="padding:.35rem .5rem">月均消费</th>
+                <th style="padding:.35rem .5rem; color:#ef4444">预计超标</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom:1px solid #f3f4f6">
+                <td style="padding:.4rem .5rem; font-weight:600">ENG-TRAVEL</td>
+                <td style="padding:.4rem .5rem">¥10,000</td>
+                <td style="padding:.4rem .5rem; color:#f59e0b; font-weight:600">87%</td>
+                <td style="padding:.4rem .5rem">¥2,175</td>
+                <td style="padding:.4rem .5rem"><span style="background:#fee2e2; color:#991b1b; font-size:.7rem; padding:.1rem .4rem; border-radius:4px; font-weight:600">⚠ 5月底</span></td>
+              </tr>
+              <tr>
+                <td style="padding:.4rem .5rem; font-weight:600">MKT-EVENTS</td>
+                <td style="padding:.4rem .5rem">¥25,000</td>
+                <td style="padding:.4rem .5rem; color:#22c55e">43%</td>
+                <td style="padding:.4rem .5rem">¥1,200</td>
+                <td style="padding:.4rem .5rem; color:#9ca3af; font-size:.72rem">季度内安全</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:.5rem">
+        <div class="pros"><h4>优点</h4><ul><li>finance admin 一眼看全局</li><li>不需要 LLM 参与</li></ul></div>
+        <div class="cons"><h4>缺点</h4><ul><li>员工看不到</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>A + B 都要</h3>
+      <p>员工侧：AI 聊天主动说趋势。Finance admin 侧：管理页加预计超标列。共用同一个后端 API。</p>
+      <div class="mockup" style="margin-top:.75rem">
+        <div class="mockup-header">新 API：GET /budget/trend/{cost_center}</div>
+        <div class="mockup-body" style="padding:.75rem; font-size:.78rem; font-family:monospace; color:#374151">
+          <div style="color:#6b7280; margin-bottom:.3rem">// 返回</div>
+          <div>{</div>
+          <div style="padding-left:1rem">monthly_avg: 2175,</div>
+          <div style="padding-left:1rem">months_remaining: 1.8,</div>
+          <div style="padding-left:1rem">projected_spend: 10715,</div>
+          <div style="padding-left:1rem"><span style="color:#dc2626">overrun_risk: "high"</span>, <span style="color:#6b7280">// ok | moderate | high</span></div>
+          <div style="padding-left:1rem">estimated_overrun_date: "2026-05-28"</div>
+          <div>}</div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:.5rem">
+        <div class="pros"><h4>优点</h4><ul><li>一个 API 两端复用</li><li>员工 + admin 都有洞察</li></ul></div>
+        <div class="cons"><h4>缺点</h4><ul><li>工作量最大</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:1.5rem">点击选择，或在终端告诉我你的想法。</p>

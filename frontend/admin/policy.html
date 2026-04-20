@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>政策管理 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>
+    window.AUTH_MODE = "mock"; window.API_BASE = "";
+    if (!localStorage.getItem("mock_role")) { localStorage.setItem("mock_role", "finance_admin"); }
+  </script>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="page">
+  <h1 style="font-size:1.25rem; font-weight:700; margin-bottom:1rem">政策管理</h1>
+  <div id="alert-box"></div>
+
+  <!-- 限额 -->
+  <div class="card">
+    <div class="card-title">报销限额</div>
+    <form id="limits-form">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>餐饮单笔（CNY）</label>
+          <input type="number" id="meal_limit_cny" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label>交通单笔（CNY）</label>
+          <input type="number" id="transport_limit_cny" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label>住宿单笔（CNY）</label>
+          <input type="number" id="accommodation_limit_cny" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label>单笔最高金额（CNY）</label>
+          <input type="number" id="max_amount_cny" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label>需上传发票起始金额</label>
+          <input type="number" id="require_receipt_above_cny" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label>自动批准额度以下</label>
+          <input type="number" id="auto_approve_below_cny" step="0.01" min="0">
+        </div>
+      </div>
+      <div style="text-align:right">
+        <button type="submit" class="btn btn-primary">保存限额</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- GL 账户映射 -->
+  <div class="card">
+    <div class="card-title">会计科目映射</div>
+    <div style="font-size:.78rem; color:var(--gray-400); margin-bottom:.75rem">
+      费用类别 → GL 科目号 — 提交报销时自动落库到 <code>gl_account</code> 字段
+    </div>
+    <form id="gl-form">
+      <div id="gl-rows"></div>
+      <div style="text-align:right; margin-top:.75rem">
+        <button type="submit" class="btn btn-primary">保存映射</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- 项目库 -->
+  <div class="card">
+    <div class="card-title">项目库</div>
+    <div style="font-size:.78rem; color:var(--gray-400); margin-bottom:.75rem">
+      员工提交时下拉可选；财务复核时也可指派
+    </div>
+    <form id="proj-form">
+      <div id="proj-rows"></div>
+      <div style="display:flex; justify-content:space-between; margin-top:.75rem">
+        <button type="button" class="btn btn-outline btn-sm" onclick="addProj()">+ 添加项目</button>
+        <button type="submit" class="btn btn-primary">保存项目</button>
+      </div>
+    </form>
+  </div>
+</main>
+
+<script src="/shared/api.js"></script>
+<script>
+(function () {
+  const LIMIT_FIELDS = [
+    "meal_limit_cny","transport_limit_cny","accommodation_limit_cny",
+    "max_amount_cny","require_receipt_above_cny","auto_approve_below_cny",
+  ];
+  const CAT_LABEL = { meal:'餐饮', transport:'交通', accommodation:'住宿', entertainment:'招待', other:'其他' };
+  let policy = {};
+
+  async function load() {
+    try {
+      policy = await api.getPolicy();
+      // 限额
+      LIMIT_FIELDS.forEach(f => {
+        const el = document.getElementById(f);
+        if (el && policy[f] != null) el.value = policy[f];
+      });
+      // GL 映射
+      renderGL();
+      // 项目
+      renderProj();
+    } catch (err) {
+      showAlert('加载失败：' + err.message, 'error');
+    }
+  }
+
+  function renderGL() {
+    const cats = ['meal','transport','accommodation','entertainment','other'];
+    const map = policy.gl_mapping || {};
+    document.getElementById('gl-rows').innerHTML = `
+      <table>
+        <thead><tr><th style="width:40%">费用类别</th><th>GL 科目号</th></tr></thead>
+        <tbody>
+          ${cats.map(c => `
+            <tr>
+              <td><strong>${CAT_LABEL[c]}</strong> <code style="font-size:.7rem; color:var(--gray-400)">${c}</code></td>
+              <td><input type="text" id="gl-${c}" value="${map[c] || ''}" placeholder="6602.02"></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  function renderProj() {
+    const projects = policy.projects || [];
+    const rows = projects.length ? projects : [{code:'', name:''}];
+    document.getElementById('proj-rows').innerHTML = `
+      <table>
+        <thead><tr><th style="width:40%">项目编号</th><th>项目名称</th><th style="width:32px"></th></tr></thead>
+        <tbody id="proj-tbody">
+          ${rows.map((p, i) => projRowHtml(p, i)).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  function projRowHtml(p, i) {
+    return `<tr>
+      <td><input type="text" data-proj-code value="${p.code || ''}" placeholder="P-2026-A1"></td>
+      <td><input type="text" data-proj-name value="${p.name || ''}" placeholder="项目名称"></td>
+      <td><button type="button" class="btn btn-ghost btn-sm" style="color:var(--danger)"
+        onclick="this.closest('tr').remove()">✕</button></td>
+    </tr>`;
+  }
+
+  window.addProj = function() {
+    const tbody = document.getElementById('proj-tbody');
+    tbody.insertAdjacentHTML('beforeend', projRowHtml({}, tbody.children.length));
+  };
+
+  // ── 限额提交 ──
+  document.getElementById('limits-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const data = {};
+    LIMIT_FIELDS.forEach(f => {
+      const v = document.getElementById(f).value;
+      if (v !== '') data[f] = parseFloat(v);
+    });
+    try {
+      policy = await api.updatePolicy(data);
+      showAlert('限额已保存', 'success');
+    } catch (err) { showAlert('保存失败：' + err.message, 'error'); }
+  });
+
+  // ── GL 提交 ──
+  document.getElementById('gl-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const map = {};
+    ['meal','transport','accommodation','entertainment','other'].forEach(c => {
+      const v = document.getElementById('gl-' + c).value.trim();
+      if (v) map[c] = v;
+    });
+    try {
+      policy = await api.updatePolicy({ gl_mapping: map });
+      showAlert('GL 映射已保存', 'success');
+    } catch (err) { showAlert('保存失败：' + err.message, 'error'); }
+  });
+
+  // ── 项目提交 ──
+  document.getElementById('proj-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const tbody = document.getElementById('proj-tbody');
+    const projects = [];
+    tbody.querySelectorAll('tr').forEach(tr => {
+      const code = tr.querySelector('[data-proj-code]').value.trim();
+      const name = tr.querySelector('[data-proj-name]').value.trim();
+      if (code) projects.push({ code, name });
+    });
+    try {
+      policy = await api.updatePolicy({ projects });
+      showAlert('项目库已保存', 'success');
+    } catch (err) { showAlert('保存失败：' + err.message, 'error'); }
+  });
+
+  function showAlert(msg, type) {
+    document.getElementById('alert-box').innerHTML =
+      `<div class="alert alert-${type}">${msg}</div>`;
+    setTimeout(() => { document.getElementById('alert-box').innerHTML = ''; }, 3000);
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

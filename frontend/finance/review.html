@@ -26,365 +26,439 @@
     .stat-value.danger { color: var(--danger); }
     .stat-label { font-size: .72rem; color: var(--gray-400); }
     .stat-tiers { display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .1rem; }
+    .line-table { width:100%; border-collapse:collapse; font-size:.82rem; }
+    .line-table th { text-align:left; font-size:.7rem; text-transform:uppercase;
+      letter-spacing:.3px; color:var(--gray-400); padding:.5rem .6rem; border-bottom:2px solid var(--gray-100); }
+    .line-table td { padding:.55rem .6rem; border-bottom:1px solid var(--gray-50); }
+    .line-table tr:hover { background:var(--gray-50); }
   </style>
 </head>
 <body>
 <div id="nav-root"></div>
 <script src="/shared/i18n.js"></script>
-  <script src="/shared/auth.js"></script>
+<script src="/shared/auth.js"></script>
 <script src="/shared/nav.js"></script>
 
 <main class="page-wide">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem">
     <div>
-      <h1 style="font-size:1.25rem; font-weight:700; margin:0" data-i18n="review.title">财务复核队列</h1>
-      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem" data-i18n="review.subtitle">
-        经理已批准、待财务审核入账
+      <h1 style="font-size:1.25rem; font-weight:700; margin:0">财务复核队列</h1>
+      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem">
+        经理已批准、待财务审核入账（以报销单为单位）
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:.6rem">
       <div id="count-chip" class="status-badge status-manager_approved" style="font-size:.85rem; padding:.4rem .8rem"></div>
-      <button class="btn btn-outline btn-sm" id="bulk-lowrisk-btn" onclick="bulkApproveLowRisk()" data-i18n="btn.bulk-approve">
+      <button class="btn btn-outline btn-sm" id="bulk-lowrisk-btn" onclick="window._bulkApprove()">
         批量通过低风险
       </button>
     </div>
   </div>
 
-  <!-- ── 汇总条 ── -->
+  <!-- Stats strip -->
   <div class="stats-strip" id="stats-strip" style="display:none">
     <div class="stat-card">
       <div class="stat-value" id="stat-amount">—</div>
-      <div class="stat-label" data-i18n="stats.total-amount">待审合计金额</div>
+      <div class="stat-label">待审合计金额</div>
     </div>
     <div class="stat-card">
       <div class="stat-value" id="stat-risk">—</div>
-      <div class="stat-label" data-i18n="stats.avg-risk">平均风险评分</div>
+      <div class="stat-label">平均风险评分</div>
     </div>
     <div class="stat-card">
-      <div class="stat-value" id="stat-t4">—</div>
-      <div class="stat-label" data-i18n="stats.t4-count">高风险单 (T4)</div>
+      <div class="stat-value" id="stat-count">—</div>
+      <div class="stat-label">待审报销单</div>
     </div>
     <div class="stat-card" style="display:flex; flex-direction:column; justify-content:center">
       <div class="stat-tiers" id="stat-tiers"></div>
-      <div class="stat-label" style="margin-top:.35rem" data-i18n="stats.tier-dist">风险分布</div>
+      <div class="stat-label" style="margin-top:.35rem">风险分布</div>
     </div>
   </div>
 
   <div class="inbox-layout">
-    <!-- 左侧列表 -->
     <aside class="inbox-list" id="inbox-list">
       <div style="text-align:center; padding:2rem"><span class="spinner"></span></div>
     </aside>
-
-    <!-- 右侧详情 -->
     <section class="inbox-detail" id="inbox-detail">
-      <div style="text-align:center; padding:4rem; color:var(--gray-400)" data-i18n="review.placeholder">
+      <div style="text-align:center; padding:4rem; color:var(--gray-400)">
         请从左侧选择一张报销单
       </div>
     </section>
   </div>
 </main>
 
+<!-- Confirm modal -->
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;
+  display:none;align-items:center;justify-content:center">
+  <div style="background:white;border-radius:12px;padding:1.5rem;width:400px;max-width:90vw">
+    <h3 id="modal-title" style="margin:0 0 .75rem"></h3>
+    <div class="form-group" style="margin-bottom:1rem">
+      <label id="modal-label">意见</label>
+      <textarea id="modal-comment" rows="3" placeholder="可选"></textarea>
+    </div>
+    <div style="display:flex;gap:.5rem;justify-content:flex-end">
+      <button class="btn btn-outline btn-sm" onclick="window._closeModal()">取消</button>
+      <button class="btn btn-sm" id="modal-confirm-btn" onclick="window._confirmModal()">确认</button>
+    </div>
+  </div>
+</div>
+
 <script src="/shared/api.js"></script>
 <script src="/shared/ai-card.js"></script>
 <script>
 function esc(s) {
   return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function fmtMoney(currency, amount) {
+  return `${currency || "CNY"} ${Number(amount || 0).toFixed(2)}`;
 }
 
 (function () {
-  let items = [];
+  let reports = [];
   let selectedId = null;
-  let policy = null;     // 缓存 GL/CC/项目库
+  let _currentReport = null;
+  let modalAction = null, modalReportId = null;
 
-  const CAT_LABEL = c => (window.i18n && window.i18n.cat(c)) ||
-    ({ meal:'餐饮', transport:'交通', accommodation:'住宿', entertainment:'招待', other:'其他' }[c] || c);
+  const CAT_LABEL = {
+    meal:'餐饮', transport:'交通', accommodation:'住宿',
+    entertainment:'招待', office_supplies:'办公用品', other:'其他',
+    '餐饮':'餐饮', '交通':'交通', '住宿':'住宿', '办公用品':'办公用品', '通讯':'通讯', '其他':'其他'
+  };
 
-  // ── 加载列表 ──
+  async function authH() {
+    if (window.auth && window.auth.getHeaders) return await window.auth.getHeaders();
+    return {};
+  }
+
   async function loadList() {
     try {
-      // 拿政策（含 gl_mapping + projects）
-      policy = await api.getPolicy();
-      // 拿待审核列表
-      const data = await api.listSubmissions({ status: 'manager_approved', page_size: 100 });
-      items = data.items;
-      document.getElementById('count-chip').textContent = `${data.total} ${t('review.pending-suffix')}`;
+      const data = await api.financeQueue();
+      reports = data.items || [];
+      document.getElementById('count-chip').textContent = `${reports.length} 单待复核`;
       renderStats();
       renderList();
-      if (items.length && !selectedId) selectItem(items[0].id);
+      if (reports.length && !selectedId) selectItem(reports[0].id);
     } catch (err) {
       document.getElementById('inbox-list').innerHTML =
-        `<div class="alert alert-error">${t('review.load-fail')}${err.message}</div>`;
+        `<div class="alert alert-error">加载失败: ${err.message}</div>`;
     }
   }
 
   function renderStats() {
     const strip = document.getElementById('stats-strip');
-    if (!items.length) { strip.style.display = 'none'; return; }
+    if (!reports.length) { strip.style.display = 'none'; return; }
     strip.style.display = 'grid';
 
-    // 合计金额
-    const total = items.reduce((s, x) => s + x.amount, 0);
+    const totalConverted = reports.reduce((s, r) =>
+      s + (r.total_converted != null ? r.total_converted : r.total_amount), 0);
     document.getElementById('stat-amount').textContent =
-      '¥' + total.toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+      '¥' + totalConverted.toLocaleString('zh-CN', { maximumFractionDigits: 0 });
 
-    // 平均风险
-    const withRisk = items.filter(x => x.risk_score != null);
+    const allLines = reports.flatMap(r => r.lines || []);
+    const withRisk = allLines.filter(l => l.risk_score != null);
     const avgRisk = withRisk.length
-      ? withRisk.reduce((s, x) => s + x.risk_score, 0) / withRisk.length
-      : null;
+      ? withRisk.reduce((s, l) => s + l.risk_score, 0) / withRisk.length : null;
     const riskEl = document.getElementById('stat-risk');
     riskEl.textContent = avgRisk != null ? `${avgRisk.toFixed(0)}/100` : '—';
     riskEl.className = 'stat-value' + (avgRisk != null && avgRisk >= 75 ? ' danger' : '');
 
-    // T4 高风险数
-    const t4 = items.filter(x => x.tier === 'T4').length;
-    const t4El = document.getElementById('stat-t4');
-    t4El.textContent = t4 ? t('review.t4-count-val').replace('{n}', t4) : t('review.t4-none');
-    t4El.className = 'stat-value' + (t4 > 0 ? ' danger' : '');
+    document.getElementById('stat-count').textContent = `${reports.length} 单`;
 
-    // 风险分布 tier badges
     const counts = {};
-    items.forEach(x => { if (x.tier) counts[x.tier] = (counts[x.tier] || 0) + 1; });
+    reports.forEach(r => { if (r.worst_tier) counts[r.worst_tier] = (counts[r.worst_tier] || 0) + 1; });
     document.getElementById('stat-tiers').innerHTML =
-      ['T1','T2','T3','T4']
-        .filter(t => counts[t])
-        .map(t => `<span class="status-badge tier-${t}">${t} × ${counts[t]}</span>`)
-        .join('');
+      ['T1','T2','T3','T4'].filter(t => counts[t])
+        .map(t => `<span class="status-badge tier-${t}">${t} × ${counts[t]}</span>`).join('');
   }
 
   function renderList() {
-    if (!items.length) {
+    if (!reports.length) {
       document.getElementById('inbox-list').innerHTML =
         `<div style="text-align:center; padding:3rem; color:var(--gray-400)">
-          ${t('review.empty')}
-        </div>`;
+          所有报销单已审核完毕 ✓</div>`;
       document.getElementById('inbox-detail').innerHTML =
-        `<div style="text-align:center; padding:4rem; color:var(--gray-400)">${t('review.all-done')}</div>`;
+        `<div style="text-align:center; padding:4rem; color:var(--gray-400)">无待审报销单</div>`;
       return;
     }
-    document.getElementById('inbox-list').innerHTML = items.map(s => {
-      const active = s.id === selectedId ? ' active' : '';
-      const tier = s.tier ? `<span class="status-badge tier-${s.tier}" style="margin-left:.4rem">${s.tier}</span>` : '';
-      const budgetBadge = s.budget_blocked
-        ? `<span class="badge badge-error" style="margin-left:.3rem;font-size:.7rem">${t('budget.held-badge')}</span>`
-        : '';
+    document.getElementById('inbox-list').innerHTML = reports.map(r => {
+      const active = r.id === selectedId ? ' active' : '';
+      const total = r.total_converted != null ? r.total_converted : r.total_amount;
       return `
-        <div class="inbox-item${active}" onclick="window._selectItem('${s.id}')">
+        <div class="inbox-item${active}" onclick="window._selectItem('${r.id}')">
           <div style="display:flex; justify-content:space-between; align-items:flex-start">
             <div>
-              <div style="font-weight:600; font-size:.92rem">${esc(s.merchant)}</div>
+              <div style="font-weight:600; font-size:.92rem">${esc(r.title)}</div>
               <div style="font-size:.75rem; color:var(--gray-400); margin-top:.15rem">
-                ${esc(s.employee_id)} · ${esc(s.department) || '—'} · ${CAT_LABEL(s.category)}
+                ${esc(r.employee_name)} · ${r.line_count} 笔
               </div>
             </div>
             <div style="text-align:right">
-              <div style="font-weight:700">¥${s.amount.toFixed(2)}</div>
-              ${tier}${budgetBadge}
+              <div style="font-weight:700">${r.home_currency || "CNY"} ${total.toFixed(2)}</div>
+              ${r.worst_tier ? `<span class="status-badge tier-${r.worst_tier}" style="margin-top:.15rem;display:inline-block">${r.worst_tier}</span>` : ''}
             </div>
-          </div>
-          <div style="font-size:.7rem; color:var(--gray-300); margin-top:.4rem">
-            ${s.date} · ${t('review.mgr-approved-at')} ${s.approved_at?.slice(0,10) || '—'}
           </div>
         </div>`;
     }).join('');
   }
 
-  window._selectItem = selectItem;
-  function selectItem(id) {
+  window._selectItem = function(id) {
     selectedId = id;
     renderList();
-    const sub = items.find(s => s.id === id);
-    if (sub) renderDetail(sub);
-  }
+    const r = reports.find(r => r.id === id);
+    if (r) renderDetail(r);
+  };
+  function selectItem(id) { window._selectItem(id); }
 
-  // ── 详情面板 ──
-  function renderDetail(sub) {
-    const glOptions = Object.entries(policy.gl_mapping || {}).map(([cat, code]) =>
-      `<option value="${code}"${sub.gl_account === code ? ' selected' : ''}>${code} (${CAT_LABEL(cat)})</option>`
-    ).join('');
-    const projOptions = `<option value="">${t('review.no-project')}</option>` +
-      (policy.projects || []).map(p =>
-        `<option value="${p.code}"${sub.project_code === p.code ? ' selected' : ''}>${p.code} · ${p.name}</option>`
-      ).join('');
-    const risk = sub.risk_score || 0;
-    const riskClass = risk < 30 ? 'low' : risk < 55 ? 'medium' : risk < 75 ? 'high' : 'critical';
+  function renderDetail(r) {
+    _currentReport = r;
+    const total = r.total_converted != null ? r.total_converted : r.total_amount;
 
-    const safeReceiptUrl = sub.receipt_url && /^https?:\/\//i.test(sub.receipt_url) ? sub.receipt_url : '#';
-
-    document.getElementById('inbox-detail').innerHTML = `
+    let html = `
       <div style="padding:1.25rem 1.5rem; max-height:calc(100vh - 9rem); overflow-y:auto">
 
-        <!-- 头部信息 -->
+        <!-- Header -->
         <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1rem">
           <div>
-            <div style="font-size:1.1rem; font-weight:700">${esc(sub.merchant)}</div>
+            <div style="font-size:1.1rem; font-weight:700">${esc(r.title)}</div>
             <div style="font-size:1.5rem; font-weight:800; color:var(--brand-dark); margin-top:.2rem">
-              ${sub.currency} ${sub.amount.toFixed(2)}
+              ${r.home_currency || "CNY"} ${total.toFixed(2)}
             </div>
             <div style="font-size:.78rem; color:var(--gray-400); margin-top:.25rem">
-              ${esc(sub.employee_id)} · ${esc(sub.department) || t('review.unknown-dept')} · ${esc(sub.cost_center) || '—'}
+              ${esc(r.employee_name)} · ${esc(r.department) || '—'} · ${r.line_count} 笔
             </div>
           </div>
-          <a href="${safeReceiptUrl}" target="_blank" class="btn btn-outline btn-sm">${t('review.view-receipt')}</a>
+          <div style="display:flex;gap:.5rem">
+            <button class="btn btn-outline btn-sm" style="border-color:#ef4444;color:#ef4444"
+              onclick="window._openModal('reject','${r.id}')">
+              拒绝 <span class="kbd">R</span>
+            </button>
+            <button class="btn btn-success btn-sm"
+              onclick="window._openModal('approve','${r.id}')">
+              通过 <span class="kbd" style="border-color:rgba(255,255,255,.3);
+                color:rgba(255,255,255,.7);background:rgba(0,0,0,.15)">A</span>
+            </button>
+          </div>
         </div>
 
-        <!-- 嵌入式 AI 解释卡（第三种 agent 形态）-->
-        <div id="ai-card-${sub.id}"></div>
-
-        <!-- 风险条 -->
+        <!-- Risk bar -->
+        ${r.max_risk_score > 0 ? `
         <div class="risk-bar-wrap" style="margin-bottom:1.25rem">
-          <div class="risk-bar-labels"><span>${t('review.risk-label')}</span><span>${risk.toFixed(0)}/100 · ${sub.tier || ''}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--gray-400);margin-bottom:.3rem">
+            <span>AI 风险评分</span>
+            <span>${r.max_risk_score.toFixed(0)}/100 · ${r.worst_tier || ''}</span>
+          </div>
           <div class="risk-bar-track">
-            <div class="risk-bar-fill ${riskClass}" style="width:${risk}%"></div>
+            <div class="risk-bar-fill ${r.max_risk_score < 30 ? 'low' : r.max_risk_score < 55 ? 'medium' : r.max_risk_score < 75 ? 'high' : 'critical'}"
+              style="width:${r.max_risk_score}%"></div>
           </div>
+        </div>` : ''}
+
+        <!-- Line items table -->
+        <div style="font-size:.8rem;font-weight:700;text-transform:uppercase;
+          letter-spacing:.4px;color:var(--gray-400);margin-bottom:.5rem">
+          费用明细 <span style="font-weight:400;text-transform:none;letter-spacing:0">— 点击行查看详情</span>
         </div>
+        <table class="line-table">
+          <thead>
+            <tr><th>日期</th><th>商户</th><th>类别</th><th>原币金额</th><th>折合(${r.home_currency || 'CNY'})</th><th>风险</th></tr>
+          </thead>
+          <tbody>
+            ${(r.lines || []).map((l, i) => `
+              <tr style="cursor:pointer" onclick="window._showLine(${i})" id="line-row-${l.id}" class="line-row">
+                <td>${l.date || '—'}</td>
+                <td>${esc(l.merchant) || '—'}</td>
+                <td>${CAT_LABEL[l.category] || l.category || '—'}</td>
+                <td style="font-weight:600">${fmtMoney(l.currency, l.amount)}</td>
+                <td>${l.converted_amount != null ? fmtMoney(r.home_currency, l.converted_amount) : '—'}</td>
+                <td>${l.tier ? `<span class="status-badge tier-${l.tier}">${l.tier}</span>` : '—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
 
-        <!-- 经理审批信息 -->
-        <div class="card" style="margin-bottom:1rem">
-          <div class="card-title" style="font-size:.82rem">${t('review.mgr-approval')}</div>
-          <div style="font-size:.85rem">
-            <span style="color:var(--gray-400)">${esc(sub.approver_id) || '—'}</span>
-            ${sub.approver_comment ? ` · &ldquo;${esc(sub.approver_comment)}&rdquo;` : ''}
-          </div>
-        </div>
+        <!-- Line detail panel -->
+        <div id="line-detail" style="display:none"></div>
 
-        <!-- 财务编码（可编辑） -->
-        <div class="card" style="margin-bottom:1rem">
-          <div class="card-title" style="font-size:.82rem">${t('review.accounting-codes')}</div>
-          <div class="form-grid">
-            <div class="form-group">
-              <label>${t('review.field-gl')}</label>
-              <select id="f-gl">${glOptions}</select>
-            </div>
-            <div class="form-group">
-              <label>${t('review.field-cc')}</label>
-              <input id="f-cc" value="${esc(sub.cost_center)}" placeholder="CC-RD">
-            </div>
-            <div class="form-group">
-              <label>${t('review.field-proj')}</label>
-              <select id="f-proj">${projOptions}</select>
-            </div>
-          </div>
-        </div>
-
-        <!-- 发票字段 -->
-        <div class="card" style="margin-bottom:1rem">
-          <div class="card-title" style="font-size:.82rem">${t('review.invoice-info')}</div>
-          <div style="font-size:.82rem; line-height:1.7">
-            <div><span style="color:var(--gray-400)">${t('review.invoice-no')}</span>${esc(sub.invoice_number) || '—'}</div>
-            <div><span style="color:var(--gray-400)">${t('review.invoice-code')}</span>${esc(sub.invoice_code) || '—'}</div>
-            <div><span style="color:var(--gray-400)">${t('review.seller-tax')}</span>${esc(sub.seller_tax_id) || '—'}</div>
-            <div><span style="color:var(--gray-400)">${t('review.tax-amount')}</span>${sub.tax_amount != null ? '¥' + sub.tax_amount.toFixed(2) : '—'}</div>
-          </div>
-        </div>
-
-        <!-- 备注 -->
-        ${sub.description ? `
-          <div class="card" style="margin-bottom:1rem">
-            <div class="card-title" style="font-size:.82rem">${t('review.notes-title')}</div>
-            <div style="font-size:.85rem">${esc(sub.description)}</div>
-          </div>` : ''}
-
-        <!-- 财务意见 -->
-        <div class="form-group" style="margin-bottom:1rem">
-          <label>${t('review.finance-comment')}</label>
-          <textarea id="f-comment" rows="2" placeholder="${t('review.comment-ph')}"></textarea>
-        </div>
-
-        <!-- 按钮 -->
-        <div style="display:flex; gap:.6rem; justify-content:flex-end">
-          ${(sub.budget_blocked && localStorage.getItem('mock_role') === 'finance_admin')
-            ? `<button class="btn btn-outline btn-sm" style="border-color:#ef4444;color:#ef4444;margin-right:.5rem"
-                 onclick="window._unblockSub('${sub.id}')">${t('budget.unblock-btn')}</button>`
-            : ''}
-          <button class="btn btn-outline" onclick="window._reject('${sub.id}')">${t('btn.reject')}</button>
-          <button class="btn btn-success" onclick="window._approve('${sub.id}')">${t('btn.approve')}</button>
+        <!-- Finance comment -->
+        <div class="form-group" style="margin-top:1.25rem">
+          <label>财务意见</label>
+          <textarea id="f-comment" rows="2" placeholder="可选备注"></textarea>
         </div>
       </div>`;
 
-    // 异步加载 AI 解释卡
-    if (sub.audit_report && window.aiCard) {
-      window.aiCard.load(sub.id);
-    }
+    document.getElementById('inbox-detail').innerHTML = html;
   }
 
-  window._approve = async function(id) {
-    const body = {
-      gl_account:   document.getElementById('f-gl').value || null,
-      cost_center:  document.getElementById('f-cc').value || null,
-      project_code: document.getElementById('f-proj').value || null,
-      comment:      document.getElementById('f-comment').value || null,
+  // ── Line detail (editable) ──
+  window._showLine = function(idx) {
+    const r = _currentReport;
+    if (!r) return;
+    const l = r.lines[idx];
+    if (!l) return;
+
+    document.querySelectorAll('.line-row').forEach(el =>
+      el.style.background = el.id === 'line-row-' + l.id ? 'var(--gray-50)' : '');
+
+    const fieldRow = (label, key, val) => {
+      const v = val === null || val === undefined ? '' : val;
+      return `<div style="display:flex;align-items:center;padding:.35rem 0;border-bottom:1px solid var(--gray-50)">
+        <span style="color:var(--gray-400);font-size:.78rem;min-width:80px">${label}</span>
+        <input type="text" value="${String(v).replace(/"/g, '&quot;')}"
+          data-field="${key}" data-sub-id="${l.id}" data-report-id="${r.id}"
+          onchange="window._editField(this)"
+          style="flex:1;text-align:right;border:1px solid var(--gray-200);border-radius:4px;
+            padding:.25rem .5rem;font-size:.82rem;background:white;outline:none">
+      </div>`;
     };
-    try {
-      const result = await api.financeApprove(id, body);
-      alert(t('review.approve-ok') + result.voucher_number);
-      selectedId = null;
-      await loadList();
-    } catch (err) { alert(t('review.approve-fail') + err.message); }
+
+    const readonlyRow = (label, val) => `
+      <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid var(--gray-50)">
+        <span style="color:var(--gray-400);font-size:.78rem">${label}</span>
+        <span style="font-size:.82rem">${val || '—'}</span>
+      </div>`;
+
+    const risk = l.risk_score || 0;
+    const timeline = l.audit_report?.timeline || [];
+    const skillNames = ["收据验证","额度审批","合规检查","凭证生成","支付处理"];
+    const timelineHTML = timeline.length ? `
+      <div style="margin-top:.75rem">
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:var(--gray-400);margin-bottom:.4rem">AI 审核流程</div>
+        ${timeline.map((t, i) => {
+          const icon = t.skipped ? '⏭' : t.passed ? '✅' : '❌';
+          return `<div style="font-size:.78rem;padding:.2rem 0">${icon} ${skillNames[i] || 'Skill '+(i+1)} — ${t.message || ''}</div>`;
+        }).join('')}
+      </div>` : '';
+
+    document.getElementById('line-detail').innerHTML = `
+      <hr style="border:none;border-top:1px solid var(--gray-100);margin:1rem 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
+        <div>
+          <div style="font-size:1rem;font-weight:700">${esc(l.merchant) || '—'}</div>
+          <div style="font-size:.78rem;color:var(--gray-400)">${l.date} · ${CAT_LABEL[l.category] || l.category}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:1.1rem;font-weight:800">${fmtMoney(l.currency, l.amount)}</div>
+          ${l.tier ? `<span class="status-badge tier-${l.tier}">${l.tier}</span>` : ''}
+        </div>
+      </div>
+
+      ${l.receipt_url ? `<div style="margin-bottom:.75rem;text-align:center">
+        <img src="${l.receipt_url}" alt="发票" style="max-width:100%;max-height:180px;border-radius:8px;border:1px solid var(--gray-100)"
+          onerror="this.style.display='none'">
+      </div>` : ''}
+
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:var(--gray-400);margin-bottom:.3rem">字段明细（可编辑）</div>
+      ${fieldRow('商户', 'merchant', l.merchant)}
+      ${fieldRow('金额', 'amount', l.amount)}
+      ${fieldRow('币种', 'currency', l.currency)}
+      ${readonlyRow('汇率', l.exchange_rate)}
+      ${readonlyRow('折合金额', l.converted_amount != null ? fmtMoney(r.home_currency, l.converted_amount) : null)}
+      ${fieldRow('类别', 'category', l.category)}
+      ${fieldRow('发票号码', 'invoice_number', l.invoice_number)}
+      ${fieldRow('发票代码', 'invoice_code', l.invoice_code)}
+      ${fieldRow('销方税号', 'seller_tax_id', l.seller_tax_id)}
+      ${fieldRow('税额', 'tax_amount', l.tax_amount)}
+      ${fieldRow('项目代码', 'project_code', l.project_code)}
+      ${fieldRow('说明', 'description', l.description)}
+      ${fieldRow('部门', 'department', l.department)}
+      ${fieldRow('成本中心', 'cost_center', l.cost_center)}
+      ${fieldRow('科目', 'gl_account', l.gl_account)}
+      ${timelineHTML}
+    `;
+    document.getElementById('line-detail').style.display = 'block';
   };
 
-  window.bulkApproveLowRisk = async function() {
-    const lowRisk = items.filter(s => s.tier === 'T1' || s.tier === 'T2');
-    if (!lowRisk.length) {
-      alert(t('review.bulk-no-low'));
-      return;
+  window._editField = async function(input) {
+    const field = input.dataset.field;
+    const subId = input.dataset.subId;
+    const reportId = input.dataset.reportId;
+    const value = input.value;
+    input.style.borderColor = 'var(--gray-200)';
+    try {
+      const r = await fetch(`/api/reports/${reportId}/lines/${subId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...(await authH()) },
+        body: JSON.stringify({ field, value }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.status);
+      input.style.borderColor = '#22c55e';
+      setTimeout(() => input.style.borderColor = 'var(--gray-200)', 1500);
+    } catch (err) {
+      input.style.borderColor = '#ef4444';
+      alert('保存失败: ' + err.message);
     }
-    const total = lowRisk.reduce((a, x) => a + x.amount, 0);
-    if (!confirm(t('review.bulk-confirm').replace('{n}', lowRisk.length).replace('{total}', total.toFixed(2)))) return;
+  };
+
+  // ── Modal ──
+  window._openModal = function(action, id) {
+    modalAction = action;
+    modalReportId = id;
+    const overlay = document.getElementById('modal-overlay');
+    overlay.style.display = 'flex';
+    document.getElementById('modal-title').textContent =
+      action === 'approve' ? '确认通过整张报销单' : '确认拒绝整张报销单';
+    const btn = document.getElementById('modal-confirm-btn');
+    btn.className = action === 'approve' ? 'btn btn-success btn-sm' : 'btn btn-danger btn-sm';
+    btn.textContent = action === 'approve' ? '确认通过' : '确认拒绝';
+    document.getElementById('modal-comment').value = '';
+    document.getElementById('modal-comment').placeholder =
+      action === 'reject' ? '请填写拒绝原因' : '可选备注';
+  };
+
+  window._closeModal = function() {
+    document.getElementById('modal-overlay').style.display = 'none';
+  };
+
+  window._confirmModal = async function() {
+    const comment = document.getElementById('modal-comment').value ||
+                    document.getElementById('f-comment')?.value || null;
+    window._closeModal();
+    try {
+      if (modalAction === 'approve') {
+        const result = await api.financeApprove(modalReportId, { comment });
+        alert('已通过，凭证号: ' + result.voucher_number);
+      } else {
+        if (!comment) { alert('请填写拒绝原因'); return; }
+        await api.financeReject(modalReportId, comment);
+        alert('已拒绝');
+      }
+      selectedId = null;
+      await loadList();
+    } catch (err) {
+      alert('操作失败: ' + err.message);
+    }
+  };
+
+  // ── Bulk approve ──
+  window._bulkApprove = async function() {
+    const lowRisk = reports.filter(r => !r.worst_tier || r.worst_tier === 'T1' || r.worst_tier === 'T2');
+    if (!lowRisk.length) { alert('没有低风险报销单'); return; }
+    const totalAmt = lowRisk.reduce((s, r) => s + (r.total_converted != null ? r.total_converted : r.total_amount), 0);
+    if (!confirm(`批量通过 ${lowRisk.length} 张低风险报销单（合计 ¥${totalAmt.toFixed(2)}）？`)) return;
     const btn = document.getElementById('bulk-lowrisk-btn');
-    btn.disabled = true;
-    btn.textContent = t('review.bulk-processing');
+    btn.disabled = true; btn.textContent = '处理中…';
     try {
-      const result = await api.financeBulkApprove(lowRisk.map(s => s.id), '批量通过 - 低风险');
-      alert(t('review.bulk-ok').replace('{approved}', result.approved.length).replace('{skipped}', result.skipped.length));
+      const result = await api.financeBulkApprove(lowRisk.map(r => r.id), '批量通过 - 低风险');
+      alert(`已通过 ${result.approved.length} 张，跳过 ${result.skipped.length} 张`);
       selectedId = null;
       await loadList();
-    } catch (err) {
-      alert(t('review.bulk-fail') + err.message);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = t('btn.bulk-approve');
-    }
+    } catch (err) { alert('批量通过失败: ' + err.message); }
+    finally { btn.disabled = false; btn.textContent = '批量通过低风险'; }
   };
 
-  window._reject = async function(id) {
-    const comment = document.getElementById('f-comment').value || prompt(t('review.reject-prompt'));
-    if (!comment) return;
-    try {
-      await api.financeReject(id, comment);
-      selectedId = null;
-      await loadList();
-    } catch (err) { alert(t('review.reject-fail') + err.message); }
-  };
-
-  window._unblockSub = async function(id) {
-    if (!confirm(t('budget.unblock-confirm'))) return;
-    try {
-      await api.unblockSubmission(id);
-      selectedId = null;
-      await loadList();
-    } catch (err) {
-      alert(err.message || String(err));
-    }
-  };
-
-  // 键盘快捷键
+  // ── Keyboard shortcuts ──
   document.addEventListener('keydown', e => {
     if (!selectedId || ['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
-    if (e.key === 'a' || e.key === 'A') window._approve(selectedId);
-    if (e.key === 'r' || e.key === 'R') window._reject(selectedId);
+    if (e.key === 'a' || e.key === 'A') window._openModal('approve', selectedId);
+    if (e.key === 'r' || e.key === 'R') window._openModal('reject', selectedId);
     if (e.key === 'j' || e.key === 'J') {
-      const i = items.findIndex(x => x.id === selectedId);
-      if (i + 1 < items.length) selectItem(items[i + 1].id);
+      const i = reports.findIndex(r => r.id === selectedId);
+      if (i + 1 < reports.length) selectItem(reports[i + 1].id);
     }
     if (e.key === 'k' || e.key === 'K') {
-      const i = items.findIndex(x => x.id === selectedId);
-      if (i > 0) selectItem(items[i - 1].id);
+      const i = reports.findIndex(r => r.id === selectedId);
+      if (i > 0) selectItem(reports[i - 1].id);
     }
   });
 

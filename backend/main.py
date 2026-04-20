@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from contextlib import asynccontextmanager
 
-from backend.api.routes import submissions, approvals, ocr, users, admin, employees, finance, chat, budget, quick, reports, notifications, fx
+from backend.api.routes import submissions, approvals, ocr, users, admin, employees, finance, chat, budget, quick, reports, notifications, fx, eval
 from backend.db.store import init_db
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
@@ -56,6 +56,7 @@ app.include_router(quick.router, prefix="/api/quick", tags=["quick"])
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
 app.include_router(fx.router, prefix="/api/fx", tags=["fx"])
+app.include_router(eval.router, prefix="/api/eval", tags=["eval"])
 
 
 # ── 前端静态文件 ──────────────────────────────────────────────────
@@ -65,6 +66,7 @@ if _FRONTEND_DIR.exists():
     app.mount("/manager",  StaticFiles(directory=str(_FRONTEND_DIR / "manager")),  name="manager")
     app.mount("/finance",  StaticFiles(directory=str(_FRONTEND_DIR / "finance")),  name="finance")
     app.mount("/admin",    StaticFiles(directory=str(_FRONTEND_DIR / "admin")),    name="admin")
+    app.mount("/eval",     StaticFiles(directory=str(_FRONTEND_DIR / "eval")),     name="eval")
 
 _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(_UPLOAD_DIR)), name="uploads")

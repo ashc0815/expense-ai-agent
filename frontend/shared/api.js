@@ -187,16 +187,20 @@
 
   // ── Finance ────────────────────────────────────────────────────
 
-  async function financeApprove(id, body = {}) {
-    return _request("POST", `/api/finance/submissions/${id}/approve`, { json: body });
+  async function financeApprove(reportId, body = {}) {
+    return _request("POST", `/api/reports/${reportId}/finance-approve`, { json: body });
   }
 
-  async function financeReject(id, comment = "") {
-    return _request("POST", `/api/finance/submissions/${id}/reject`, { json: { comment } });
+  async function financeReject(reportId, comment = "") {
+    return _request("POST", `/api/reports/${reportId}/finance-reject`, { json: { comment } });
   }
 
   async function financeBulkApprove(ids, comment = "") {
-    return _request("POST", "/api/finance/submissions/bulk-approve", { json: { ids, comment } });
+    return _request("POST", "/api/reports/queue/finance/bulk-approve", { json: { ids, comment } });
+  }
+
+  async function financeQueue() {
+    return _request("GET", "/api/reports/queue/finance");
   }
 
   // ── Chat / Agent ───────────────────────────────────────────────
@@ -395,6 +399,7 @@
     financeApprove,
     financeReject,
     financeBulkApprove,
+    financeQueue,
     financeExportPreview,
     financeExport,
     // chat / agent

@@ -1,0 +1,207 @@
+# Eval cases for Category Classifier (keyword-based)
+# Pure function: tool_suggest_category({merchant}) → {category, confidence, reason}
+# Graded by: code (category match + confidence match)
+
+# ═══════════════════════════════════════════════════════════════
+# Meal — 餐饮关键词
+# ═══════════════════════════════════════════════════════════════
+
+- id: classify_meal_haidilao
+  component: category_classifier
+  description: "海底捞 → meal"
+  input:
+    merchant: "海底捞火锅(浦东店)"
+  expect:
+    category: "meal"
+    confidence: 0.92
+
+- id: classify_meal_coffee
+  component: category_classifier
+  description: "咖啡 → meal"
+  input:
+    merchant: "星巴克咖啡"
+  expect:
+    category: "meal"
+    confidence: 0.92
+
+- id: classify_meal_restaurant_en
+  component: category_classifier
+  description: "英文restaurant → meal"
+  input:
+    merchant: "Joe's Restaurant & Bar"
+  expect:
+    category: "meal"
+    confidence: 0.92
+
+- id: classify_meal_rice
+  component: category_classifier
+  description: "含'饭'字 → meal"
+  input:
+    merchant: "沙县小吃盖浇饭"
+  expect:
+    category: "meal"
+    confidence: 0.92
+
+- id: classify_meal_coffee_en
+  component: category_classifier
+  description: "英文coffee → meal (大小写不敏感)"
+  input:
+    merchant: "Blue Bottle Coffee"
+  expect:
+    category: "meal"
+    confidence: 0.92
+
+# ═══════════════════════════════════════════════════════════════
+# Transport — 交通关键词
+# ═══════════════════════════════════════════════════════════════
+
+- id: classify_transport_didi
+  component: category_classifier
+  description: "滴滴 → transport"
+  input:
+    merchant: "滴滴出行"
+  expect:
+    category: "transport"
+    confidence: 0.92
+
+- id: classify_transport_gaotie
+  component: category_classifier
+  description: "高铁 → transport"
+  input:
+    merchant: "高铁票务"
+  expect:
+    category: "transport"
+    confidence: 0.92
+
+- id: classify_transport_taxi_en
+  component: category_classifier
+  description: "英文taxi → transport"
+  input:
+    merchant: "Yellow Taxi Co"
+  expect:
+    category: "transport"
+    confidence: 0.92
+
+- id: classify_transport_uber
+  component: category_classifier
+  description: "Uber → transport (大小写不敏感)"
+  input:
+    merchant: "UBER Technologies"
+  expect:
+    category: "transport"
+    confidence: 0.92
+
+- id: classify_transport_airline
+  component: category_classifier
+  description: "airline → transport"
+  input:
+    merchant: "China Eastern Airline"
+  expect:
+    category: "transport"
+    confidence: 0.92
+
+# ═══════════════════════════════════════════════════════════════
+# Accommodation — 住宿关键词
+# ═══════════════════════════════════════════════════════════════
+
+- id: classify_accommodation_hotel_zh
+  component: category_classifier
+  description: "酒店 → accommodation"
+  input:
+    merchant: "如家酒店"
+  expect:
+    category: "accommodation"
+    confidence: 0.92
+
+- id: classify_accommodation_hotel_en
+  component: category_classifier
+  description: "英文hotel → accommodation"
+  input:
+    merchant: "Marriott Hotel Shanghai"
+  expect:
+    category: "accommodation"
+    confidence: 0.92
+
+- id: classify_accommodation_inn
+  component: category_classifier
+  description: "inn → accommodation"
+  input:
+    merchant: "Holiday Inn Express"
+  expect:
+    category: "accommodation"
+    confidence: 0.92
+
+# ═══════════════════════════════════════════════════════════════
+# Entertainment — 娱乐关键词
+# ═══════════════════════════════════════════════════════════════
+
+- id: classify_entertainment_ktv
+  component: category_classifier
+  description: "ktv → entertainment (大小写不敏感)"
+  input:
+    merchant: "欢乐KTV量贩"
+  expect:
+    category: "entertainment"
+    confidence: 0.92
+
+- id: classify_entertainment_huisuo
+  component: category_classifier
+  description: "会所 → entertainment"
+  input:
+    merchant: "翡翠会所"
+  expect:
+    category: "entertainment"
+    confidence: 0.92
+
+# ═══════════════════════════════════════════════════════════════
+# Other — 无匹配关键词
+# ═══════════════════════════════════════════════════════════════
+
+- id: classify_other_hardware
+  component: category_classifier
+  description: "五金店 → other (无关键词匹配)"
+  input:
+    merchant: "建材五金超市"
+  expect:
+    category: "other"
+    confidence: 0.5
+
+- id: classify_other_empty
+  component: category_classifier
+  description: "空商户名 → other"
+  input:
+    merchant: ""
+  expect:
+    category: "other"
+    confidence: 0.5
+
+- id: classify_other_random
+  component: category_classifier
+  description: "随机字符串 → other"
+  input:
+    merchant: "XYZ123有限公司"
+  expect:
+    category: "other"
+    confidence: 0.5
+
+# ═══════════════════════════════════════════════════════════════
+# Edge cases — 优先级和子串匹配
+# ═══════════════════════════════════════════════════════════════
+
+- id: classify_priority_meal_over_entertainment
+  component: category_classifier
+  description: "含'餐'和'会所'时优先匹配meal(规则顺序靠前)"
+  input:
+    merchant: "会所餐厅"
+  expect:
+    category: "meal"
+    confidence: 0.92
+
+- id: classify_substring_cha
+  component: category_classifier
+  description: "'茶'作为子串匹配meal"
+  input:
+    merchant: "功夫茶馆"
+  expect:
+    category: "meal"
+    confidence: 0.92

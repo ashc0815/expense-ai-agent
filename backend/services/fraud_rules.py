@@ -57,17 +57,18 @@ class ApprovalRow:
 
 
 # ── 可配置阈值 ──────────────────────────────────────────────────────
+# 硬编码默认值（兜底），实际运行时从 eval_config.json 读取最新值
 
-DEFAULT_CONFIG = {
-    "threshold_proximity_pct": 0.03,    # 场景3: 距限额 3% 以内算卡线
-    "threshold_proximity_limit": 300.0, # 场景3: 每日限额
-    "threshold_proximity_min_count": 3, # 场景3: 至少 N 笔才 flag
-    "weekend_meal_max_weeks": 4,        # 场景5: 连续 N 周有周末餐饮
-    "weekend_exempt_depts": ["销售部", "市场部", "BD"],  # 场景5: 豁免部门
-    "round_amount_pct": 0.5,            # 场景6: 超过 50% 是整数就 flag
-    "round_amount_min_count": 5,        # 场景6: 至少 N 笔
-    "consecutive_invoice_min": 3,       # 场景7: 至少 N 张连号
-    "merchant_category_blocklist": {    # 场景8: 商户关键词 → 不允许的类别
+_HARDCODED_DEFAULTS = {
+    "threshold_proximity_pct": 0.03,
+    "threshold_proximity_limit": 300.0,
+    "threshold_proximity_min_count": 3,
+    "weekend_meal_max_weeks": 4,
+    "weekend_exempt_depts": ["销售部", "市场部", "BD"],
+    "round_amount_pct": 0.5,
+    "round_amount_min_count": 5,
+    "consecutive_invoice_min": 3,
+    "merchant_category_blocklist": {
         "足浴": ["meal", "transport", "accommodation"],
         "按摩": ["meal", "transport", "accommodation"],
         "烟酒": ["meal", "transport", "office"],
@@ -75,20 +76,41 @@ DEFAULT_CONFIG = {
         "KTV": ["meal", "transport", "office"],
         "会所": ["meal", "transport", "office"],
     },
-    "rush_days_before_last": 30,        # 场景9: 离职前 N 天
-    "rush_amount_multiplier": 3.0,      # 场景9: 金额超过月均 X 倍
-    "fx_deviation_pct": 0.02,           # 场景10: 汇率偏差 > 2%
-    # ── Level 2: LLM 翻译层 (场景 11-14) ──
-    "template_score_threshold": 70,     # 场景11: 模板化评分阈值
-    "vagueness_threshold": 60,          # 场景14: 模糊度阈值
-    "vagueness_suspicious_categories": ["gift", "entertainment", "supplies", "other"],  # 场景14
-    # ── Level 4: Agent 上下文推理 (场景 15-20) ──
-    "collusion_min_pair_count": 3,      # 场景15: 至少 N 笔才算轮流
-    "vendor_frequency_threshold": 6,    # 场景17: 同一商户出现 ≥ N 次
-    "seasonal_spike_multiplier": 2.5,   # 场景18: 季度金额超均值 N 倍
-    "approver_speed_ratio": 3.0,        # 场景19: 审批速度比值
-    "approver_min_samples": 3,          # 场景19: 至少 N 条审批记录
+    "rush_days_before_last": 30,
+    "rush_amount_multiplier": 3.0,
+    "fx_deviation_pct": 0.02,
+    "template_score_threshold": 70,
+    "vagueness_threshold": 60,
+    "vagueness_suspicious_categories": ["gift", "entertainment", "supplies", "other"],
+    "collusion_min_pair_count": 3,
+    "vendor_frequency_threshold": 6,
+    "seasonal_spike_multiplier": 2.5,
+    "approver_speed_ratio": 3.0,
+    "approver_min_samples": 3,
 }
+
+
+def _load_default_config() -> dict:
+    """Load thresholds from eval_config.json, falling back to hardcoded defaults."""
+    from backend.services.config_loader import load_thresholds
+    try:
+        live = load_thresholds()
+        if live:
+            merged = dict(_HARDCODED_DEFAULTS)
+            merged.update(live)
+            return merged
+    except Exception:
+        pass
+    return dict(_HARDCODED_DEFAULTS)
+
+
+DEFAULT_CONFIG = _load_default_config()
+
+
+def reload_config():
+    """Reload DEFAULT_CONFIG from eval_config.json (call after dashboard edits)."""
+    global DEFAULT_CONFIG
+    DEFAULT_CONFIG = _load_default_config()
 
 
 # ═══════════════════════════════════════════════════════════════════

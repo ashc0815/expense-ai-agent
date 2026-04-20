@@ -1,0 +1,146 @@
+# Eval cases for LLM-powered fraud rules 11-14
+# Graded by: code (score range checks)
+# Non-determinism: trials=3 (pass^3)
+
+# ── Rule 11: Description Template Detection ─────────────────────────
+- id: fraud_11_template_high
+  component: fraud_rule_11
+  description: "完全重复的描述 → template_score 高"
+  trials: 3
+  input:
+    description: "团队午餐 海底捞 5人"
+    category: "meal"
+    amount: 480.0
+    currency: "CNY"
+    merchant: "海底捞"
+    city: "上海"
+    date: "2026-04-10"
+    recent_descriptions:
+      - "团队午餐 海底捞 5人"
+      - "团队午餐 海底捞 5人"
+      - "团队午餐 海底捞 5人"
+      - "团队午餐 海底捞 4人"
+  expect:
+    template_score_range: [60, 100]
+
+- id: fraud_11_template_low
+  component: fraud_rule_11
+  description: "完全不同的描述 → template_score 低"
+  trials: 3
+  input:
+    description: "与客户王总讨论Q2合作方案，午餐"
+    category: "meal"
+    amount: 320.0
+    currency: "CNY"
+    merchant: "外婆家"
+    city: "杭州"
+    date: "2026-04-11"
+    recent_descriptions:
+      - "项目组code review后聚餐"
+      - "新员工入职欢迎午餐"
+      - "部门季度总结会午餐"
+  expect:
+    template_score_range: [0, 30]
+
+# ── Rule 12: Receipt Contradiction ──────────────────────────────────
+- id: fraud_12_contradiction_yes
+  component: fraud_rule_12
+  description: "发票地点与描述矛盾 → contradiction_found=true"
+  trials: 3
+  input:
+    description: "上海客户拜访午餐"
+    category: "meal"
+    amount: 250.0
+    currency: "CNY"
+    merchant: "全聚德"
+    city: "上海"
+    date: "2026-04-10"
+    receipt_location: "北京市东城区"
+    recent_descriptions: []
+  expect:
+    contradiction_found: true
+
+- id: fraud_12_contradiction_no
+  component: fraud_rule_12
+  description: "发票地点与描述一致 → contradiction_found=false"
+  trials: 3
+  input:
+    description: "北京出差客户午餐"
+    category: "meal"
+    amount: 380.0
+    currency: "CNY"
+    merchant: "全聚德"
+    city: "北京"
+    date: "2026-04-10"
+    receipt_location: "北京市东城区"
+    recent_descriptions: []
+  expect:
+    contradiction_found: false
+
+# ── Rule 13: Person-Amount Mismatch ─────────────────────────────────
+- id: fraud_13_unreasonable
+  component: fraud_rule_13
+  description: "3人花3000→人均1000，娱乐类不合理"
+  trials: 3
+  input:
+    description: "3位客户招待晚餐"
+    category: "entertainment"
+    amount: 3000.0
+    currency: "CNY"
+    merchant: "大董烤鸭"
+    city: "北京"
+    date: "2026-04-12"
+    recent_descriptions: []
+  expect:
+    person_amount_reasonable: false
+    extracted_person_count_range: [3, 4]
+
+- id: fraud_13_reasonable
+  component: fraud_rule_13
+  description: "5人花500→人均100，午餐合理"
+  trials: 3
+  input:
+    description: "团队5人工作午餐"
+    category: "meal"
+    amount: 500.0
+    currency: "CNY"
+    merchant: "食堂"
+    city: "上海"
+    date: "2026-04-12"
+    recent_descriptions: []
+  expect:
+    person_amount_reasonable: true
+    extracted_person_count_range: [4, 6]
+
+# ── Rule 14: Vague Description ──────────────────────────────────────
+- id: fraud_14_vague_high
+  component: fraud_rule_14
+  description: "极度模糊描述 + 高风险类别 → vagueness_score 高"
+  trials: 3
+  input:
+    description: "招待"
+    category: "entertainment"
+    amount: 2000.0
+    currency: "CNY"
+    merchant: "某酒店"
+    city: "深圳"
+    date: "2026-04-13"
+    recent_descriptions: []
+  expect:
+    vagueness_score_range: [60, 100]
+
+- id: fraud_14_vague_low
+  component: fraud_rule_14
+  description: "详细描述 → vagueness_score 低"
+  trials: 3
+  input:
+    description: "2026年4月13日与深圳分公司技术总监李明讨论微服务架构迁移方案，晚餐招待"
+    category: "entertainment"
+    amount: 800.0
+    currency: "CNY"
+    merchant: "翠园餐厅"
+    city: "深圳"
+    date: "2026-04-13"
+    recent_descriptions: []
+  expect:
+    vagueness_score_range: [0, 30]

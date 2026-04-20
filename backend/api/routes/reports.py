@@ -18,7 +18,8 @@ from backend.db.store import (
     append_audit_step, create_audit_log, create_notification, create_report,
     get_db, get_employee, get_or_create_open_report, get_report,
     list_report_drafts, list_report_submissions, list_reports_for_employee,
-    set_report_status, update_submission_status,
+    next_voucher_number, set_report_status, update_submission_finance,
+    update_submission_status,
 )
 from backend.quick.finalize import finalize_report
 
@@ -29,6 +30,19 @@ router = APIRouter()
 
 class NewReportBody(BaseModel):
     title: Optional[str] = None
+
+
+class ApproveReportBody(BaseModel):
+    comment: Optional[str] = None
+
+
+class ReturnReportBody(BaseModel):
+    reason: str
+
+
+class BulkApproveBody(BaseModel):
+    ids: list[str]
+    comment: Optional[str] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -205,12 +219,32 @@ async def manager_report_queue(
         .order_by(Report.submitted_at.asc())
     )
     reports = list(result.scalars().all())
+    from backend.services.fx_service import get_rate, convert as fx_convert
+
     items = []
     for r in reports:
         subs = await list_report_submissions(db, r.id)
         emp = await get_employee(db, r.employee_id)
+        home_currency = emp.home_currency if emp and emp.home_currency else "CNY"
 
         total = sum(float(s.amount) for s in subs)
+        total_converted = 0.0
+        lines = []
+        for s in subs:
+            line = _line_dict(s)
+            currency = s.currency or "CNY"
+            amt = float(s.amount)
+            if s.exchange_rate is not None:
+                rate = float(s.exchange_rate)
+                conv = round(amt * rate, 2)
+            else:
+                rate = get_rate(currency, home_currency)
+                conv = fx_convert(amt, currency, home_currency)
+            line["exchange_rate"] = rate
+            line["converted_amount"] = conv
+            total_converted += conv
+            lines.append(line)
+
         max_risk = max((float(s.risk_score) for s in subs if s.risk_score is not None), default=0)
         worst_tier = None
         tier_order = {"T4": 4, "T3": 3, "T2": 2, "T1": 1}
@@ -229,14 +263,199 @@ async def manager_report_queue(
             "employee_name": emp.name if emp else r.employee_id,
             "department": emp.department if emp else None,
             "total_amount": total,
+            "total_converted": round(total_converted, 2),
+            "home_currency": home_currency,
             "line_count": len(subs),
-            "lines": [_line_dict(s) for s in subs],
+            "lines": lines,
             "max_risk_score": max_risk,
             "worst_tier": worst_tier,
             "all_reviewed": all_reviewed,
             "still_processing": still_processing,
         })
     return {"items": items, "total": len(items)}
+
+
+@router.get("/queue/finance")
+async def finance_report_queue(
+    ctx: UserContext = Depends(require_role("finance_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reports in 'manager_approved' state — the finance review queue."""
+    from backend.services.fx_service import get_rate, convert as fx_convert
+
+    result = await db.execute(
+        select(Report)
+        .where(Report.status == "manager_approved")
+        .order_by(Report.updated_at.asc())
+    )
+    reports = list(result.scalars().all())
+    items = []
+    for r in reports:
+        subs = await list_report_submissions(db, r.id)
+        emp = await get_employee(db, r.employee_id)
+        home_currency = emp.home_currency if emp and emp.home_currency else "CNY"
+
+        total = sum(float(s.amount) for s in subs)
+        total_converted = 0.0
+        lines = []
+        for s in subs:
+            line = _line_dict(s)
+            currency = s.currency or "CNY"
+            amt = float(s.amount)
+            if s.exchange_rate is not None:
+                rate = float(s.exchange_rate)
+                conv = round(amt * rate, 2)
+            else:
+                rate = get_rate(currency, home_currency)
+                conv = fx_convert(amt, currency, home_currency)
+            line["exchange_rate"] = rate
+            line["converted_amount"] = conv
+            total_converted += conv
+            lines.append(line)
+
+        max_risk = max((float(s.risk_score) for s in subs if s.risk_score is not None), default=0)
+        worst_tier = None
+        tier_order = {"T4": 4, "T3": 3, "T2": 2, "T1": 1}
+        for s in subs:
+            if s.tier and tier_order.get(s.tier, 0) > tier_order.get(worst_tier, 0):
+                worst_tier = s.tier
+
+        items.append({
+            **_report_dict(r),
+            "employee_id": r.employee_id,
+            "employee_name": emp.name if emp else r.employee_id,
+            "department": emp.department if emp else None,
+            "total_amount": total,
+            "total_converted": round(total_converted, 2),
+            "home_currency": home_currency,
+            "line_count": len(subs),
+            "lines": lines,
+            "max_risk_score": max_risk,
+            "worst_tier": worst_tier,
+        })
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/{report_id}/finance-approve")
+async def finance_approve_report(
+    report_id: str,
+    body: ApproveReportBody = ApproveReportBody(),
+    ctx: UserContext = Depends(require_role("finance_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await get_report(db, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报销单不存在")
+    if report.status != "manager_approved":
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前状态 {report.status}，不可财务审批",
+        )
+
+    subs = await list_report_submissions(db, report_id)
+    now = datetime.now(timezone.utc)
+    voucher = await next_voucher_number(db)
+    for s in subs:
+        if s.status == "manager_approved":
+            await update_submission_finance(
+                db, s.id,
+                status="finance_approved",
+                finance_approver_id=ctx.user_id,
+                finance_approver_comment=body.comment,
+                voucher_number=voucher,
+            )
+            await append_audit_step(
+                db, s.id,
+                message=f"财务 {ctx.user_id} 整单批准，凭证号 {voucher}",
+                phase="finance_approved",
+            )
+
+    report.status = "finance_approved"
+    report.updated_at = now
+    await db.commit()
+
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="report_finance_approved",
+        resource_type="report", resource_id=report_id,
+        detail={"comment": body.comment, "voucher": voucher, "line_count": len(subs)},
+    )
+    return {"status": "ok", "voucher_number": voucher, "report_id": report_id}
+
+
+@router.post("/{report_id}/finance-reject")
+async def finance_reject_report(
+    report_id: str,
+    body: ApproveReportBody = ApproveReportBody(),
+    ctx: UserContext = Depends(require_role("finance_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await get_report(db, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报销单不存在")
+    if report.status != "manager_approved":
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前状态 {report.status}，不可拒绝",
+        )
+
+    subs = await list_report_submissions(db, report_id)
+    now = datetime.now(timezone.utc)
+    for s in subs:
+        if s.status == "manager_approved":
+            await update_submission_finance(
+                db, s.id,
+                status="rejected",
+                finance_approver_id=ctx.user_id,
+                finance_approver_comment=body.comment,
+            )
+
+    report.status = "rejected"
+    report.updated_at = now
+    await db.commit()
+
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="report_finance_rejected",
+        resource_type="report", resource_id=report_id,
+        detail={"comment": body.comment, "line_count": len(subs)},
+    )
+    return {"status": "ok", "report_id": report_id}
+
+
+@router.post("/queue/finance/bulk-approve")
+async def finance_bulk_approve_reports(
+    body: BulkApproveBody,
+    ctx: UserContext = Depends(require_role("finance_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk approve low-risk reports at the report level."""
+    results = {"approved": [], "skipped": []}
+    for rid in body.ids:
+        report = await get_report(db, rid)
+        if not report or report.status != "manager_approved":
+            results["skipped"].append(rid)
+            continue
+        subs = await list_report_submissions(db, rid)
+        now = datetime.now(timezone.utc)
+        voucher = await next_voucher_number(db)
+        for s in subs:
+            if s.status == "manager_approved":
+                await update_submission_finance(
+                    db, s.id,
+                    status="finance_approved",
+                    finance_approver_id=ctx.user_id,
+                    finance_approver_comment=body.comment,
+                    voucher_number=voucher,
+                )
+        report.status = "finance_approved"
+        report.updated_at = now
+        await db.commit()
+        await create_audit_log(
+            db, actor_id=ctx.user_id, action="report_finance_approved",
+            resource_type="report", resource_id=rid,
+            detail={"bulk": True, "comment": body.comment, "voucher": voucher},
+        )
+        results["approved"].append({"id": rid, "voucher": voucher})
+    return results
 
 
 @router.get("/{report_id}")
@@ -346,14 +565,6 @@ async def withdraw_report(
 
 
 # ── Manager endpoints ────────────────────────────────────────────
-
-class ApproveReportBody(BaseModel):
-    comment: Optional[str] = None
-
-
-class ReturnReportBody(BaseModel):
-    reason: str
-
 
 @router.post("/{report_id}/approve")
 async def approve_report(

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>用户管理 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>
+    window.AUTH_MODE = "mock"; window.API_BASE = "";
+    if (!localStorage.getItem("mock_role")) { localStorage.setItem("mock_role", "finance_admin"); }
+  </script>
+</head>
+<body>
+  <div id="nav-root"></div>
+  <script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+  <script src="/shared/nav.js"></script>
+
+  <main class="page">
+    <div class="card">
+      <div class="card-title">用户管理</div>
+      <div class="alert alert-info">
+        用户账号通过 Clerk 控制台管理（<code>AUTH_MODE=clerk</code>）。<br>
+        开发模式下，可通过 <code>X-User-Role</code> 请求头模拟不同角色。
+      </div>
+
+      <div style="margin-top:1.5rem">
+        <div class="card-title" style="font-size:.9rem">开发模式 — 快速切换角色</div>
+        <div style="display:flex; gap:.5rem; margin-top:.5rem">
+          <button class="btn btn-ghost" onclick="switchRole('employee')">员工视角</button>
+          <button class="btn btn-ghost" onclick="switchRole('manager')">经理视角</button>
+          <button class="btn btn-ghost" onclick="switchRole('finance_admin')">财务管理员视角</button>
+        </div>
+        <div id="role-msg" style="margin-top:.75rem; font-size:.875rem; color:#6b7280"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/shared/api.js"></script>
+  <script>
+  function switchRole(role) {
+    auth.setMockRole(role);
+    const labels = { employee:"员工", manager:"经理", finance_admin:"财务管理员" };
+    document.getElementById("role-msg").textContent = `已切换为【${labels[role]}】角色，刷新页面生效。`;
+    setTimeout(() => location.reload(), 800);
+  }
+  </script>
+</body>
+</html>

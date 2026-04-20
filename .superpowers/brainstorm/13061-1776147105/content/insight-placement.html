@@ -1,0 +1,79 @@
+<h2>Where should the proactive budget insight appear?</h2>
+<p class="subtitle">Same data, different placement — pick the one that feels most natural for the workflow</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Banner at top of My Reports</h3>
+      <p>A dismissible alert card loads above the expense list when budget usage crosses a threshold (e.g. ≥ 75%).</p>
+      <div class="mockup" style="margin-top:.75rem">
+        <div class="mockup-header">My Reports</div>
+        <div class="mockup-body" style="padding:.75rem; font-size:.8rem">
+          <div style="background:#fef3c7; border:1px solid #f59e0b; border-radius:6px; padding:.6rem .8rem; margin-bottom:.75rem; display:flex; align-items:center; gap:.6rem">
+            <span style="font-size:1rem">⚠️</span>
+            <span><strong>Engineering team Q2 travel budget: 87% used</strong> — ¥1,300 remaining of ¥10,000. <a href="#" style="color:#b45309">View breakdown</a></span>
+          </div>
+          <div style="background:#f3f4f6; border-radius:4px; padding:.4rem .6rem; margin-bottom:.4rem; font-size:.75rem; color:#6b7280">Receipt · Marriott Shanghai · ¥1,280 · submitted</div>
+          <div style="background:#f3f4f6; border-radius:4px; padding:.4rem .6rem; margin-bottom:.4rem; font-size:.75rem; color:#6b7280">Receipt · Didi · ¥45 · approved</div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:.5rem">
+        <div class="pros"><h4>Pros</h4><ul><li>Highest visibility</li><li>No action required to see it</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Dismissible = can be ignored</li><li>Not tied to a specific action</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Proactive chat message from AI agent</h3>
+      <p>When the user opens My Reports, the AI agent sends an unprompted message with the budget status — blending naturally into the chat they already use.</p>
+      <div class="mockup" style="margin-top:.75rem">
+        <div class="mockup-header">AI Assistant</div>
+        <div class="mockup-body" style="padding:.75rem; font-size:.8rem">
+          <div style="background:#eff6ff; border-radius:8px; border-bottom-left-radius:2px; padding:.6rem .8rem; margin-bottom:.5rem; max-width:85%">
+            <div style="font-size:.7rem; color:#6b7280; margin-bottom:.25rem">AI Assistant</div>
+            <div>👋 Heads up — your Engineering team's Q2 travel budget is <strong>87% used</strong> (¥8,700 of ¥10,000). At your current pace, it runs out by mid-June.</div>
+            <div style="margin-top:.4rem; font-size:.75rem; color:#3b82f6; cursor:pointer">Show my contributions →</div>
+          </div>
+          <div style="background:#f3f4f6; border-radius:4px; padding:.4rem .6rem; font-size:.75rem; color:#6b7280; text-align:right; max-width:85%; margin-left:auto">Good to know, thanks</div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:.5rem">
+        <div class="pros"><h4>Pros</h4><ul><li>Feels like Ramp — agent initiates</li><li>Conversational, can ask follow-ups</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Easy to miss if chat is collapsed</li><li>Slightly more complex trigger logic</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Contextual warning during submission</h3>
+      <p>When filling a new expense, the agent checks remaining budget for that cost center and shows a warning inline — before they submit.</p>
+      <div class="mockup" style="margin-top:.75rem">
+        <div class="mockup-header">New Expense</div>
+        <div class="mockup-body" style="padding:.75rem; font-size:.8rem">
+          <div style="margin-bottom:.5rem">
+            <div style="font-size:.7rem; color:#6b7280; margin-bottom:.2rem">Cost Center</div>
+            <div class="mock-input" style="background:#fff; border:1px solid #d1d5db; border-radius:4px; padding:.35rem .6rem">ENG-TRAVEL</div>
+          </div>
+          <div style="background:#fef3c7; border:1px solid #f59e0b; border-radius:6px; padding:.5rem .75rem; font-size:.75rem">
+            ⚠️ <strong>ENG-TRAVEL budget is 87% used</strong> — ¥1,300 left this quarter. This expense will bring it to 92%.
+          </div>
+          <div class="mock-button" style="margin-top:.6rem; font-size:.75rem; opacity:.8">Submit anyway</div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:.5rem">
+        <div class="pros"><h4>Pros</h4><ul><li>Actionable — user can change cost center</li><li>Closest to the decision point</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Only surfaces when submitting</li><li>Silent between submissions</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:1.5rem">Click to select — or tell me in the terminal if you'd like a combination.</p>

@@ -1,0 +1,611 @@
+# Eval cases for deterministic fraud rules (rules 1-10, 15-20)
+# Each case calls one rule function and checks whether it fires or not.
+# Graded by: code (signal_count, rule_name match)
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 1: duplicate_attendee — 同餐重复报销
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule1_positive_overlap
+  component: fraud_rules_deterministic
+  rule: duplicate_attendee
+  description: "A和B同日同商户报餐，B的attendee含A → 应触发"
+  input:
+    submissions:
+      - id: "s1"
+        employee_id: "emp-A"
+        amount: 200
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "海底捞"
+        attendees: ["emp-B"]
+      - id: "s2"
+        employee_id: "emp-B"
+        amount: 180
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "海底捞"
+        attendees: ["emp-A"]
+  expect:
+    has_signal: true
+    rule_name: "duplicate_attendee"
+
+- id: rule1_negative_different_date
+  component: fraud_rules_deterministic
+  rule: duplicate_attendee
+  description: "同商户不同日期 → 不应触发"
+  input:
+    submissions:
+      - id: "s1"
+        employee_id: "emp-A"
+        amount: 200
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "海底捞"
+        attendees: ["emp-B"]
+      - id: "s2"
+        employee_id: "emp-B"
+        amount: 180
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-11"
+        merchant: "海底捞"
+        attendees: ["emp-A"]
+  expect:
+    has_signal: false
+
+- id: rule1_negative_no_attendee_overlap
+  component: fraud_rules_deterministic
+  rule: duplicate_attendee
+  description: "同日同商户，但attendee无交叉 → 不应触发"
+  input:
+    submissions:
+      - id: "s1"
+        employee_id: "emp-A"
+        amount: 200
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "海底捞"
+        attendees: ["emp-C"]
+      - id: "s2"
+        employee_id: "emp-B"
+        amount: 180
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "海底捞"
+        attendees: ["emp-D"]
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 2: geo_conflict — 地理矛盾
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule2_positive_two_cities
+  component: fraud_rules_deterministic
+  rule: geo_conflict
+  description: "同一天两个城市消费无交通记录 → 应触发"
+  input:
+    submissions:
+      - id: "s1"
+        employee_id: "emp-A"
+        amount: 100
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "餐厅A"
+        city: "上海"
+      - id: "s2"
+        employee_id: "emp-A"
+        amount: 150
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "餐厅B"
+        city: "北京"
+  expect:
+    has_signal: true
+    rule_name: "geo_conflict"
+
+- id: rule2_negative_has_transport
+  component: fraud_rules_deterministic
+  rule: geo_conflict
+  description: "同一天两城市但有交通记录 → 不应触发"
+  input:
+    submissions:
+      - id: "s1"
+        employee_id: "emp-A"
+        amount: 100
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "餐厅A"
+        city: "上海"
+      - id: "s2"
+        employee_id: "emp-A"
+        amount: 800
+        currency: "CNY"
+        category: "transport"
+        date: "2026-04-10"
+        merchant: "高铁"
+        city: "北京"
+      - id: "s3"
+        employee_id: "emp-A"
+        amount: 150
+        currency: "CNY"
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "餐厅B"
+        city: "北京"
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 3: threshold_proximity — 卡线报销
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule3_positive_near_limit
+  component: fraud_rules_deterministic
+  rule: threshold_proximity
+  description: "3笔金额在291-300区间(3%内) → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 299, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 295, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 298, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "餐厅"}
+  expect:
+    has_signal: true
+    rule_name: "threshold_proximity"
+
+- id: rule3_negative_below_range
+  component: fraud_rules_deterministic
+  rule: threshold_proximity
+  description: "3笔金额在290以下(超出3%范围) → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 280, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 270, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 260, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "餐厅"}
+  expect:
+    has_signal: false
+
+- id: rule3_negative_only_two
+  component: fraud_rules_deterministic
+  rule: threshold_proximity
+  description: "仅2笔近限额(不满min_count=3) → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 299, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 298, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅"}
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 4: timestamp_conflict — 时间戳矛盾
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule4_positive_diff_cities
+  component: fraud_rules_deterministic
+  rule: timestamp_conflict
+  description: "同一天不同城市非交通消费 → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "餐厅A", city: "上海"}
+      - {id: "s2", employee_id: "emp-A", amount: 80, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "餐厅B", city: "深圳"}
+  expect:
+    has_signal: true
+    rule_name: "timestamp_conflict"
+
+- id: rule4_negative_same_city
+  component: fraud_rules_deterministic
+  rule: timestamp_conflict
+  description: "同一天同城市 → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "餐厅A", city: "上海"}
+      - {id: "s2", employee_id: "emp-A", amount: 80, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "餐厅B", city: "上海"}
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 5: weekend_frequency — 周末高频报销
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule5_positive_four_weekends
+  component: fraud_rules_deterministic
+  rule: weekend_frequency
+  description: "非销售员工4个不同周末有餐饮报销 → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-03-07", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 120, currency: "CNY", category: "meal", date: "2026-03-14", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 110, currency: "CNY", category: "meal", date: "2026-03-21", merchant: "餐厅"}
+      - {id: "s4", employee_id: "emp-A", amount: 130, currency: "CNY", category: "meal", date: "2026-03-28", merchant: "餐厅"}
+    employee:
+      id: "emp-A"
+      department: "Engineering"
+  expect:
+    has_signal: true
+    rule_name: "weekend_frequency"
+
+- id: rule5_negative_sales_dept
+  component: fraud_rules_deterministic
+  rule: weekend_frequency
+  description: "销售部门员工周末报餐 → 豁免不触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-03-07", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 120, currency: "CNY", category: "meal", date: "2026-03-14", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 110, currency: "CNY", category: "meal", date: "2026-03-21", merchant: "餐厅"}
+      - {id: "s4", employee_id: "emp-A", amount: 130, currency: "CNY", category: "meal", date: "2026-03-28", merchant: "餐厅"}
+    employee:
+      id: "emp-A"
+      department: "销售部"
+  expect:
+    has_signal: false
+
+- id: rule5_negative_three_weekends
+  component: fraud_rules_deterministic
+  rule: weekend_frequency
+  description: "仅3个周末(不满4) → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-03-07", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 120, currency: "CNY", category: "meal", date: "2026-03-14", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 110, currency: "CNY", category: "meal", date: "2026-03-21", merchant: "餐厅"}
+    employee:
+      id: "emp-A"
+      department: "Engineering"
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 6: round_amount — 整数金额聚集
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule6_positive_mostly_round
+  component: fraud_rules_deterministic
+  rule: round_amount
+  description: "6笔中5笔整数(83%>50%且round_count≥5) → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 200, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 300, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "餐厅"}
+      - {id: "s4", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-04-04", merchant: "餐厅"}
+      - {id: "s5", employee_id: "emp-A", amount: 400, currency: "CNY", category: "meal", date: "2026-04-05", merchant: "餐厅"}
+      - {id: "s6", employee_id: "emp-A", amount: 123.45, currency: "CNY", category: "meal", date: "2026-04-06", merchant: "餐厅"}
+  expect:
+    has_signal: true
+    rule_name: "round_amount"
+
+- id: rule6_negative_few_submissions
+  component: fraud_rules_deterministic
+  rule: round_amount
+  description: "仅3笔(不满min_count=5) → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 200, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 300, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "餐厅"}
+  expect:
+    has_signal: false
+
+- id: rule6_negative_mostly_decimal
+  component: fraud_rules_deterministic
+  rule: round_amount
+  description: "5笔中仅2笔整数(40%<50%) → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 200, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 300, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 123.45, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "餐厅"}
+      - {id: "s4", employee_id: "emp-A", amount: 67.8, currency: "CNY", category: "meal", date: "2026-04-04", merchant: "餐厅"}
+      - {id: "s5", employee_id: "emp-A", amount: 45.5, currency: "CNY", category: "meal", date: "2026-04-05", merchant: "餐厅"}
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 7: consecutive_invoices — 发票连号
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule7_positive_three_consecutive
+  component: fraud_rules_deterministic
+  rule: consecutive_invoices
+  description: "同商户3张连号发票 → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅A", invoice_number: "10001"}
+      - {id: "s2", employee_id: "emp-A", amount: 120, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅A", invoice_number: "10002"}
+      - {id: "s3", employee_id: "emp-A", amount: 110, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "餐厅A", invoice_number: "10003"}
+  expect:
+    has_signal: true
+    rule_name: "consecutive_invoices"
+
+- id: rule7_negative_different_merchants
+  component: fraud_rules_deterministic
+  rule: consecutive_invoices
+  description: "不同商户的连号发票 → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅A", invoice_number: "10001"}
+      - {id: "s2", employee_id: "emp-A", amount: 120, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅B", invoice_number: "10002"}
+      - {id: "s3", employee_id: "emp-A", amount: 110, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "餐厅C", invoice_number: "10003"}
+  expect:
+    has_signal: false
+
+- id: rule7_negative_non_consecutive
+  component: fraud_rules_deterministic
+  rule: consecutive_invoices
+  description: "同商户但发票号不连续 → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅A", invoice_number: "10001"}
+      - {id: "s2", employee_id: "emp-A", amount: 120, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "餐厅A", invoice_number: "10005"}
+      - {id: "s3", employee_id: "emp-A", amount: 110, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "餐厅A", invoice_number: "10010"}
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 8: merchant_category_mismatch — 商户类型不匹配
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule8_positive_massage_as_meal
+  component: fraud_rules_deterministic
+  rule: merchant_category_mismatch
+  description: "按摩店报成餐饮 → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 300, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "悦享按摩中心"}
+  expect:
+    has_signal: true
+    rule_name: "merchant_category_mismatch"
+
+- id: rule8_positive_ktv_as_transport
+  component: fraud_rules_deterministic
+  rule: merchant_category_mismatch
+  description: "棋牌室报成交通费 → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 500, currency: "CNY", category: "transport", date: "2026-04-10", merchant: "欢乐棋牌室"}
+  expect:
+    has_signal: true
+    rule_name: "merchant_category_mismatch"
+
+- id: rule8_negative_normal_meal
+  component: fraud_rules_deterministic
+  rule: merchant_category_mismatch
+  description: "正常餐厅报餐饮 → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 200, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "海底捞火锅"}
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 9: pre_resignation_rush — 离职前突击报销
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule9_positive_rush
+  component: fraud_rules_deterministic
+  rule: pre_resignation_rush
+  description: "离职前30天报销金额远超月均 → 应触发"
+  input:
+    submissions:
+      # 正常期间: 3个月每月约1000
+      - {id: "s1", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-01-10", merchant: "餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-01-20", merchant: "餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-02-10", merchant: "餐厅"}
+      - {id: "s4", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-02-20", merchant: "餐厅"}
+      - {id: "s5", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-03-01", merchant: "餐厅"}
+      - {id: "s6", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-03-10", merchant: "餐厅"}
+      # 离职前30天突击: 5000+
+      - {id: "s7", employee_id: "emp-A", amount: 2000, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅"}
+      - {id: "s8", employee_id: "emp-A", amount: 2000, currency: "CNY", category: "meal", date: "2026-04-05", merchant: "餐厅"}
+      - {id: "s9", employee_id: "emp-A", amount: 1500, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "餐厅"}
+    employee:
+      id: "emp-A"
+      department: "Engineering"
+      resignation_date: "2026-04-15"
+  expect:
+    has_signal: true
+    rule_name: "pre_resignation_rush"
+
+- id: rule9_negative_no_resignation
+  component: fraud_rules_deterministic
+  rule: pre_resignation_rush
+  description: "未离职员工 → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 5000, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "餐厅"}
+    employee:
+      id: "emp-A"
+      department: "Engineering"
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 10: fx_arbitrage — 汇率套利
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule10_positive_high_rate
+  component: fraud_rules_deterministic
+  rule: fx_arbitrage
+  description: "申报汇率高于市场价5%(超过2%阈值) → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 1000, currency: "USD", category: "meal", date: "2026-04-10", merchant: "restaurant", exchange_rate: 7.56}
+    market_rates:
+      USD_CNY: 7.2
+  expect:
+    has_signal: true
+    rule_name: "fx_arbitrage"
+
+- id: rule10_negative_within_range
+  component: fraud_rules_deterministic
+  rule: fx_arbitrage
+  description: "申报汇率偏差1%(在2%阈值内) → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 1000, currency: "USD", category: "meal", date: "2026-04-10", merchant: "restaurant", exchange_rate: 7.27}
+    market_rates:
+      USD_CNY: 7.2
+  expect:
+    has_signal: false
+
+- id: rule10_negative_cny
+  component: fraud_rules_deterministic
+  rule: fx_arbitrage
+  description: "CNY本币不检查汇率 → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 1000, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "餐厅", exchange_rate: 99.0}
+    market_rates:
+      USD_CNY: 7.2
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 15: collusion_pattern — 串通拆单
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule15_positive_alternating
+  component: fraud_rules_deterministic
+  rule: collusion_pattern
+  description: "两人交替在同商户同类别报销3笔 → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 280, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "好味餐厅"}
+      - {id: "s2", employee_id: "emp-B", amount: 290, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "好味餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 275, currency: "CNY", category: "meal", date: "2026-04-05", merchant: "好味餐厅"}
+  expect:
+    has_signal: true
+    rule_name: "collusion_pattern"
+
+- id: rule15_negative_same_employee
+  component: fraud_rules_deterministic
+  rule: collusion_pattern
+  description: "同一人多次报销 → 不应触发(只有1个员工)"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 280, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "好味餐厅"}
+      - {id: "s2", employee_id: "emp-A", amount: 290, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "好味餐厅"}
+      - {id: "s3", employee_id: "emp-A", amount: 275, currency: "CNY", category: "meal", date: "2026-04-05", merchant: "好味餐厅"}
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 17: vendor_frequency — 供应商频率异常
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule17_positive_high_freq
+  component: fraud_rules_deterministic
+  rule: vendor_frequency
+  description: "同一商户出现6次(≥阈值6) → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "小面馆"}
+      - {id: "s2", employee_id: "emp-A", amount: 110, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "小面馆"}
+      - {id: "s3", employee_id: "emp-A", amount: 105, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "小面馆"}
+      - {id: "s4", employee_id: "emp-A", amount: 120, currency: "CNY", category: "meal", date: "2026-04-04", merchant: "小面馆"}
+      - {id: "s5", employee_id: "emp-A", amount: 115, currency: "CNY", category: "meal", date: "2026-04-05", merchant: "小面馆"}
+      - {id: "s6", employee_id: "emp-A", amount: 108, currency: "CNY", category: "meal", date: "2026-04-06", merchant: "小面馆"}
+  expect:
+    has_signal: true
+    rule_name: "vendor_frequency"
+
+- id: rule17_negative_low_freq
+  component: fraud_rules_deterministic
+  rule: vendor_frequency
+  description: "同商户仅3次(<6) → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 100, currency: "CNY", category: "meal", date: "2026-04-01", merchant: "小面馆"}
+      - {id: "s2", employee_id: "emp-A", amount: 110, currency: "CNY", category: "meal", date: "2026-04-02", merchant: "小面馆"}
+      - {id: "s3", employee_id: "emp-A", amount: 105, currency: "CNY", category: "meal", date: "2026-04-03", merchant: "小面馆"}
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 18: seasonal_anomaly — 季节性异常
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule18_positive_spike
+  component: fraud_rules_deterministic
+  rule: seasonal_anomaly
+  description: "Q2报销是其他季度2.5x以上 → 应触发"
+  input:
+    quarter_totals:
+      "2026-Q1": 3000
+      "2026-Q2": 10000
+      "2026-Q3": 2800
+      "2026-Q4": 3200
+    current_quarter: "2026-Q2"
+  expect:
+    has_signal: true
+    rule_name: "seasonal_anomaly"
+
+- id: rule18_negative_normal
+  component: fraud_rules_deterministic
+  rule: seasonal_anomaly
+  description: "各季度金额相近 → 不应触发"
+  input:
+    quarter_totals:
+      "2026-Q1": 3000
+      "2026-Q2": 3500
+      "2026-Q3": 2800
+      "2026-Q4": 3200
+    current_quarter: "2026-Q2"
+  expect:
+    has_signal: false
+
+# ═══════════════════════════════════════════════════════════════
+# Rule 20: ghost_employee — 离职后仍报销
+# ═══════════════════════════════════════════════════════════════
+
+- id: rule20_positive_post_resign
+  component: fraud_rules_deterministic
+  rule: ghost_employee
+  description: "离职后还有报销 → 应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-05-01", merchant: "餐厅"}
+    employee:
+      id: "emp-A"
+      department: "Engineering"
+      resignation_date: "2026-04-15"
+  expect:
+    has_signal: true
+    rule_name: "ghost_employee"
+
+- id: rule20_negative_before_resign
+  component: fraud_rules_deterministic
+  rule: ghost_employee
+  description: "离职前报销 → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-04-10", merchant: "餐厅"}
+    employee:
+      id: "emp-A"
+      department: "Engineering"
+      resignation_date: "2026-04-15"
+  expect:
+    has_signal: false
+
+- id: rule20_negative_no_resignation
+  component: fraud_rules_deterministic
+  rule: ghost_employee
+  description: "在职员工 → 不应触发"
+  input:
+    submissions:
+      - {id: "s1", employee_id: "emp-A", amount: 500, currency: "CNY", category: "meal", date: "2026-05-01", merchant: "餐厅"}
+    employee:
+      id: "emp-A"
+      department: "Engineering"
+  expect:
+    has_signal: false
