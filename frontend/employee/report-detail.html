@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>报销详情 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="page" style="max-width:760px">
+
+  <div style="display:flex; align-items:center; gap:.75rem; margin-bottom:1.5rem">
+    <a href="/employee/my-reports.html" class="btn btn-outline btn-sm" data-i18n="detail.back">← 返回列表</a>
+    <h1 style="font-size:1.1rem; font-weight:700; margin:0" id="page-title" data-i18n="detail.title">报销详情</h1>
+  </div>
+
+  <div id="alert-box"></div>
+  <div id="content">
+    <div class="card" style="text-align:center; padding:3rem">
+      <span class="spinner"></span>
+      <div style="margin-top:.75rem; color:var(--gray-400)" data-i18n="detail.loading">加载中…</div>
+    </div>
+  </div>
+
+</main>
+
+<script src="/shared/api.js"></script>
+<script>
+(function () {
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id) {
+    document.getElementById('content').innerHTML =
+      `<div class="alert alert-error">${t('detail.no-id')}</div>`;
+    return;
+  }
+
+  const SKILL_NAMES = [
+    t('detail.skill.0'), t('detail.skill.1'), t('detail.skill.2'),
+    t('detail.skill.3'), t('detail.skill.4'),
+  ];
+
+  // 5 节点流程
+  const FLOW_NODES = [
+    { key: 'submitted',        label: t('detail.flow.submitted') },
+    { key: 'reviewed',         label: t('detail.flow.reviewed')  },
+    { key: 'manager_approved', label: t('detail.flow.mgr')       },
+    { key: 'finance_approved', label: t('detail.flow.fin')       },
+    { key: 'exported',         label: t('detail.flow.exported')  },
+  ];
+
+  function nodeState(node, sub) {
+    // 已拒绝在任意节点中断
+    if (sub.status === 'rejected') {
+      // submitted 永远是 done；其他根据时间戳判断
+      if (node.key === 'submitted') return 'done';
+      if (node.key === 'reviewed' && sub.audit_report) return 'done';
+      if (node.key === 'manager_approved' && sub.approved_at) return 'done';
+      return 'fail';
+    }
+    if (sub.status === 'review_failed') {
+      if (node.key === 'submitted') return 'done';
+      if (node.key === 'reviewed') return 'fail';
+      return 'pending';
+    }
+    const order = ['submitted', 'reviewed', 'manager_approved', 'finance_approved', 'exported'];
+    const cur = order.indexOf(sub.status);
+    const i = order.indexOf(node.key);
+    if (i < cur) return 'done';
+    if (i === cur) return 'active';
+    // processing 时 reviewed 节点是 active
+    if (sub.status === 'processing' && node.key === 'reviewed') return 'active';
+    return 'pending';
+  }
+
+  async function load() {
+    try {
+      const sub = await api.getSubmission(id);
+      render(sub);
+      if (sub.status === 'processing') {
+        await api.pollSubmissionStatus(id, render, { intervalMs: 3000, maxPolls: 20 });
+      }
+    } catch (err) {
+      const msg = err.status === 403 ? t('detail.forbidden') :
+                  err.status === 404 ? t('detail.not-found') : err.message;
+      document.getElementById('content').innerHTML =
+        `<div class="alert alert-error">${msg}</div>`;
+    }
+  }
+
+  function render(sub) {
+    document.getElementById('page-title').textContent =
+      `${sub.merchant} · ¥${sub.amount.toFixed(2)}`;
+
+    const risk = sub.risk_score || 0;
+    const riskClass = risk < 30 ? 'low' : risk < 55 ? 'medium' : risk < 75 ? 'high' : 'critical';
+    const timeline = sub.audit_report?.timeline || [];
+
+    let html = `
+      <!-- 顶部状态卡 -->
+      <div class="card" style="display:flex; align-items:center; justify-content:space-between;
+        flex-wrap:wrap; gap:.75rem">
+        <div>
+          <span class="badge badge-${sub.status}" style="font-size:.9rem; padding:.4rem .9rem">
+            ${i18n.status(sub.status)}
+          </span>
+          ${sub.tier ? `<span class="badge badge-${sub.tier}" style="margin-left:.4rem">${sub.tier}</span>` : ''}
+          ${sub.voucher_number ? `<span style="margin-left:.6rem; font-size:.78rem; color:var(--gray-400)">${t('detail.voucher-prefix')} <code>${sub.voucher_number}</code></span>` : ''}
+        </div>
+        ${sub.status === 'processing'
+          ? `<div style="display:flex;align-items:center;gap:.4rem;color:var(--gray-400);font-size:.85rem">
+               <span class="spinner"></span> ${t('detail.ai-reviewing')}</div>` : ''}
+      </div>
+
+      <!-- 5 节点流程时间线 -->
+      <div class="card">
+        <div class="card-title">${t('detail.flow-title')}</div>
+        <div class="flow-timeline">
+          ${FLOW_NODES.map((n, i) => {
+            const st = nodeState(n, sub);
+            return `
+              <div class="flow-node flow-${st}">
+                <div class="flow-dot">${st === 'done' ? '✓' : st === 'fail' ? '✕' : i + 1}</div>
+                <div class="flow-label">${n.label}</div>
+              </div>
+              ${i < FLOW_NODES.length - 1 ? `<div class="flow-line ${st === 'done' ? 'done' : ''}"></div>` : ''}
+            `;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- 报销基础信息 -->
+      <div class="card">
+        <div class="card-title">${t('detail.info-title')}</div>
+        ${sub.receipt_url ? `
+          <div class="receipt-preview-wrap" style="margin-bottom:1.25rem">
+            <img src="${sub.receipt_url}" alt="${t('detail.receipt-alt')}"
+              onerror="this.parentElement.innerHTML='<div class=receipt-placeholder>📄</div>'">
+          </div>` : ''}
+        <div class="detail-row">
+          <div><div class="detail-field-label">${t('detail.field-merchant')}</div>
+            <div class="detail-field-value">${sub.merchant}</div></div>
+          <div><div class="detail-field-label">${t('detail.field-amount')}</div>
+            <div class="detail-field-value" style="font-size:1.1rem;font-weight:700">
+              ${sub.currency} ${sub.amount.toFixed(2)}</div></div>
+          <div><div class="detail-field-label">${t('detail.field-date')}</div>
+            <div class="detail-field-value">${sub.date}</div></div>
+          <div><div class="detail-field-label">${t('detail.field-category')}</div>
+            <div class="detail-field-value">${i18n.cat(sub.category)}</div></div>
+          ${sub.tax_amount ? `
+          <div><div class="detail-field-label">${t('detail.field-tax')}</div>
+            <div class="detail-field-value">¥${parseFloat(sub.tax_amount).toFixed(2)}</div></div>` : ''}
+          ${sub.project_code ? `
+          <div><div class="detail-field-label">${t('detail.field-project')}</div>
+            <div class="detail-field-value">${sub.project_code}</div></div>` : ''}
+        </div>
+        ${sub.description ? `
+          <div style="margin-top:.75rem; padding:.75rem; background:var(--gray-50);
+            border-radius:var(--radius-sm); font-size:.875rem; color:var(--gray-700)">
+            <span style="font-weight:600">${t('detail.notes-prefix')}</span>${sub.description}
+          </div>` : ''}
+      </div>
+
+      <!-- 入账信息（财务编码 + 发票字段） -->
+      <div class="card">
+        <div class="card-title">${t('detail.accounting-title')}</div>
+        <div class="detail-row">
+          <div><div class="detail-field-label">${t('detail.field-dept')}</div>
+            <div class="detail-field-value">${sub.department || '—'}</div></div>
+          <div><div class="detail-field-label">${t('detail.field-cc')}</div>
+            <div class="detail-field-value"><code>${sub.cost_center || '—'}</code></div></div>
+          <div><div class="detail-field-label">${t('detail.field-gl')}</div>
+            <div class="detail-field-value"><code>${sub.gl_account || '—'}</code></div></div>
+          ${sub.voucher_number ? `
+          <div><div class="detail-field-label">${t('detail.field-voucher')}</div>
+            <div class="detail-field-value"><code>${sub.voucher_number}</code></div></div>` : ''}
+          ${sub.invoice_number ? `
+          <div><div class="detail-field-label">${t('detail.field-inv-no')}</div>
+            <div class="detail-field-value">${sub.invoice_number}</div></div>` : ''}
+          ${sub.invoice_code ? `
+          <div><div class="detail-field-label">${t('detail.field-inv-code')}</div>
+            <div class="detail-field-value">${sub.invoice_code}</div></div>` : ''}
+          ${sub.exported_at ? `
+          <div><div class="detail-field-label">${t('detail.field-exported-at')}</div>
+            <div class="detail-field-value">${sub.exported_at.slice(0, 10)}</div></div>` : ''}
+        </div>
+      </div>`;
+
+    // 经理审批
+    if (sub.approver_id) {
+      html += `
+        <div class="card">
+          <div class="card-title">${t('detail.mgr-title')}</div>
+          <div class="detail-row">
+            <div><div class="detail-field-label">${t('detail.field-approver')}</div>
+              <div class="detail-field-value">${sub.approver_id}</div></div>
+            <div><div class="detail-field-label">${t('detail.field-time')}</div>
+              <div class="detail-field-value">${sub.approved_at?.slice(0,16).replace('T',' ') || '—'}</div></div>
+          </div>
+          ${sub.approver_comment ? `
+            <div style="padding:.75rem; background:var(--gray-50); border-radius:var(--radius-sm);
+              font-size:.875rem; margin-top:.5rem">
+              <span style="font-weight:600">${t('detail.comment-prefix')}</span>${sub.approver_comment}
+            </div>` : ''}
+        </div>`;
+    }
+
+    // 财务审批
+    if (sub.finance_approver_id) {
+      html += `
+        <div class="card">
+          <div class="card-title">${t('detail.fin-title')}</div>
+          <div class="detail-row">
+            <div><div class="detail-field-label">${t('detail.field-approver')}</div>
+              <div class="detail-field-value">${sub.finance_approver_id}</div></div>
+            <div><div class="detail-field-label">${t('detail.field-time')}</div>
+              <div class="detail-field-value">${sub.finance_approved_at?.slice(0,16).replace('T',' ') || '—'}</div></div>
+          </div>
+          ${sub.finance_approver_comment ? `
+            <div style="padding:.75rem; background:var(--gray-50); border-radius:var(--radius-sm);
+              font-size:.875rem; margin-top:.5rem">
+              <span style="font-weight:600">${t('detail.comment-prefix')}</span>${sub.finance_approver_comment}
+            </div>` : ''}
+        </div>`;
+    }
+
+    // AI 审核报告
+    if (sub.risk_score != null || timeline.length) {
+      html += `<div class="card">
+        <div class="card-title">${t('detail.ai-title')}</div>`;
+      if (sub.risk_score != null) {
+        html += `
+          <div style="margin-bottom:1.25rem">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.5rem">
+              <span style="font-size:.8rem;font-weight:600;color:var(--gray-400);
+                text-transform:uppercase;letter-spacing:.4px">${t('detail.risk-label')}</span>
+              <span style="font-size:1.25rem;font-weight:800">${risk.toFixed(0)}<span
+                style="font-size:.8rem;color:var(--gray-400)">/100</span></span>
+            </div>
+            <div class="risk-bar-track">
+              <div class="risk-bar-fill ${riskClass}" style="width:${risk}%"></div>
+            </div>
+          </div>`;
+      }
+      if (timeline.length) {
+        html += `<div class="timeline">`;
+        timeline.forEach((step, i) => {
+          const cls = step.skipped ? 'skip' : step.passed ? 'pass' : 'fail';
+          html += `
+            <div class="timeline-item">
+              <div class="timeline-dot ${cls}"></div>
+              <div class="timeline-skill">${SKILL_NAMES[i] || 'Step ' + (i+1)}
+                <span style="font-weight:400;color:var(--gray-400);margin-left:.4rem">
+                  ${step.skipped ? t('detail.step-skipped') : step.passed ? t('detail.step-passed') : t('detail.step-failed')}</span>
+              </div>
+              ${step.message ? `<div class="timeline-msg">${step.message}</div>` : ''}
+            </div>`;
+        });
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+
+    document.getElementById('content').innerHTML = html;
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

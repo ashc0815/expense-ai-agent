@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - AUTH_MODE=${AUTH_MODE:-mock}
+      - DATABASE_URL=${DATABASE_URL:-sqlite+aiosqlite:///./concurshield.db}
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
+      - UPLOAD_DIR=/app/uploads
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY:-}
+      - CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY:-}
+      - INVESTIGATOR_URL=${INVESTIGATOR_URL:-http://investigator:8501}
+    volumes:
+      - ./uploads:/app/uploads
+      - ./concurshield.db:/app/concurshield.db
+    depends_on:
+      - investigator
+    restart: unless-stopped
+
+  investigator:
+    build:
+      context: ../AI-anti-fraud/concurshield
+      dockerfile: ../../AI-anti-fraud/Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    restart: unless-stopped
+    profiles:
+      - full   # only start with: docker compose --profile full up

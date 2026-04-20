@@ -157,19 +157,72 @@ expense_types:
 
 ## 运行方式
 
+### 方式一：Web UI（推荐）🌐
+
 ```bash
-# 安装依赖
+pip install pyyaml flask
+
+python app.py
+# 浏览器打开 http://localhost:5000
+```
+
+Web UI 提供完整的交互界面：
+- **左侧栏**：7 个预设场景卡片（Case 5/6/7 标注 ★ Showcase）
+- **主区域**：选中场景 → 运行审核 → 实时展示报销单详情 / 5 步流水线 / 最终状态
+- **Shield 报告**：当模糊检测触发时，展示触发因素、LLM 深度分析（风险等级、风险点、需补充材料）
+- **Case 5 特殊区**：展示注入历史数据后 score 从 67.5 → 92.5 的对比
+- **中文处理日志**：实时显示每一步的中文日志
+- **批量运行**：一键跑全部 7 个场景并对比结果
+
+### 方式二：CLI Demo
+
+```bash
 pip install pyyaml
 
-# 运行全部7个场景
-python main.py
-
-# 运行测试
-python -m pytest tests/test_full_flow.py -v
-
-# 或用 unittest
-python -m unittest tests.test_full_flow -v
+python main.py                                # 跑全部 7 个场景
+python -m unittest tests.test_full_flow -v    # 跑 56 个单元测试
 ```
+
+### 方式三：静态 Dashboard
+
+打开 `dashboard.html` 查看 7 个场景的汇总可视化（Chart.js 饼图 + 柱图 + 配置展示）。
+
+### 可选：启用 LLM 深度语义分析
+
+当 `ambiguity_score > 50` 时，AmbiguityDetector 会调用 LLM 做深度合规审计。
+支持多个提供商（优先级 MiniMax → Claude → fallback 规则模型）。
+
+**使用 MiniMax M2**（OpenAI 兼容接口）：
+
+```bash
+pip install openai
+
+# Linux/macOS
+export MINIMAX_API_KEY=你的key
+# 可选：自定义 base_url 和 model
+export MINIMAX_BASE_URL=https://api.minimaxi.com/v1   # 默认（国际站）
+export MINIMAX_MODEL=MiniMax-M2                       # 默认
+
+# Windows CMD
+set MINIMAX_API_KEY=你的key
+set MINIMAX_BASE_URL=https://api.minimaxi.com/v1
+set MINIMAX_MODEL=MiniMax-M2
+
+# Windows PowerShell
+$env:MINIMAX_API_KEY="你的key"
+```
+
+> 如果你用的是 MiniMax 国内站，把 `MINIMAX_BASE_URL` 改成 `https://api.minimax.chat/v1`。
+> 模型 ID 以 MiniMax 控制台显示为准。
+
+**使用 Claude**：
+
+```bash
+pip install anthropic
+export ANTHROPIC_API_KEY=你的key
+```
+
+**都不配置** → 自动 fallback 到规则评分模型（零依赖可用）。
 
 ## 测试场景
 

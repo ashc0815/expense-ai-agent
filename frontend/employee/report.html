@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>报销单详情 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
+  <style>
+    .report-page { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+
+    /* header */
+    .rp-header {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      margin-bottom: 1.2rem;
+    }
+    .rp-title { font-size: 1.3rem; font-weight: 800; color: #0f172a; margin: 0; }
+    .rp-meta { color: #94a3b8; font-size: .8rem; margin-top: .25rem; }
+    .rp-status {
+      display: inline-block; padding: .2rem .6rem; border-radius: 6px;
+      font-size: .75rem; font-weight: 600;
+    }
+    .rp-status.open      { background: #dbeafe; color: #1e40af; }
+    .rp-status.pending    { background: #fef3c7; color: #92400e; }
+    .rp-status.manager_approved, .rp-status.finance_approved, .rp-status.approved
+                          { background: #dcfce7; color: #166534; }
+    .rp-status.rejected   { background: #fee2e2; color: #991b1b; }
+    .rp-status.exported   { background: #e0e7ff; color: #3730a3; }
+
+    .rp-actions { display: flex; gap: .5rem; align-items: center; }
+
+    /* toolbar */
+    .toolbar {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: .8rem;
+    }
+    .toolbar-left { font-size: .9rem; font-weight: 600; color: #0f172a; }
+    .add-menu { position: relative; display: inline-block; }
+    .add-btn {
+      background: #18b48e; color: white; border: none;
+      padding: .45rem .9rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .82rem;
+    }
+    .add-dropdown {
+      display: none; position: absolute; right: 0; top: 100%; margin-top: .3rem;
+      background: white; border: 1px solid #e2e8f0; border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.12); min-width: 200px; z-index: 20;
+      overflow: hidden;
+    }
+    .add-dropdown.open { display: block; }
+    .add-dropdown a {
+      display: block; padding: .7rem 1rem; font-size: .85rem; color: #0f172a;
+      text-decoration: none; border-bottom: 1px solid #f1f5f9;
+    }
+    .add-dropdown a:last-child { border-bottom: none; }
+    .add-dropdown a:hover { background: #f8fafc; }
+    .add-dropdown .dd-label { font-weight: 600; }
+    .add-dropdown .dd-sub { font-size: .75rem; color: #94a3b8; margin-top: .1rem; }
+
+    /* expenses table */
+    .exp-table { width: 100%; border-collapse: collapse; }
+    .exp-table th {
+      text-align: left; font-size: .72rem; font-weight: 600; color: #64748b;
+      padding: .5rem .6rem; border-bottom: 2px solid #e2e8f0;
+      text-transform: uppercase; letter-spacing: .03em;
+    }
+    .exp-table td {
+      padding: .65rem .6rem; border-bottom: 1px solid #f1f5f9;
+      font-size: .85rem; color: #0f172a; vertical-align: middle;
+    }
+    .exp-table tr:hover { background: #f8fafc; cursor: pointer; }
+    .exp-table .col-date { width: 100px; }
+    .exp-table .col-receipt { width: 50px; text-align: center; }
+    .exp-table .col-cat { width: 100px; }
+    .exp-table .col-amount { width: 120px; text-align: right; font-weight: 700; }
+    .exp-table .col-status { width: 80px; }
+    .exp-table .col-actions { width: 50px; text-align: center; }
+    .exp-table td.col-amount { text-align: right; }
+    .exp-table td.col-receipt { text-align: center; }
+    .exp-table td.col-actions { text-align: center; }
+
+    .receipt-icon { font-size: 1.1rem; }
+    .cat-badge {
+      display: inline-block; padding: .15rem .4rem; border-radius: 4px;
+      font-size: .72rem; font-weight: 600; background: #f1f5f9; color: #475569;
+    }
+    .line-status {
+      display: inline-block; padding: .15rem .35rem; border-radius: 4px;
+      font-size: .68rem; font-weight: 600;
+    }
+    .line-status.draft { background: #fffbeb; color: #b45309; }
+    .line-status.in_report { background: #dbeafe; color: #1e40af; }
+    .line-status.processing { background: #fef3c7; color: #92400e; }
+    .line-status.reviewed { background: #dcfce7; color: #166534; }
+
+    .delete-btn {
+      background: none; border: none; cursor: pointer; color: #94a3b8;
+      font-size: 1rem; padding: .2rem;
+    }
+    .delete-btn:hover { color: #dc2626; }
+
+    /* total footer */
+    .total-row {
+      display: flex; justify-content: flex-end; padding: .8rem .6rem;
+      font-size: 1rem; font-weight: 800; color: #0f172a;
+      border-top: 2px solid #e2e8f0;
+    }
+
+    /* empty state */
+    .empty-state {
+      text-align: center; padding: 3rem 1rem; color: #94a3b8;
+    }
+    .empty-state .icon { font-size: 2.5rem; margin-bottom: .5rem; }
+
+    /* bottom actions */
+    .bottom-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;
+    }
+    .btn-submit {
+      background: #18b48e; color: white; border: none;
+      padding: .7rem 1.5rem; border-radius: 8px; font-weight: 700;
+      cursor: pointer; font-size: .95rem;
+    }
+    .btn-submit:disabled { background: #cbd5e1; cursor: not-allowed; }
+    .btn-withdraw {
+      background: #dc2626; color: white; border: none;
+      padding: .6rem 1rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .85rem;
+    }
+    .btn-outline {
+      background: white; color: #0f172a; border: 1px solid #cbd5e1;
+      padding: .6rem 1rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .85rem; text-decoration: none;
+    }
+
+    /* line detail drawer */
+    .detail-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 50;
+    }
+    .detail-overlay.open { display: block; }
+    .detail-panel {
+      position: fixed; top: 0; right: 0; width: 440px; height: 100%;
+      background: white; box-shadow: -4px 0 24px rgba(0,0,0,.1);
+      overflow-y: auto; z-index: 51; transform: translateX(100%);
+      transition: transform .25s ease;
+    }
+    .detail-panel.open { transform: translateX(0); }
+    .dp-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 1rem 1.2rem; border-bottom: 1px solid #e2e8f0;
+    }
+    .dp-header h3 { margin: 0; font-size: 1rem; }
+    .dp-close {
+      background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #64748b;
+    }
+    .dp-body { padding: 1.2rem; }
+    .dp-receipt {
+      width: 100%; max-height: 200px; object-fit: contain;
+      border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 1rem;
+    }
+    .dp-field { margin-bottom: .7rem; }
+    .dp-field label { font-size: .72rem; color: #64748b; font-weight: 600; display: block; margin-bottom: .15rem; }
+    .dp-field .val { font-size: .88rem; color: #0f172a; }
+    .dp-input {
+      width: 100%; border: 1px solid #e2e8f0; border-radius: 8px;
+      padding: .45rem .6rem; font-size: .85rem; color: #0f172a;
+      outline: none; transition: border-color .2s; box-sizing: border-box;
+    }
+    .dp-input:focus { border-color: #0f172a; }
+    textarea.dp-input { resize: vertical; min-height: 44px; }
+  </style>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+<script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="report-page">
+  <div style="margin-bottom:.8rem">
+    <a href="/employee/my-reports.html" class="btn-outline" style="font-size:.8rem;padding:.3rem .6rem;text-decoration:none">← 返回报销单列表</a>
+  </div>
+
+  <div id="report-content">
+    <div style="text-align:center;padding:3rem;color:#94a3b8">加载中…</div>
+  </div>
+</main>
+
+<!-- Line detail slide-over -->
+<div class="detail-overlay" id="detail-overlay" onclick="closeDetail()"></div>
+<div class="detail-panel" id="detail-panel">
+  <div class="dp-header">
+    <h3>费用明细</h3>
+    <button class="dp-close" onclick="closeDetail()">✕</button>
+  </div>
+  <div class="dp-body" id="detail-body"></div>
+</div>
+
+<script>
+const urlParams = new URLSearchParams(window.location.search);
+const REPORT_ID = urlParams.get("report_id");
+if (!REPORT_ID) { window.location.href = "/employee/my-reports.html"; }
+
+const CAT_LABELS = { meal:"餐饮", transport:"交通", accommodation:"住宿", entertainment:"招待", other:"其他" };
+const STATUS_LABELS = {
+  open:"开放中", pending:"审批中", manager_approved:"经理已批", finance_approved:"财务已批",
+  approved:"已批准", rejected:"已拒绝", exported:"已入账",
+  draft:"扫描中", in_report:"已保存", processing:"审核中", reviewed:"已审核",
+};
+
+let reportData = null;
+
+async function getAuth() {
+  return window.auth ? await window.auth.getHeaders() : {};
+}
+
+async function loadReport() {
+  const r = await fetch(`/api/reports/${REPORT_ID}`, { headers: await getAuth() });
+  if (!r.ok) {
+    document.getElementById("report-content").innerHTML =
+      `<div style="text-align:center;padding:3rem;color:#dc2626">加载失败: ${r.status}</div>`;
+    return;
+  }
+  reportData = await r.json();
+  render();
+}
+
+function render() {
+  const rp = reportData;
+  const isOpen = rp.status === "open";
+  const isPending = ["pending","manager_approved","finance_approved","approved"].includes(rp.status);
+  const lines = (rp.lines || []);
+  const drafts = (rp.pending_drafts || []).map(d => ({...d, _isDraft: true, status: "draft"}));
+  const allItems = [...lines, ...drafts];
+  const total = rp.total_amount || 0;
+
+  let html = `
+    <div class="rp-header">
+      <div>
+        <h1 class="rp-title">${rp.title}</h1>
+        <div class="rp-meta">
+          <span class="rp-status ${rp.status}">${STATUS_LABELS[rp.status] || rp.status}</span>
+          · ${allItems.length} 笔费用 · 创建于 ${new Date(rp.created_at).toLocaleDateString()}
+          ${rp.submitted_at ? ` · 提交于 ${new Date(rp.submitted_at).toLocaleDateString()}` : ""}
+        </div>
+      </div>
+      <div class="rp-actions">
+        ${isPending ? `<button class="btn-withdraw" onclick="withdrawReport()">撤回</button>` : ""}
+        ${isOpen ? `<button class="btn-submit" id="submit-btn" onclick="submitReport()" ${allItems.length === 0 ? 'disabled' : ''}>提交报销单</button>` : ""}
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">费用明细 (${allItems.length})</div>
+      ${isOpen ? `
+        <div class="add-menu">
+          <button class="add-btn" onclick="toggleAddMenu()">+ 添加费用 ▾</button>
+          <div class="add-dropdown" id="add-dropdown">
+            <a href="/employee/quick.html?report_id=${REPORT_ID}">
+              <div class="dd-label">📷 扫描发票</div>
+              <div class="dd-sub">拍照或上传发票，AI 自动识别</div>
+            </a>
+            <a href="/employee/quick.html?report_id=${REPORT_ID}">
+              <div class="dd-label">✏️ 手动创建</div>
+              <div class="dd-sub">上传或手动填写费用信息</div>
+            </a>
+          </div>
+        </div>
+      ` : ""}
+    </div>
+  `;
+
+  if (allItems.length === 0) {
+    html += `
+      <div class="empty-state">
+        <div class="icon">📋</div>
+        <div>还没有费用。点击「添加费用」开始。</div>
+      </div>
+    `;
+  } else {
+    html += `
+      <table class="exp-table">
+        <thead>
+          <tr>
+            <th class="col-date">日期</th>
+            <th class="col-receipt">凭证</th>
+            <th class="col-cat">类别</th>
+            <th>商户 / 说明</th>
+            <th class="col-amount">金额</th>
+            <th class="col-status">状态</th>
+            ${isOpen || isPending ? '<th class="col-actions"></th>' : ''}
+          </tr>
+        </thead>
+        <tbody>
+    `;
+
+    for (const item of allItems) {
+      const isDraft = item._isDraft;
+      const cat = item.category || "—";
+      const amt = item.amount != null ? Number(item.amount).toFixed(2) : "—";
+      const currency = item.currency || "CNY";
+      const status = item.status || "in_report";
+      const hasReceipt = item.receipt_url;
+
+      html += `
+        <tr onclick="showDetail('${item.id}', ${isDraft ? 'true' : 'false'})">
+          <td class="col-date">${item.date || "—"}</td>
+          <td class="col-receipt">${hasReceipt ? '<span class="receipt-icon">🧾</span>' : ''}</td>
+          <td class="col-cat"><span class="cat-badge">${CAT_LABELS[cat] || cat}</span></td>
+          <td>${item.merchant || "—"}${item.description ? ` <span style="color:#94a3b8;font-size:.75rem">· ${item.description}</span>` : ""}</td>
+          <td class="col-amount">${currency} ${amt}</td>
+          <td class="col-status"><span class="line-status ${status}">${STATUS_LABELS[status] || status}</span></td>
+          ${isOpen || isPending ? `<td class="col-actions"><button class="delete-btn" onclick="event.stopPropagation();removeLine('${item.id}', ${isDraft})" title="删除">✕</button></td>` : ''}
+        </tr>
+      `;
+    }
+
+    html += `
+        </tbody>
+      </table>
+      <div class="total-row">合计 ≈ ${rp.home_currency || "CNY"} ${(rp.total_converted != null ? rp.total_converted : total).toFixed(2)}</div>
+    `;
+  }
+
+  html += `
+    <div class="bottom-bar">
+      <a href="/employee/my-reports.html" class="btn-outline">← 返回列表</a>
+      <div style="display:flex;gap:.5rem">
+        ${isOpen && allItems.length > 0 ? `
+          <button class="btn-submit" onclick="submitReport()">提交报销单</button>
+        ` : ""}
+      </div>
+    </div>
+  `;
+
+  document.getElementById("report-content").innerHTML = html;
+}
+
+// ── Add menu toggle ──────────────────────────────────────────
+function toggleAddMenu() {
+  document.getElementById("add-dropdown").classList.toggle("open");
+}
+document.addEventListener("click", (e) => {
+  const dd = document.getElementById("add-dropdown");
+  if (dd && !e.target.closest(".add-menu")) dd.classList.remove("open");
+});
+
+// ── Submit report ────────────────────────────────────────────
+async function submitReport() {
+  if (!confirm("确认提交这张报销单？提交后将进入审批流程。")) return;
+  const r = await fetch(`/api/reports/${REPORT_ID}/submit`, {
+    method: "POST", headers: await getAuth(),
+  });
+  if (!r.ok) {
+    let msg = "提交失败: " + r.status;
+    try { const b = await r.json(); if (b.detail) msg = b.detail; } catch {}
+    alert(msg);
+    return;
+  }
+  await loadReport();
+}
+
+// ── Withdraw report ──────────────────────────────────────────
+async function withdrawReport() {
+  if (!confirm("确认撤回？所有费用将回到草稿状态，需重新提交审批。")) return;
+  const r = await fetch(`/api/reports/${REPORT_ID}/withdraw`, {
+    method: "POST", headers: await getAuth(),
+  });
+  if (!r.ok) { alert("撤回失败: " + r.status); return; }
+  const body = await r.json();
+  if (body.was_approved) alert("已撤回（之前为已批准状态），经理将收到通知。");
+  await loadReport();
+}
+
+// ── Remove line item ─────────────────────────────────────────
+async function removeLine(itemId, isDraft) {
+  if (!confirm("确认删除这条费用？")) return;
+  const r = await fetch(`/api/reports/${REPORT_ID}/lines/${itemId}`, {
+    method: "DELETE", headers: await getAuth(),
+  });
+  if (!r.ok) {
+    let msg = "删除失败: " + r.status;
+    try { const b = await r.json(); if (b.detail) msg = b.detail; } catch {}
+    alert(msg);
+    return;
+  }
+  await loadReport();
+}
+
+// ── Line detail slide-over ───────────────────────────────────
+let currentDetailItemId = null;
+
+function showDetail(itemId, isDraft) {
+  const items = [...(reportData.lines || []), ...(reportData.pending_drafts || []).map(d => ({...d, _isDraft: true}))];
+  const item = items.find(i => i.id === itemId);
+  if (!item) return;
+  currentDetailItemId = itemId;
+
+  const isOpen = reportData.status === "open";
+  const canEdit = isOpen || reportData.status === "pending";
+  const editable = canEdit && !isDraft;
+  const body = document.getElementById("detail-body");
+  let html = "";
+
+  if (item.receipt_url) {
+    html += `<img src="${item.receipt_url}" class="dp-receipt">`;
+  }
+
+  const catOptions = [
+    {v:"meal",l:"餐饮"},{v:"transport",l:"交通"},{v:"accommodation",l:"住宿"},
+    {v:"entertainment",l:"招待"},{v:"other",l:"其他"}
+  ];
+
+  const itemCurrency = item.currency || "CNY";
+  const homeCurrency = reportData.home_currency || "CNY";
+  const showFx = itemCurrency !== homeCurrency;
+
+  if (editable) {
+    html += `<div id="dp-save-msg" style="display:none;font-size:.8rem;padding:.4rem .6rem;border-radius:6px;margin-bottom:.6rem"></div>`;
+    html += `
+      <div class="dp-field">
+        <label>商户名称 *</label>
+        <input id="dp-merchant" value="${item.merchant || ''}" class="dp-input" data-field="merchant">
+      </div>
+      <div class="dp-field" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+        <div>
+          <label>金额 *</label>
+          <input id="dp-amount" type="number" step="0.01" value="${item.amount || ''}" class="dp-input" data-field="amount">
+        </div>
+        <div>
+          <label>货币</label>
+          <select id="dp-currency" class="dp-input" data-field="currency" onchange="onDetailCurrencyChange()">
+            ${["CNY","AUD","USD","EUR","JPY","GBP"].map(c =>
+              `<option value="${c}" ${(item.currency||'CNY')===c?'selected':''}>${c}</option>`
+            ).join("")}
+          </select>
+        </div>
+      </div>
+      ${showFx ? `
+      <div id="fx-section" class="dp-field" style="background:#f0fdf9;padding:.6rem .8rem;border-radius:8px;margin-top:.3rem">
+        <label>汇率</label>
+        <div style="display:flex;align-items:center;gap:.3rem;margin-top:.2rem">
+          <span style="font-size:.85rem">1 ${itemCurrency} =</span>
+          <input id="fx-rate-input" type="number" step="0.000001" class="dp-input"
+                 style="width:100px" value="${item.exchange_rate || ''}"
+                 oninput="updateConvertedPreview()">
+          <span style="font-size:.85rem">${homeCurrency}</span>
+        </div>
+        <div id="converted-preview" style="font-size:.82rem;color:#64748b;margin-top:.3rem">
+          折算金额: ≈ ${homeCurrency} ${item.converted_amount != null ? Number(item.converted_amount).toFixed(2) : '—'}
+        </div>
+      </div>
+      ` : ''}
+      <div class="dp-field" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+        <div>
+          <label>消费日期 *</label>
+          <input id="dp-date" type="date" value="${item.date || ''}" class="dp-input" data-field="date">
+        </div>
+        <div>
+          <label>费用类别 *</label>
+          <select id="dp-category" class="dp-input" data-field="category">
+            ${catOptions.map(c => `<option value="${c.v}" ${item.category===c.v?'selected':''}>${c.l}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="dp-field">
+        <label>税额</label>
+        <input id="dp-tax" type="number" step="0.01" value="${item.tax_amount != null ? item.tax_amount : ''}" class="dp-input" data-field="tax_amount">
+      </div>
+      <div class="dp-field" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+        <div>
+          <label>发票号码</label>
+          <input id="dp-inv-num" value="${item.invoice_number || ''}" class="dp-input" data-field="invoice_number">
+        </div>
+        <div>
+          <label>发票代码</label>
+          <input id="dp-inv-code" value="${item.invoice_code || ''}" class="dp-input" data-field="invoice_code">
+        </div>
+      </div>
+      <div class="dp-field">
+        <label>项目代码</label>
+        <input id="dp-project" value="${item.project_code || ''}" class="dp-input" data-field="project_code">
+      </div>
+      <div class="dp-field">
+        <label>备注说明</label>
+        <textarea id="dp-desc" class="dp-input" rows="2" data-field="description">${item.description || ''}</textarea>
+      </div>
+      <div style="display:flex;gap:.5rem;margin-top:.8rem">
+        <button class="btn-submit" style="font-size:.85rem;padding:.5rem 1rem" onclick="saveLineEdits('${itemId}')">保存修改</button>
+        <button class="btn-outline" style="font-size:.85rem;padding:.5rem 1rem" onclick="closeDetail()">取消</button>
+      </div>
+    `;
+  } else {
+    const fields = [
+      ["商户名称", item.merchant],
+      ["金额", item.amount != null ? `${item.currency || 'CNY'} ${Number(item.amount).toFixed(2)}` : "—"],
+      ["日期", item.date],
+      ["费用类别", CAT_LABELS[item.category] || item.category],
+      ["税额", item.tax_amount != null ? Number(item.tax_amount).toFixed(2) : "—"],
+      ["发票号码", item.invoice_number],
+      ["发票代码", item.invoice_code],
+      ["项目代码", item.project_code],
+      ["备注", item.description],
+      ["部门", item.department],
+      ["成本中心", item.cost_center],
+      ["科目", item.gl_account],
+    ];
+    for (const [label, val] of fields) {
+      if (val === undefined || val === null) continue;
+      html += `<div class="dp-field"><label>${label}</label><div class="val">${val || "—"}</div></div>`;
+    }
+    if (showFx) {
+      html += `<div class="dp-field"><label>汇率</label><div class="val">1 ${itemCurrency} = ${item.exchange_rate || '—'} ${homeCurrency}</div></div>`;
+      html += `<div class="dp-field"><label>折算金额</label><div class="val">≈ ${homeCurrency} ${item.converted_amount != null ? Number(item.converted_amount).toFixed(2) : '—'}</div></div>`;
+    }
+  }
+
+  if (item.risk_score != null) {
+    html += `<div class="dp-field"><label>风险评分</label><div class="val">${Number(item.risk_score).toFixed(0)} / 100</div></div>`;
+  }
+  if (item.tier) {
+    html += `<div class="dp-field"><label>风险等级</label><div class="val">${item.tier}</div></div>`;
+  }
+  if (item.audit_report) {
+    const timeline = item.audit_report.timeline || [];
+    if (timeline.length) {
+      html += `<div class="dp-field"><label>AI 审核记录</label>`;
+      const names = ['收据验证','额度审批','合规检查','凭证生成','支付处理'];
+      for (let i = 0; i < timeline.length; i++) {
+        const t = timeline[i];
+        const icon = t.skipped ? '⏭' : t.passed ? '✅' : '❌';
+        html += `<div style="font-size:.8rem;padding:.2rem 0">${icon} ${names[i] || 'Step '+(i+1)}: ${t.message || ''}</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  body.innerHTML = html;
+  document.getElementById("detail-overlay").classList.add("open");
+  document.getElementById("detail-panel").classList.add("open");
+}
+
+async function saveLineEdits(itemId) {
+  const fields = {
+    merchant: document.getElementById("dp-merchant")?.value.trim(),
+    amount: document.getElementById("dp-amount")?.value,
+    currency: document.getElementById("dp-currency")?.value,
+    category: document.getElementById("dp-category")?.value,
+    date: document.getElementById("dp-date")?.value,
+    tax_amount: document.getElementById("dp-tax")?.value || null,
+    invoice_number: document.getElementById("dp-inv-num")?.value.trim() || null,
+    invoice_code: document.getElementById("dp-inv-code")?.value.trim() || null,
+    project_code: document.getElementById("dp-project")?.value.trim() || null,
+    description: document.getElementById("dp-desc")?.value.trim() || null,
+  };
+
+  const fxInput = document.getElementById("fx-rate-input");
+  if (fxInput && fxInput.value) {
+    fields["exchange_rate"] = parseFloat(fxInput.value);
+  }
+
+  const msgEl = document.getElementById("dp-save-msg");
+  const authH = await getAuth();
+  let errors = [];
+
+  for (const [field, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    const r = await fetch(`/api/reports/${REPORT_ID}/lines/${itemId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authH },
+      body: JSON.stringify({ field, value: value === null ? null : (field === "amount" || field === "tax_amount" ? parseFloat(value) || null : value) }),
+    });
+    if (!r.ok) {
+      try { const b = await r.json(); errors.push(b.detail || field); } catch { errors.push(field); }
+    }
+  }
+
+  if (errors.length) {
+    msgEl.style.display = "block";
+    msgEl.style.background = "#fee2e2";
+    msgEl.style.color = "#991b1b";
+    msgEl.textContent = "部分字段保存失败：" + errors.join("、");
+  } else {
+    msgEl.style.display = "block";
+    msgEl.style.background = "#dcfce7";
+    msgEl.style.color = "#166534";
+    msgEl.textContent = "已保存";
+    await loadReport();
+    setTimeout(() => { if (msgEl) msgEl.style.display = "none"; }, 1500);
+  }
+}
+
+function closeDetail() {
+  document.getElementById("detail-overlay").classList.remove("open");
+  document.getElementById("detail-panel").classList.remove("open");
+}
+
+function updateConvertedPreview() {
+  const rateInput = document.getElementById("fx-rate-input");
+  const preview = document.getElementById("converted-preview");
+  if (!rateInput || !preview) return;
+  const rate = parseFloat(rateInput.value);
+  const amountInput = document.getElementById("dp-amount");
+  const amount = amountInput ? parseFloat(amountInput.value) : null;
+  const homeCurrency = reportData.home_currency || "CNY";
+  if (!isNaN(rate) && amount != null && !isNaN(amount)) {
+    preview.textContent = `折算金额: ≈ ${homeCurrency} ${(amount * rate).toFixed(2)}`;
+  }
+}
+
+function onDetailCurrencyChange() {
+  // When currency changes, we'd need to fetch a new rate - for now just clear the FX section
+  // The user will need to save and reopen to get the new rate
+}
+
+loadReport().then(() => {
+  const lineId = urlParams.get("line");
+  const isDraft = urlParams.get("draft") === "true";
+  if (lineId) showDetail(lineId, isDraft);
+});
+</script>
+</body>
+</html>

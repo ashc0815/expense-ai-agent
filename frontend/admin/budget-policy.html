@@ -95,6 +95,52 @@
     return String(s == null ? '' : s).replace(/'/g, "&#39;").replace(/"/g, '&quot;');
   }
 
+  function renderSparkline(trend) {
+    if (!trend || !trend.months || trend.months.length < 2) {
+      return '<td style="padding:.5rem .6rem">—</td>';
+    }
+    var pts = trend.months;
+    var max = Math.max.apply(null, pts.concat([1]));
+    var w = 60, h = 20;
+    var coords = pts.map(function(v, i) {
+      var x = (i / (pts.length - 1)) * w;
+      var y = h - (v / max) * (h - 2) - 1;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    var color = trend.overrun_risk === 'high' ? '#ef4444'
+              : trend.overrun_risk === 'moderate' ? '#f59e0b'
+              : '#22c55e';
+    var lastPair = coords.split(' ').slice(-1)[0].split(',');
+    var lx = lastPair[0], ly = lastPair[1];
+    var avgK = (trend.monthly_avg / 1000).toFixed(1);
+    return '<td style="padding:.5rem .6rem;white-space:nowrap">' +
+      '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="vertical-align:middle">' +
+        '<polyline points="' + coords + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round"/>' +
+        '<circle cx="' + lx + '" cy="' + ly + '" r="2" fill="' + color + '"/>' +
+      '</svg>' +
+      '<span style="font-size:.72rem;color:#6b7280;margin-left:.3rem">¥' + avgK + 'k/月</span>' +
+    '</td>';
+  }
+
+  function renderOverrunBadge(trend) {
+    if (!trend) return '<td style="padding:.5rem .6rem"></td>';
+    var risk = trend.overrun_risk;
+    var dt = trend.estimated_overrun_date;
+    if (risk === 'high' && dt) {
+      var label = dt.slice(5, 7) + '月' + dt.slice(8, 10) + '日';
+      return '<td style="padding:.5rem .6rem">' +
+        '<span style="background:#fee2e2;color:#991b1b;font-size:.7rem;padding:.15rem .4rem;border-radius:4px;font-weight:600">⚠ ' + label + '</span>' +
+      '</td>';
+    }
+    if (risk === 'moderate' && dt) {
+      var mLabel = dt.slice(5, 7) + '月中';
+      return '<td style="padding:.5rem .6rem">' +
+        '<span style="background:#fef3c7;color:#92400e;font-size:.7rem;padding:.15rem .4rem;border-radius:4px;font-weight:600">~ ' + mLabel + '</span>' +
+      '</td>';
+    }
+    return '<td style="padding:.5rem .6rem;font-size:.72rem;color:#9ca3af">季度内安全</td>';
+  }
+
   async function load() {
     _period = document.getElementById('period-select').value;
     try {
@@ -145,6 +191,8 @@
             '<span style="font-size:.8rem;font-weight:600;color:' + barColor + '">' + pct + '%</span>' +
           '</div>' +
         '</td>' +
+        renderSparkline(st.trend) +
+        renderOverrunBadge(st.trend) +
         '<td style="padding:.5rem .6rem;font-size:.82rem">' + infoPct + '</td>' +
         '<td style="padding:.5rem .6rem;font-size:.82rem">' + blockPct + '</td>' +
         '<td style="padding:.5rem .6rem;font-size:.82rem">' + action + '</td>' +
@@ -163,6 +211,8 @@
       '<td style="padding:.5rem .6rem;font-size:.85rem">' + t('budget.global-default') + '</td>' +
       '<td style="padding:.5rem .6rem">—</td>' +
       '<td style="padding:.5rem .6rem">—</td>' +
+      '<td style="padding:.5rem .6rem"></td>' +
+      '<td style="padding:.5rem .6rem"></td>' +
       '<td style="padding:.5rem .6rem;font-size:.82rem">' + defInfoPct + '</td>' +
       '<td style="padding:.5rem .6rem;font-size:.82rem">' + defBlockPct + '</td>' +
       '<td style="padding:.5rem .6rem;font-size:.82rem">' + defActionLabel + '</td>' +
@@ -179,6 +229,8 @@
             '<th style="padding:.5rem .6rem">' + t('budget.col-cc') + '</th>' +
             '<th style="padding:.5rem .6rem">' + t('budget.col-total') + '</th>' +
             '<th style="padding:.5rem .6rem">' + t('budget.col-used') + '</th>' +
+            '<th style="padding:.5rem .6rem">月均 / 趋势</th>' +
+            '<th style="padding:.5rem .6rem">预计超标</th>' +
             '<th style="padding:.5rem .6rem">' + t('budget.col-warn') + '</th>' +
             '<th style="padding:.5rem .6rem">' + t('budget.col-block') + '</th>' +
             '<th style="padding:.5rem .6rem">' + t('budget.col-overbudget') + '</th>' +

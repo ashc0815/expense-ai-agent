@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>导出入账 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="page-wide">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1.25rem">
+    <div>
+      <h1 style="font-size:1.25rem; font-weight:700; margin:0" data-i18n="export.title">ERP 入账导出</h1>
+      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem" data-i18n="export.subtitle">
+        财务已批准、未导出的报销单 — 选择后导出 CSV 即可推入金蝶/用友/SAP
+      </div>
+    </div>
+    <div>
+      <button class="btn btn-success" id="export-btn" disabled onclick="doExport()">
+        <span data-i18n="export.btn">导出选中</span> (<span id="export-count">0</span>)
+      </button>
+    </div>
+  </div>
+
+  <div id="alert-box"></div>
+
+  <div class="card">
+    <div id="list-body">
+      <div style="text-align:center; padding:2rem"><span class="spinner"></span></div>
+    </div>
+  </div>
+
+  <div style="margin-top:1rem; font-size:.78rem; color:var(--gray-400)" data-i18n="export.csv-hint">
+    💡 CSV 列：凭证号 / 业务日期 / 员工 / 部门 / 成本中心 / GL 科目 / 项目 / 类别 / 商户 / 金额 / 税额 /
+    发票代码 / 发票号 / 销方税号 / 摘要 / 经理审批 / 财务审批
+  </div>
+</main>
+
+<script src="/shared/api.js"></script>
+<script>
+(function () {
+  let items = [];
+  let selected = new Set();
+  const _t = window.t || (k => k);
+  const _cat = c => (window.i18n && window.i18n.cat(c)) ||
+    ({ meal:'餐饮', transport:'交通', accommodation:'住宿', entertainment:'招待', other:'其他' }[c] || c);
+
+  async function load() {
+    try {
+      const data = await api.financeExportPreview();
+      items = data.items;
+      render();
+    } catch (err) {
+      document.getElementById('list-body').innerHTML =
+        `<div class="alert alert-error">${window.LANG === 'en' ? 'Load failed' : '加载失败'}：${err.message}</div>`;
+    }
+  }
+
+  function render() {
+    if (window.i18n) window.i18n.apply();
+    if (!items.length) {
+      document.getElementById('list-body').innerHTML =
+        `<div style="text-align:center; padding:3rem; color:var(--gray-400)">
+          🎉 ${_t('export.empty')}
+        </div>`;
+      return;
+    }
+
+    const totalAmt = items.reduce((s, x) => s + x.amount, 0);
+
+    document.getElementById('list-body').innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem; padding:0 .25rem">
+        <label style="display:flex; align-items:center; gap:.5rem; font-size:.85rem; cursor:pointer">
+          <input type="checkbox" id="check-all" onchange="window._toggleAll(this.checked)">
+          ${window.LANG === 'en' ? 'Select All' : '全选'} (${items.length})
+        </label>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:32px"></th>
+            <th>${_t('export.col-voucher')}</th>
+            <th>${_t('export.col-emp')}</th>
+            <th>${_t('export.col-dept')}</th>
+            <th>${_t('export.col-merchant')}</th>
+            <th>${_t('export.col-cat')}</th>
+            <th>${_t('export.col-gl')}</th>
+            <th>${_t('export.col-proj')}</th>
+            <th style="text-align:right">${_t('export.col-amount')}</th>
+            <th>${_t('export.col-fin-at')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(s => `
+            <tr>
+              <td><input type="checkbox" data-id="${s.id}" onchange="window._toggle('${s.id}', this.checked)"></td>
+              <td><code style="font-size:.75rem">${s.voucher_number || '—'}</code></td>
+              <td>${s.employee_id}</td>
+              <td>${s.department || '—'}</td>
+              <td>${s.merchant}</td>
+              <td>${_cat(s.category)}</td>
+              <td><code style="font-size:.75rem">${s.gl_account || '—'}</code></td>
+              <td>${s.project_code || '—'}</td>
+              <td style="text-align:right; font-weight:600">${s.currency || 'CNY'} ${s.amount.toFixed(2)}</td>
+              <td style="font-size:.78rem; color:var(--gray-400)">${s.finance_approved_at?.slice(0,10) || '—'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  window._toggle = function(id, checked) {
+    if (checked) selected.add(id); else selected.delete(id);
+    updateBtn();
+  };
+  window._toggleAll = function(checked) {
+    selected.clear();
+    document.querySelectorAll('input[data-id]').forEach(cb => {
+      cb.checked = checked;
+      if (checked) selected.add(cb.dataset.id);
+    });
+    updateBtn();
+  };
+  function updateBtn() {
+    document.getElementById('export-count').textContent = selected.size;
+    document.getElementById('export-btn').disabled = selected.size === 0;
+  }
+
+  window.doExport = async function() {
+    if (!selected.size) return;
+    const btn = document.getElementById('export-btn');
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> ${window.LANG === 'en' ? 'Exporting…' : '导出中…'}`;
+    try {
+      const result = await api.financeExport([...selected]);
+      document.getElementById('alert-box').innerHTML = window.LANG === 'en'
+        ? `<div class="alert alert-success">✓ Exported ${result.count} records (batch ${result.batch_id.slice(0,8)}), CSV downloaded</div>`
+        : `<div class="alert alert-success">✓ 已导出 ${result.count} 单 (批次 ${result.batch_id.slice(0,8)})，CSV 已下载</div>`;
+      selected.clear();
+      await load();
+    } catch (err) {
+      document.getElementById('alert-box').innerHTML =
+        `<div class="alert alert-error">${window.LANG === 'en' ? 'Export failed' : '导出失败'}：${err.message}</div>`;
+    } finally {
+      updateBtn();
+    }
+  };
+
+  load();
+})();
+</script>
+</body>
+</html>

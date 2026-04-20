@@ -1,0 +1,141 @@
+/* ai-card.css — 嵌入式 AI 解释卡样式 */
+
+.ai-card {
+  background: linear-gradient(135deg, #f0f9ff 0%, #faf5ff 100%);
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 1.25rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.ai-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0;
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(180deg, #6366f1, #8b5cf6);
+}
+
+.ai-card-loading,
+.ai-card-error {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+.ai-card-shimmer {
+  width: 60%;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #e5e7eb 0%, #f3f4f6 50%, #e5e7eb 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  margin-bottom: 8px;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.ai-card-meta { color: #6b7280; font-size: 12px; }
+
+.ai-card-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px;
+}
+.ai-card-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; color: #4338ca;
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.ai-card-icon { font-size: 16px; }
+
+.ai-card-tier {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.ai-card-tier.tier-low { background: #d1fae5; color: #065f46; }
+.ai-card-tier.tier-mid { background: #fef3c7; color: #92400e; }
+.ai-card-tier.tier-high { background: #fee2e2; color: #991b1b; }
+
+.ai-card-headline {
+  font-size: 15px;
+  color: #111827;
+  margin-bottom: 4px;
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+}
+.ai-card-headline strong { font-weight: 700; }
+.ai-card-meta-inline {
+  font-size: 11px; color: #6b7280; font-weight: 400;
+}
+
+.ai-card-context {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed #c7d2fe;
+}
+
+.ai-flag-group {
+  margin-bottom: 8px;
+}
+.ai-flag-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  margin-bottom: 4px;
+}
+.ai-flag-group.ai-green .ai-flag-label  { color: #047857; }
+.ai-flag-group.ai-yellow .ai-flag-label { color: #b45309; }
+.ai-flag-group.ai-red .ai-flag-label    { color: #b91c1c; }
+.ai-flag-list {
+  margin: 0; padding-left: 16px;
+  font-size: 13px; color: #1f2937;
+  line-height: 1.55;
+}
+.ai-flag-list li { margin-bottom: 2px; }
+
+.ai-card-advisory {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1f2937;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.ai-advisory-label {
+  font-size: 10px;
+  background: #4338ca;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ai-card-footer {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed #c7d2fe;
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #6b7280;
+  font-family: ui-monospace, monospace;
+}
+.ai-card-role { opacity: .7; }

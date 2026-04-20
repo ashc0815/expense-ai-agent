@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>快速报销 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
+  <style>
+    .quick-wrap { max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    .drop-zone {
+      border: 2px dashed #18b48e; border-radius: 12px; padding: 3rem 1rem;
+      text-align: center; color: #64748b; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .drop-zone:hover, .drop-zone.drag { border-color: #129e7b; background: #e6f7f3; }
+    .muted { color: #94a3b8; font-size: 0.75rem; }
+
+    /* existing lines */
+    .existing-line {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: .6rem .8rem; background: white; border: 1px solid #e2e8f0;
+      border-radius: 8px; margin-bottom: .4rem; font-size: .85rem;
+    }
+    .existing-line .el-merchant { flex:1; color:#0f172a; }
+    .existing-line .el-date { color:#94a3b8; font-size:.75rem; margin-right:.6rem; }
+    .existing-line .el-amount { font-weight:700; color:#0f172a; min-width:80px; text-align:right; }
+    .existing-line .el-status { font-size:.7rem; margin-left:.5rem; padding:.1rem .3rem; border-radius:4px; }
+    .el-status.draft { background:#fffbeb; color:#b45309; }
+    .el-status.in_report { background:#dbeafe; color:#1e40af; }
+    .existing-line:hover { background: #f8fafc; border-color: #0f172a; }
+
+    /* scanning progress */
+    .scan-card {
+      background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 1.2rem; margin-top: 1rem;
+    }
+    .scan-step {
+      display: flex; align-items: center; gap: .6rem;
+      padding: .4rem 0; font-size: .85rem; color: #94a3b8;
+    }
+    .scan-step.active { color: #0f172a; }
+    .scan-step.done { color: #16a34a; }
+    .scan-step .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; flex-shrink: 0;
+    }
+    .scan-step.active .dot { background: #18b48e; animation: pulse-dot 1s infinite; }
+    .scan-step.done .dot { background: #16a34a; }
+    @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+
+    /* form after scan */
+    .form-card {
+      background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 1.2rem; margin-top: 1rem;
+    }
+    .form-card h3 { font-size: 1rem; margin: 0 0 .8rem; color: #0f172a; }
+    .form-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: .6rem;
+    }
+    .form-group { display: flex; flex-direction: column; }
+    .form-group.full { grid-column: 1 / -1; }
+    .form-group label {
+      font-size: .75rem; color: #64748b; margin-bottom: .2rem; font-weight: 600;
+    }
+    .form-group input, .form-group select, .form-group textarea {
+      border: 1px solid #e2e8f0; border-radius: 8px; padding: .5rem .6rem;
+      font-size: .85rem; color: #0f172a; outline: none;
+      transition: border-color .2s;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+      border-color: #0f172a;
+    }
+    .form-group textarea { resize: vertical; min-height: 50px; }
+    .ai-filled {
+      background: #f0fdf4; border-color: #86efac;
+    }
+    .ai-badge {
+      display: inline-block; font-size: .65rem; background: #dcfce7; color: #166534;
+      padding: .1rem .3rem; border-radius: 3px; margin-left: .3rem; font-weight: 400;
+    }
+    .needs-confirm {
+      background: #fffbeb; border-color: #fcd34d;
+    }
+    .confirm-badge {
+      display: inline-block; font-size: .65rem; background: #fef3c7; color: #92400e;
+      padding: .1rem .3rem; border-radius: 3px; margin-left: .3rem; font-weight: 400;
+    }
+    .form-actions {
+      display: flex; gap: .5rem; margin-top: 1rem; justify-content: flex-end;
+    }
+    .btn-save {
+      background: #18b48e; color: white; border: none;
+      padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .9rem;
+    }
+    .btn-save:disabled { background: #cbd5e1; cursor: not-allowed; }
+    .btn-secondary {
+      background: white; color: #0f172a; border: 1px solid #cbd5e1;
+      padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .9rem;
+    }
+    .btn-continue {
+      background: #18b48e; color: white; border: none;
+      padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: .9rem;
+    }
+    .receipt-preview-small {
+      width: 100%; max-height: 160px; object-fit: contain; border-radius: 8px;
+      border: 1px solid #e2e8f0; margin-bottom: .8rem;
+    }
+    .alert-error {
+      background: #fee2e2; color: #991b1b; padding: .5rem .8rem;
+      border-radius: 8px; font-size: .85rem; margin-top: .5rem;
+    }
+    .alert-dup {
+      background: #fef3c7; color: #92400e; padding: .5rem .8rem;
+      border-radius: 8px; font-size: .85rem; margin-top: .5rem;
+    }
+    .layer-banner {
+      padding: .6rem .8rem; border-radius: 8px; font-size: .85rem;
+      margin-bottom: .8rem; display: flex; align-items: center; gap: .5rem;
+    }
+    .layer-banner.success { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    .layer-banner.warning { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+    .layer-banner.orange  { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+    .layer-banner.error   { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+    .error-card {
+      background: white; border: 1px solid #fecaca; border-radius: 12px;
+      padding: 2rem; margin-top: 1rem; text-align: center;
+    }
+    .error-card .error-icon { font-size: 2.5rem; margin-bottom: .5rem; }
+    .error-card .error-title { font-weight: 700; color: #991b1b; font-size: 1rem; margin-bottom: .3rem; }
+    .error-card .error-sub { color: #b91c1c; font-size: .85rem; margin-bottom: 1rem; }
+    .faq-section { margin-top: 1.5rem; }
+    .faq-item { border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: .4rem; overflow: hidden; }
+    .faq-q {
+      padding: .6rem .8rem; font-size: .85rem; font-weight: 600; color: #0f172a;
+      cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+      background: #f8fafc;
+    }
+    .faq-q:hover { background: #f1f5f9; }
+    .faq-a { padding: 0 .8rem; max-height: 0; overflow: hidden; transition: all .2s; font-size: .82rem; color: #475569; }
+    .faq-item.open .faq-a { max-height: 200px; padding: .5rem .8rem; }
+    .faq-item.open .faq-arrow { transform: rotate(180deg); }
+    .faq-arrow { transition: transform .2s; font-size: .7rem; color: #94a3b8; }
+
+  </style>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+<script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<main class="quick-wrap">
+  <h1 style="font-size:1.3rem;margin:0 0 1rem">快速报销</h1>
+  <p class="muted">拍一张 / 拖一张发票上来，AI 帮你把字段填好，你只需要确认提交。</p>
+
+  <div id="existing-lines" style="display:none">
+    <h3 id="existing-title" style="font-size:1rem;margin:0 0 .5rem;color:#0f172a">已添加的发票</h3>
+    <div id="existing-list"></div>
+    <hr style="border:none;border-top:1px dashed #e2e8f0;margin:1rem 0">
+  </div>
+
+  <div id="upload-section">
+    <div id="drop-zone" class="drop-zone">
+      <div style="font-size:2.5rem">📄</div>
+      <div>点击或拖拽发票图 / PDF 到这里</div>
+      <input id="file-input" type="file" accept="image/*,application/pdf" style="display:none">
+    </div>
+  </div>
+
+  <div id="scan-section" style="display:none"></div>
+  <div id="form-section" style="display:none"></div>
+  <div id="success-section" style="display:none"></div>
+
+  <div class="faq-section" id="faq-section">
+    <div style="font-size:.8rem;font-weight:600;color:#64748b;margin-bottom:.4rem">常见问题</div>
+    <div class="faq-item" onclick="this.classList.toggle('open')">
+      <div class="faq-q">这笔费用该选什么分类？<span class="faq-arrow">▼</span></div>
+      <div class="faq-a">餐饮 = 工作餐、商务宴请；交通 = 打车、机票、火车票；住宿 = 酒店；招待 = 客户相关的餐饮或活动。如不确定，选"其他"并在备注中说明。</div>
+    </div>
+    <div class="faq-item" onclick="this.classList.toggle('open')">
+      <div class="faq-q">金额超标了怎么办？<span class="faq-arrow">▼</span></div>
+      <div class="faq-a">超出限额的报销会进入人工审核流程，由直属经理判断是否批准。合理的超支（如出差目的地物价较高）通常可以通过。</div>
+    </div>
+    <div class="faq-item" onclick="this.classList.toggle('open')">
+      <div class="faq-q">为什么提示"可能重复"？<span class="faq-arrow">▼</span></div>
+      <div class="faq-a">系统检测到相同发票号码已经存在。请确认这张发票是否已经在其他报销单中提交过，避免重复报销。</div>
+    </div>
+    <div class="faq-item" onclick="this.classList.toggle('open')">
+      <div class="faq-q">预算不够了还能报销吗？<span class="faq-arrow">▼</span></div>
+      <div class="faq-a">当部门预算接近上限时，系统会显示提示。超限的报销会被暂挂，需要财务管理员审批解锁后才能继续。</div>
+    </div>
+  </div>
+</main>
+
+
+<script>
+const dz = document.getElementById("drop-zone");
+const fi = document.getElementById("file-input");
+
+dz.onclick = () => fi.click();
+fi.onchange = () => fi.files[0] && handleUpload(fi.files[0]);
+dz.ondragover = e => { e.preventDefault(); dz.classList.add("drag"); };
+dz.ondragleave = () => dz.classList.remove("drag");
+dz.ondrop = e => {
+  e.preventDefault(); dz.classList.remove("drag");
+  if (e.dataTransfer.files[0]) handleUpload(e.dataTransfer.files[0]);
+};
+
+const urlParams = new URLSearchParams(window.location.search);
+let CURRENT_REPORT_ID = urlParams.get("report_id") || null;
+
+let fxRates = {};
+let homeCurrency = "CNY";
+
+async function loadFxData() {
+  try {
+    const res = await fetch("/api/fx/rates");
+    if (res.ok) {
+      const data = await res.json();
+      fxRates = data.rates || {};
+    }
+  } catch(e) { console.warn("FX rates load failed", e); }
+}
+loadFxData();
+
+const CATEGORIES = [
+  { value: "meal", label: "餐饮" },
+  { value: "transport", label: "交通" },
+  { value: "accommodation", label: "住宿" },
+  { value: "entertainment", label: "招待" },
+  { value: "other", label: "其他" },
+];
+
+async function getAuth() {
+  return window.auth ? await window.auth.getHeaders() : {};
+}
+
+// ── Existing lines ──────────────────────────────────────────
+async function loadExistingLines() {
+  if (!CURRENT_REPORT_ID) return;
+  const r = await fetch(`/api/reports/${CURRENT_REPORT_ID}`, { headers: await getAuth() });
+  if (!r.ok) return;
+  const report = await r.json();
+  const lines = (report.lines || []).concat(
+    (report.pending_drafts || []).map(d => ({...d, _isDraft: true}))
+  );
+  if (!lines.length) return;
+
+  document.getElementById("existing-lines").style.display = "block";
+  document.getElementById("existing-title").textContent = `已添加的发票（${report.title}）`;
+  const CAT_LABELS = { meal:"餐饮", transport:"交通", accommodation:"住宿", entertainment:"招待", other:"其他" };
+  document.getElementById("existing-list").innerHTML = lines.map(l => {
+    const isDraft = l._isDraft || l.status === "draft";
+    const amt = l.amount != null ? `¥${Number(l.amount).toFixed(2)}` : "—";
+    const cat = l.category ? (CAT_LABELS[l.category] || l.category) : "";
+    const statusLabel = isDraft ? (l.merchant ? "待确认" : "扫描中") : "已保存";
+    const statusCls = isDraft ? "draft" : "in_report";
+    return `<div class="existing-line" onclick="openLineDetail('${l.id}', ${isDraft})" style="cursor:pointer">
+      <span class="el-date">${l.date || "—"}</span>
+      <span class="el-merchant">${l.merchant || "—"}${cat ? ` <span style="color:#94a3b8;font-size:.75rem">· ${cat}</span>` : ""}</span>
+      <span class="el-amount">${amt}</span>
+      <span class="el-status ${statusCls}">${statusLabel}</span>
+    </div>`;
+  }).join("");
+}
+loadExistingLines();
+
+// ── Load open reports for selector ──────────────────────────
+let openReports = [];
+async function loadOpenReports() {
+  try {
+    const r = await fetch("/api/reports", { headers: await getAuth() });
+    if (!r.ok) return;
+    const list = await r.json();
+    openReports = (list || []).filter(rpt => rpt.status === "open");
+  } catch {}
+}
+loadOpenReports();
+
+// ── Upload ──────────────────────────────────────────────────
+async function handleUpload(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const uploadUrl = CURRENT_REPORT_ID
+    ? `/api/quick/upload?report_id=${CURRENT_REPORT_ID}`
+    : "/api/quick/upload";
+  const r = await fetch(uploadUrl, { method: "POST", body: fd, headers: await getAuth() });
+  if (!r.ok) { alert("上传失败: " + r.status); return; }
+  const body = await r.json();
+
+  const drafts = body.drafts || [{ draft_id: body.draft_id, receipt_url: body.receipt_url }];
+  for (const d of drafts) {
+    showScanProgress(d.draft_id, file);
+    streamPipeline(d.draft_id, file);
+  }
+}
+
+// ── Scan progress ───────────────────────────────────────────
+function showScanProgress(draftId, file) {
+  document.getElementById("upload-section").style.display = "none";
+  document.getElementById("form-section").style.display = "none";
+  document.getElementById("success-section").style.display = "none";
+
+  const el = document.getElementById("scan-section");
+  el.style.display = "block";
+  el.innerHTML = `
+    <div class="scan-card" id="scan-${draftId}">
+      ${file.type.startsWith("image/")
+        ? `<img src="${URL.createObjectURL(file)}" class="receipt-preview-small">`
+        : `<div style="text-align:center;padding:1rem;color:#64748b;font-size:2rem">📄 ${file.name}</div>`
+      }
+      <div class="scan-step active" id="step-ocr-${draftId}">
+        <span class="dot"></span> 正在识别发票内容...
+      </div>
+      <div class="scan-step" id="step-classify-${draftId}">
+        <span class="dot"></span> 分类费用类型
+      </div>
+      <div class="scan-step" id="step-dedupe-${draftId}">
+        <span class="dot"></span> 查重发票号
+      </div>
+      <div class="scan-step" id="step-budget-${draftId}">
+        <span class="dot"></span> 检查预算
+      </div>
+    </div>
+  `;
+}
+
+function markScanStep(draftId, step, status) {
+  const el = document.getElementById(`step-${step}-${draftId}`);
+  if (!el) return;
+  el.className = `scan-step ${status}`;
+  if (status === "done") {
+    el.querySelector(".dot").style.animation = "none";
+  }
+}
+
+// ── Pipeline stream ─────────────────────────────────────────
+const draftData = {};
+
+function streamPipeline(draftId, file) {
+  draftData[draftId] = { file, fields: {}, sources: {}, isDuplicate: false };
+  const u = window.auth ? window.auth.getUser() : null;
+  const qs = u ? `?_uid=${encodeURIComponent(u.id)}&_role=${encodeURIComponent((u.roles||[u.role||"employee"]).join(","))}` : "";
+  const es = new EventSource(`/api/quick/stream/${draftId}${qs}`);
+
+  es.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+
+    if (ev.type === "ocr_done") {
+      markScanStep(draftId, "ocr", "done");
+      markScanStep(draftId, "classify", "active");
+      const d = draftData[draftId];
+      if (ev.merchant) { d.fields.merchant = ev.merchant; d.sources.merchant = "ai"; }
+      if (ev.amount)   { d.fields.amount = ev.amount; d.sources.amount = "ai"; }
+      if (ev.date)     { d.fields.date = ev.date; d.sources.date = "ai"; }
+    } else if (ev.type === "ocr_failed") {
+      markScanStep(draftId, "ocr", "done");
+      const el = document.getElementById(`step-ocr-${draftId}`);
+      if (el) { el.style.color = "#dc2626"; el.innerHTML = `<span class="dot" style="background:#dc2626"></span> 识别失败：${ev.error || '未知错误'}`; }
+    } else if (ev.type === "classify_done") {
+      markScanStep(draftId, "classify", "done");
+      markScanStep(draftId, "dedupe", "active");
+      if (ev.category) {
+        draftData[draftId].fields.category = ev.category;
+        draftData[draftId].sources.category = "ai";
+      }
+    } else if (ev.type === "dedupe_done") {
+      markScanStep(draftId, "dedupe", "done");
+      markScanStep(draftId, "budget", "active");
+      draftData[draftId].isDuplicate = ev.is_duplicate;
+    } else if (ev.type === "budget_done") {
+      markScanStep(draftId, "budget", "done");
+      draftData[draftId].budgetSignal = ev.signal;
+    } else if (ev.type === "card_ready") {
+      es.close();
+      draftData[draftId].layer = ev.layer;
+      fetchDraftAndShowForm(draftId);
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    fetchDraftAndShowForm(draftId);
+  };
+}
+
+async function fetchDraftAndShowForm(draftId) {
+  const r = await fetch(`/api/chat/drafts/${draftId}`, { headers: await getAuth() });
+  if (r.ok) {
+    const draft = await r.json();
+    const d = draftData[draftId];
+    const fields = draft.fields || {};
+    const sources = draft.field_sources || {};
+    d.fields = { ...d.fields, ...fields };
+    d.sources = { ...d.sources, ...sources };
+    d.receiptUrl = draft.receipt_url;
+  }
+  showForm(draftId);
+}
+
+// ── FX helpers ──────────────────────────────────────────────
+function onQuickCurrencyChange(draftId) {
+  const sel = document.getElementById(`qf-currency-${draftId}`);
+  const fxRow = document.getElementById(`fx-row-${draftId}`);
+  if (!sel || !fxRow) return;
+  const newCurrency = sel.value;
+
+  if (newCurrency === homeCurrency) {
+    fxRow.style.display = "none";
+    return;
+  }
+
+  fxRow.style.display = "block";
+  const fromRate = fxRates[newCurrency] || 1;
+  const toRate = fxRates[homeCurrency] || 1;
+  const rate = (fromRate / toRate).toFixed(6);
+
+  document.getElementById(`fx-label-${draftId}`).textContent = `1 ${newCurrency} =`;
+  document.getElementById(`fx-rate-${draftId}`).value = rate;
+  document.getElementById(`fx-converted-${draftId}`).textContent = `${homeCurrency}`;
+  updateQuickConverted(draftId);
+}
+
+function updateQuickConverted(draftId) {
+  const rateInput = document.getElementById(`fx-rate-${draftId}`);
+  const amountInput = document.getElementById(`qf-amount-${draftId}`);
+  const converted = document.getElementById(`fx-converted-${draftId}`);
+  if (!rateInput || !amountInput || !converted) return;
+
+  const rate = parseFloat(rateInput.value);
+  const amount = parseFloat(amountInput.value);
+  if (!isNaN(rate) && !isNaN(amount)) {
+    converted.textContent = `≈ ${homeCurrency} ${(amount * rate).toFixed(2)}`;
+  } else {
+    converted.textContent = `${homeCurrency}`;
+  }
+}
+
+// ── Editable form ───────────────────────────────────────────
+async function showForm(draftId) {
+  await loadOpenReports();
+  document.getElementById("scan-section").style.display = "none";
+  document.getElementById("upload-section").style.display = "none";
+  document.getElementById("success-section").style.display = "none";
+
+  const d = draftData[draftId];
+  const layer = d.layer || "2";
+  const f = d.fields;
+  const s = d.sources;
+  const el = document.getElementById("form-section");
+  el.style.display = "block";
+
+  if (layer === "3_hard") {
+    el.innerHTML = `
+      <div class="error-card" id="form-${draftId}">
+        <div class="error-icon">❌</div>
+        <div class="error-title">发票识别失败</div>
+        <div class="error-sub">图片质量不足，无法自动识别字段</div>
+        <div class="form-actions" style="justify-content:center">
+          <button class="btn-secondary" onclick="resetAndUploadNew()">重新拍照</button>
+          <button class="btn-save" onclick="forceManualFill('${draftId}')">手动填写</button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  function fieldClass(key) {
+    return s[key] === "ai" || s[key] === "ocr" || s[key] === "pipeline" ? "ai-filled" : "";
+  }
+  function badge(key) {
+    if (s[key] === "ai" || s[key] === "ocr" || s[key] === "pipeline")
+      return `<span class="ai-badge">AI</span>`;
+    if (!f[key] && ["merchant","amount","date","category"].includes(key))
+      return `<span class="confirm-badge">需填写</span>`;
+    return "";
+  }
+
+  const catOptions = CATEGORIES.map(c =>
+    `<option value="${c.value}" ${f.category === c.value ? 'selected' : ''}>${c.label}</option>`
+  ).join("");
+
+  el.innerHTML = `
+    <div class="form-card" id="form-${draftId}">
+      <h3>确认发票信息 ${d.isDuplicate ? '<span style="color:#dc2626;font-size:.8rem">⚠ 可能重复</span>' : ''}</h3>
+
+      ${layer === "1"
+        ? '<div class="layer-banner success">✅ 所有字段已自动识别，请确认后保存</div>'
+        : layer === "2"
+        ? '<div class="layer-banner warning">⚠️ 部分字段需要手动填写（标红处）</div>'
+        : '<div class="layer-banner orange">📝 识别效果不佳，请手动填写关键信息</div>'
+      }
+
+      ${d.receiptUrl
+        ? `<img src="${d.receiptUrl}" class="receipt-preview-small">`
+        : d.file && d.file.type.startsWith("image/")
+          ? `<img src="${URL.createObjectURL(d.file)}" class="receipt-preview-small">`
+          : ""
+      }
+
+      ${d.isDuplicate ? '<div class="alert-dup">⚠ 该发票号可能已存在，请确认后再保存。</div>' : ''}
+
+      <div class="form-grid">
+        <div class="form-group">
+          <label>商户名称 * ${badge("merchant")}</label>
+          <input id="qf-merchant-${draftId}" value="${f.merchant || ''}"
+            class="${fieldClass("merchant")}" placeholder="如：海底捞" required>
+        </div>
+        <div class="form-group">
+          <label>金额 * ${badge("amount")}</label>
+          <input id="qf-amount-${draftId}" type="number" step="0.01" min="0.01"
+            value="${f.amount || ''}" class="${fieldClass("amount")}" placeholder="0.00" required
+            oninput="updateQuickConverted('${draftId}')">
+        </div>
+        <div class="form-group">
+          <label>货币 ${badge("currency")}</label>
+          <select id="qf-currency-${draftId}" class="${fieldClass("currency")}" onchange="onQuickCurrencyChange('${draftId}')">
+            ${[["CNY","人民币"],["AUD","澳元"],["USD","美元"],["EUR","欧元"],["JPY","日元"],["GBP","英镑"]].map(([c,l]) =>
+              `<option value="${c}" ${(f.currency||'CNY')===c?'selected':''}>${c} — ${l}</option>`
+            ).join("")}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>费用类别 * ${badge("category")}</label>
+          <select id="qf-category-${draftId}" class="${fieldClass("category")}" required>
+            <option value="">— 请选择 —</option>
+            ${catOptions}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>消费日期 * ${badge("date")}</label>
+          <input id="qf-date-${draftId}" type="date"
+            value="${f.date || ''}" class="${fieldClass("date")}" required>
+        </div>
+        <div class="form-group">
+          <label>税额 ${badge("tax_amount")}</label>
+          <input id="qf-tax-${draftId}" type="number" step="0.01" min="0"
+            value="${f.tax_amount || ''}" class="${fieldClass("tax_amount")}" placeholder="可选">
+        </div>
+        <div class="form-group">
+          <label>发票号码 ${badge("invoice_number")}</label>
+          <input id="qf-invoice-number-${draftId}" value="${f.invoice_number || ''}"
+            class="${fieldClass("invoice_number")}" placeholder="可选 · 用于查重">
+        </div>
+        <div class="form-group">
+          <label>发票代码 ${badge("invoice_code")}</label>
+          <input id="qf-invoice-code-${draftId}" value="${f.invoice_code || ''}"
+            class="${fieldClass("invoice_code")}" placeholder="可选">
+        </div>
+        <div class="form-group">
+          <label>项目代码</label>
+          <input id="qf-project-${draftId}" value="${f.project_code || ''}" placeholder="可选，如 PROJ-042">
+        </div>
+        <div class="form-group full">
+          <label>备注说明</label>
+          <textarea id="qf-desc-${draftId}" rows="2" placeholder="可选：补充消费说明">${f.description || ''}</textarea>
+        </div>
+      </div>
+
+      <div id="fx-row-${draftId}" style="display:none; margin-top:.6rem; padding:.6rem .8rem; background:#f0fdf9; border-radius:8px; font-size:.85rem;">
+        <span id="fx-label-${draftId}"></span>
+        <input id="fx-rate-${draftId}" type="number" step="0.000001"
+               style="width:90px; margin:0 .3rem; padding:.2rem .4rem; border:1px solid #e2e8f0; border-radius:4px; font-size:.85rem;"
+               oninput="updateQuickConverted('${draftId}')">
+        <span id="fx-converted-${draftId}" style="margin-left:.5rem; color:#64748b;"></span>
+      </div>
+
+      <div id="report-selector-${draftId}" style="margin-top:.8rem; padding:.8rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;">
+        <label style="font-size:.85rem; font-weight:600; color:#475569; display:block; margin-bottom:.4rem">保存到</label>
+        <select id="qf-report-${draftId}" style="width:100%; padding:.4rem .6rem; border:1px solid #d1d5db; border-radius:6px; font-size:.85rem;">
+          <option value="">新建报销单</option>
+          ${openReports.filter(rpt => !CURRENT_REPORT_ID || rpt.id === CURRENT_REPORT_ID).length > 0 || !CURRENT_REPORT_ID
+            ? openReports.map(rpt => `<option value="${rpt.id}" ${CURRENT_REPORT_ID === rpt.id ? 'selected' : ''}>${rpt.title}（${rpt.line_count || 0} 笔）</option>`).join("")
+            : ""
+          }
+        </select>
+      </div>
+
+      <div id="form-alert-${draftId}"></div>
+
+      <div class="form-actions">
+        <button class="btn-secondary" onclick="resetAndUploadNew()">重新上传</button>
+        <button class="btn-save" id="save-btn-${draftId}" onclick="saveToReport('${draftId}')">
+          保存到报销单
+        </button>
+      </div>
+    </div>
+  `;
+
+  const currencyVal = f.currency || "CNY";
+  if (currencyVal !== homeCurrency) {
+    setTimeout(() => onQuickCurrencyChange(draftId), 0);
+  }
+}
+
+// ── Save: sync fields back to draft, then attest ────────────
+async function saveToReport(draftId) {
+  const btn = document.getElementById(`save-btn-${draftId}`);
+  const alertEl = document.getElementById(`form-alert-${draftId}`);
+  alertEl.innerHTML = "";
+
+  const fields = {
+    merchant: document.getElementById(`qf-merchant-${draftId}`).value.trim(),
+    amount: document.getElementById(`qf-amount-${draftId}`).value,
+    currency: document.getElementById(`qf-currency-${draftId}`).value,
+    category: document.getElementById(`qf-category-${draftId}`).value,
+    date: document.getElementById(`qf-date-${draftId}`).value,
+    tax_amount: document.getElementById(`qf-tax-${draftId}`).value || null,
+    invoice_number: document.getElementById(`qf-invoice-number-${draftId}`).value.trim() || null,
+    invoice_code: document.getElementById(`qf-invoice-code-${draftId}`).value.trim() || null,
+    project_code: document.getElementById(`qf-project-${draftId}`).value.trim() || null,
+    description: document.getElementById(`qf-desc-${draftId}`).value.trim() || null,
+  };
+
+  const fxInput = document.getElementById(`fx-rate-${draftId}`);
+  if (fxInput && fxInput.value && document.getElementById(`qf-currency-${draftId}`).value !== homeCurrency) {
+    fields.exchange_rate = parseFloat(fxInput.value);
+  }
+
+  if (!fields.merchant || !fields.amount || !fields.date || !fields.category) {
+    alertEl.innerHTML = '<div class="alert-error">请填写所有必填字段（商户、金额、日期、类别）</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "保存中...";
+
+  const authH = await getAuth();
+  for (const [key, val] of Object.entries(fields)) {
+    if (val === null || val === undefined) continue;
+    await fetch(`/api/chat/drafts/${draftId}/field`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authH },
+      body: JSON.stringify({ field: key, value: val, source: "user" }),
+    });
+  }
+
+  const selEl = document.getElementById(`qf-report-${draftId}`);
+  const selectedReportId = selEl ? selEl.value : (CURRENT_REPORT_ID || "");
+  const attestUrl = selectedReportId
+    ? `/api/quick/attest/${draftId}?report_id=${encodeURIComponent(selectedReportId)}`
+    : `/api/quick/attest/${draftId}`;
+  const r = await fetch(attestUrl, {
+    method: "POST", headers: authH,
+  });
+  if (!r.ok) {
+    let msg = "保存失败: " + r.status;
+    try {
+      const body = await r.json();
+      if (r.status === 422 && body.detail) {
+        msg = (body.detail.includes("已被报销过") || body.detail.startsWith("发票号"))
+          ? "重复发票，无法保存" : body.detail;
+      }
+    } catch {}
+    alertEl.innerHTML = `<div class="alert-error">${msg}</div>`;
+    btn.disabled = false;
+    btn.textContent = "保存到报销单";
+    return;
+  }
+  const body = await r.json();
+  const reportId = body.report_id;
+  if (!CURRENT_REPORT_ID) CURRENT_REPORT_ID = reportId;
+
+  await loadExistingLines();
+  showSuccess(draftId, reportId);
+}
+
+function showSuccess(draftId, reportId) {
+  document.getElementById("form-section").style.display = "none";
+  document.getElementById("scan-section").style.display = "none";
+
+  const el = document.getElementById("success-section");
+  el.style.display = "block";
+  el.innerHTML = `
+    <div class="form-card" style="text-align:center; padding:2rem">
+      <div style="font-size:2rem; margin-bottom:.5rem">✓</div>
+      <div style="font-weight:700; font-size:1.1rem; color:#16a34a; margin-bottom:.8rem">已保存到报销单</div>
+      <div class="form-actions" style="justify-content:center">
+        <button class="btn-continue" onclick="continueAdding('${reportId}')">继续添加</button>
+        <button class="btn-save" onclick="goToReport('${reportId}')">查看报销单 →</button>
+      </div>
+    </div>
+  `;
+}
+
+function resetAndUploadNew() {
+  document.getElementById("form-section").style.display = "none";
+  document.getElementById("scan-section").style.display = "none";
+  document.getElementById("success-section").style.display = "none";
+  document.getElementById("upload-section").style.display = "block";
+  fi.value = "";
+}
+
+function forceManualFill(draftId) {
+  draftData[draftId].layer = "3_soft";
+  draftData[draftId].fields = draftData[draftId].fields || {};
+  showForm(draftId);
+}
+
+function continueAdding(reportId) {
+  window.location.href = `/employee/quick.html?report_id=${reportId}`;
+}
+function goToReport(reportId) {
+  window.location.href = `/employee/report.html?report_id=${reportId}`;
+}
+function openLineDetail(lineId, isDraft) {
+  window.location.href = `/employee/report.html?report_id=${CURRENT_REPORT_ID}&line=${lineId}&draft=${isDraft}`;
+}
+
+</script>
+
+<script src="/shared/ai-assistant.js"></script>
+</body>
+</html>

@@ -1,0 +1,1281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eval Observatory — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>window.API_BASE = "";</script>
+  <style>
+    body { display: flex; flex-direction: column; min-height: 100vh; background: var(--gray-50); }
+
+    /* ── Top bar ─────────────────────────────────── */
+    .eval-topbar {
+      display: flex; align-items: center; gap: .75rem;
+      padding: .6rem 1.25rem; border-bottom: 1px solid var(--gray-200);
+      background: var(--gray-0); flex-shrink: 0;
+    }
+    .eval-topbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
+    .eval-topbar .brand { font-weight: 700; font-size: .9rem; color: var(--gray-900); }
+    .eval-topbar .sep { color: var(--gray-300); }
+    .eval-topbar .sub { font-size: .8rem; color: var(--gray-500); }
+
+    /* ── Layout ──────────────────────────────────── */
+    .eval-shell { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ─────────────────────────────────── */
+    .eval-sidebar {
+      width: 220px; flex-shrink: 0;
+      background: var(--gray-0); border-right: 1px solid var(--gray-200);
+      display: flex; flex-direction: column; padding: 1.25rem 0;
+      overflow-y: auto;
+    }
+    .sidebar-section { padding: 0 1rem; margin-bottom: 1.5rem; }
+    .sidebar-section-title {
+      font-size: .65rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--gray-400); margin-bottom: .5rem;
+      padding: 0 .5rem;
+    }
+    .sidebar-nav-item {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .45rem .75rem; border-radius: 6px; cursor: pointer;
+      font-size: .82rem; color: var(--gray-700); transition: all .15s;
+      border: none; background: none; width: 100%; text-align: left;
+    }
+    .sidebar-nav-item:hover { background: var(--gray-100); color: var(--gray-900); }
+    .sidebar-nav-item.active { background: var(--brand-light); color: var(--brand-dark); font-weight: 600; }
+    .sidebar-nav-item .icon { font-size: .9rem; width: 18px; text-align: center; }
+    .sidebar-divider { height: 1px; background: var(--gray-200); margin: .25rem 1rem 1rem; }
+
+    /* ── Main content ────────────────────────────── */
+    .eval-main { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
+    .eval-main-header { margin-bottom: 1.5rem; }
+    .eval-main-header h1 { font-size: 1.15rem; font-weight: 800; color: var(--gray-900); letter-spacing: -.3px; margin: 0; }
+    .eval-main-header .subtitle { font-size: .78rem; color: var(--gray-500); margin-top: .15rem; }
+
+    /* ── KPIs ────────────────────────────────────── */
+    .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+    .kpi-card { background: var(--gray-0); border-radius: 8px; padding: 1rem 1.2rem; border: 1px solid var(--gray-200); box-shadow: var(--shadow-sm); }
+    .kpi-value { font-size: 1.5rem; font-weight: 700; color: var(--gray-900); }
+    .kpi-label { font-size: .75rem; color: var(--gray-500); margin-top: .2rem; }
+    .trend-chart { height: 60px; display: flex; align-items: flex-end; gap: 3px; margin-top: .5rem; }
+    .trend-bar { flex: 1; border-radius: 3px 3px 0 0; min-width: 8px; transition: height .3s ease; }
+
+    /* ── Table ────────────────────────────────────── */
+    .eval-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    .eval-table th, .eval-table td { padding: .55rem .7rem; text-align: left; border-bottom: 1px solid var(--gray-200); }
+    .eval-table th { color: var(--gray-500); font-weight: 600; font-size: .75rem; text-transform: uppercase; }
+    .eval-table tr:hover { background: var(--gray-100); }
+
+    /* ── Badges ───────────────────────────────────── */
+    .badge { display: inline-block; padding: .15rem .45rem; border-radius: 4px; font-size: .72rem; font-weight: 600; }
+    .badge-pass { background: #dcfce7; color: #16a34a; }
+    .badge-fail { background: #fee2e2; color: #dc2626; }
+    .badge-component { background: #dbeafe; color: #2563eb; }
+    .badge-changed { background: #fef3c7; color: #d97706; }
+    .badge-regression { background: #fee2e2; color: #dc2626; }
+    .badge-improvement { background: #dcfce7; color: #16a34a; }
+    .badge-neutral { background: var(--gray-100); color: var(--gray-600); }
+
+    /* ── Detail panel ────────────────────────────── */
+    .trace-detail {
+      background: var(--gray-0); border: 1px solid var(--gray-200); border-radius: 8px;
+      padding: 1.2rem; margin-top: 1rem; font-size: .8rem; box-shadow: var(--shadow);
+    }
+    .trace-detail pre {
+      background: var(--gray-100); padding: .8rem; border-radius: 6px;
+      overflow-x: auto; font-size: .75rem; color: var(--gray-900); max-height: 300px;
+    }
+    .empty-state { text-align: center; padding: 3rem; color: var(--gray-500); font-size: .9rem; }
+
+    /* ── Config form ─────────────────────────────── */
+    .config-section { margin-bottom: 1.5rem; }
+    .config-section-title {
+      font-size: .78rem; font-weight: 700; color: var(--gray-900);
+      margin-bottom: .6rem; padding-bottom: .4rem; border-bottom: 1px solid var(--gray-200);
+    }
+    .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1.2rem; }
+    .config-field label {
+      display: block; font-size: .72rem; font-weight: 600; color: var(--gray-500);
+      margin-bottom: .2rem; text-transform: uppercase; letter-spacing: .03em;
+    }
+    .config-field input, .config-field textarea {
+      width: 100%; padding: .4rem .6rem; border: 1px solid var(--gray-200); border-radius: 6px;
+      font-size: .8rem; color: var(--gray-900); background: var(--gray-0); box-sizing: border-box;
+    }
+    .config-field input:focus, .config-field textarea:focus {
+      outline: none; border-color: var(--brand); box-shadow: 0 0 0 2px rgba(99,102,241,.15);
+    }
+    .config-field textarea { resize: vertical; min-height: 60px; font-family: monospace; font-size: .75rem; }
+    .config-field.full { grid-column: 1 / -1; }
+    .config-actions { display: flex; gap: .6rem; margin-top: 1rem; }
+    .btn-save {
+      padding: .5rem 1.2rem; border-radius: 6px; border: none; font-size: .8rem; font-weight: 600;
+      cursor: pointer; transition: all .15s;
+    }
+    .btn-primary { background: var(--brand); color: white; }
+    .btn-primary:hover { opacity: .9; }
+    .btn-secondary { background: var(--gray-100); color: var(--gray-700); border: 1px solid var(--gray-200); }
+    .btn-secondary:hover { background: var(--gray-200); }
+    .save-feedback { font-size: .78rem; color: #16a34a; margin-left: .5rem; line-height: 2; }
+
+    /* ── Metadata pills ──────────────────────────── */
+    .meta-pills { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0; }
+    .meta-pill {
+      display: inline-flex; align-items: center; gap: .3rem;
+      padding: .2rem .5rem; border-radius: 4px; font-size: .7rem;
+      background: var(--gray-100); color: var(--gray-700); border: 1px solid var(--gray-200);
+    }
+    .meta-pill .pill-key { font-weight: 600; color: var(--gray-500); }
+
+    /* ── Diff view ───────────────────────────────── */
+    .diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: .8rem 0; }
+    .diff-col { font-size: .78rem; }
+    .diff-col-header { font-weight: 700; color: var(--gray-900); margin-bottom: .4rem; font-size: .8rem; }
+    .diff-row { display: flex; justify-content: space-between; padding: .3rem 0; border-bottom: 1px solid var(--gray-100); }
+    .diff-key { color: var(--gray-500); font-weight: 600; font-size: .72rem; }
+    .diff-val-old { color: #dc2626; text-decoration: line-through; }
+    .diff-val-new { color: #16a34a; font-weight: 600; }
+
+    /* ── Compare selector ────────────────────────── */
+    .compare-bar {
+      display: flex; align-items: center; gap: .6rem; margin-bottom: 1rem;
+      padding: .6rem .8rem; background: var(--gray-100); border-radius: 6px; font-size: .78rem;
+    }
+    .compare-bar select { padding: .3rem .5rem; border-radius: 4px; border: 1px solid var(--gray-200); font-size: .78rem; }
+
+    /* ── Prompt Lab ──────────────────────────────── */
+    .prompt-list { display: grid; gap: .8rem; margin-bottom: 1rem; }
+    .prompt-card {
+      background: var(--gray-0); border: 1px solid var(--gray-200); border-radius: 8px;
+      padding: 1rem; cursor: pointer; transition: all .15s;
+    }
+    .prompt-card:hover { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(99,102,241,.1); }
+    .prompt-card.active { border-color: var(--brand); background: #f5f3ff; }
+    .prompt-card-title { font-weight: 700; font-size: .85rem; color: var(--gray-900); }
+    .prompt-card-meta { font-size: .72rem; color: var(--gray-500); margin-top: .25rem; }
+    .prompt-editor textarea {
+      width: 100%; min-height: 200px; padding: .8rem; border: 1px solid var(--gray-200);
+      border-radius: 6px; font-family: monospace; font-size: .78rem; color: var(--gray-900);
+      background: var(--gray-0); resize: vertical; box-sizing: border-box; line-height: 1.5;
+    }
+    .prompt-editor textarea:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 2px rgba(99,102,241,.15); }
+    .prompt-version-bar {
+      display: flex; align-items: center; gap: .6rem; margin-bottom: .6rem; flex-wrap: wrap;
+    }
+    .prompt-version-chip {
+      padding: .25rem .6rem; border-radius: 4px; font-size: .72rem; font-weight: 600;
+      cursor: pointer; border: 1px solid var(--gray-200); background: var(--gray-0); color: var(--gray-700);
+    }
+    .prompt-version-chip.active { background: var(--brand); color: white; border-color: var(--brand); }
+    .prompt-version-chip:hover { border-color: var(--brand); }
+
+    /* ── Component section boxes ─────────────────── */
+    .comp-section {
+      background: var(--gray-0); border: 1px solid var(--gray-200); border-radius: 8px;
+      padding: 1.2rem; margin-bottom: 1.2rem;
+    }
+    .comp-section-title {
+      font-size: .82rem; font-weight: 700; color: var(--gray-900); margin-bottom: .8rem;
+      display: flex; align-items: center; gap: .5rem;
+    }
+    .comp-section-title .icon { font-size: .9rem; }
+
+    /* ── Sidebar filters ─────────────────────────── */
+    .sidebar-filter { padding: 0 1rem; margin-bottom: .6rem; }
+    .sidebar-filter label {
+      display: block; font-size: .7rem; font-weight: 600;
+      color: var(--gray-400); text-transform: uppercase;
+      letter-spacing: .04em; margin-bottom: .25rem; padding-left: .1rem;
+    }
+    .sidebar-filter select {
+      width: 100%; padding: .35rem .5rem; border-radius: 6px;
+      border: 1px solid var(--gray-200); background: var(--gray-0);
+      color: var(--gray-900); font-size: .78rem;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="eval-topbar">
+  <div class="dot"></div>
+  <span class="brand">ExpenseFlow</span>
+  <span class="sep">/</span>
+  <span class="sub">Eval Observatory</span>
+</div>
+
+<div class="eval-shell">
+
+  <!-- Sidebar -->
+  <aside class="eval-sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Overview</div>
+      <button class="sidebar-nav-item active" onclick="switchTab('overview', this)">
+        <span class="icon">&#9632;</span> Overview
+      </button>
+    </div>
+
+    <div class="sidebar-divider"></div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Components</div>
+      <button class="sidebar-nav-item" onclick="switchTab('comp-fraud', this)">
+        <span class="icon">&#9888;</span> Fraud Analyzer
+      </button>
+      <button class="sidebar-nav-item" onclick="switchTab('comp-ambiguity', this)">
+        <span class="icon">&#9678;</span> Ambiguity Detector
+      </button>
+      <button class="sidebar-nav-item" onclick="switchTab('comp-ocr', this)">
+        <span class="icon">&#9998;</span> OCR
+      </button>
+      <button class="sidebar-nav-item" onclick="switchTab('comp-chat', this)">
+        <span class="icon">&#9993;</span> Chat Agent
+      </button>
+    </div>
+
+    <div class="sidebar-divider"></div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Tools</div>
+      <button class="sidebar-nav-item" onclick="switchTab('compare', this)">
+        <span class="icon">&#8644;</span> Compare Runs
+      </button>
+      <button class="sidebar-nav-item" onclick="switchTab('traces', this)">
+        <span class="icon">&#9776;</span> LLM Traces
+      </button>
+    </div>
+
+    <!-- Trace filters (only visible on traces tab) -->
+    <div id="trace-filters" style="display:none">
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Trace Filters</div>
+      </div>
+      <div class="sidebar-filter">
+        <label>Component</label>
+        <select id="filter-component" onchange="loadTraces()">
+          <option value="">All</option>
+          <option value="fraud_llm_analyzer">Fraud LLM</option>
+          <option value="ambiguity_detector">Ambiguity</option>
+          <option value="ocr">OCR</option>
+        </select>
+      </div>
+      <div class="sidebar-filter">
+        <label>Status</label>
+        <select id="filter-error" onchange="loadTraces()">
+          <option value="">All</option>
+          <option value="false">Success</option>
+          <option value="true">Error</option>
+        </select>
+      </div>
+      <div class="sidebar-filter">
+        <label>Sort By</label>
+        <select id="sort-field" onchange="loadTraces()">
+          <option value="created_at">Time</option>
+          <option value="latency_ms">Latency</option>
+          <option value="component">Component</option>
+        </select>
+      </div>
+      <div class="sidebar-filter">
+        <label>Order</label>
+        <select id="sort-order" onchange="loadTraces()">
+          <option value="desc">Newest first</option>
+          <option value="asc">Oldest first</option>
+        </select>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <div class="eval-main">
+
+    <!-- ═══ Overview Tab ═══ -->
+    <div id="tab-overview">
+      <div class="eval-main-header">
+        <h1>Eval Overview</h1>
+        <div class="subtitle">AI Components Eval Dashboard</div>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi-card"><div class="kpi-value" id="kpi-total-runs">--</div><div class="kpi-label">Total Runs</div></div>
+        <div class="kpi-card">
+          <div class="kpi-value" id="kpi-pass-rate">--</div><div class="kpi-label">Latest Pass Rate</div>
+          <div class="trend-chart" id="trend-chart"></div>
+        </div>
+        <div class="kpi-card"><div class="kpi-value" id="kpi-pass-delta">--</div><div class="kpi-label">Pass Rate Delta</div></div>
+        <div class="kpi-card"><div class="kpi-value" id="kpi-latest-cases">--</div><div class="kpi-label">Latest Total Cases</div></div>
+      </div>
+      <div class="comp-section">
+        <div class="comp-section-title">Per-Component Detection Quality (Latest Run)</div>
+        <div id="overview-metrics-table"><div class="empty-state">Loading...</div></div>
+      </div>
+      <div class="comp-section">
+        <div class="comp-section-title">Recent Eval Runs</div>
+        <table class="eval-table">
+          <thead><tr><th>Time</th><th>Total</th><th>Passed</th><th>Pass Rate</th><th>Trigger</th><th>Actions</th></tr></thead>
+          <tbody id="overview-runs-body"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══ Component Tabs (generated dynamically) ═══ -->
+    <div id="tab-comp-fraud" style="display:none"></div>
+    <div id="tab-comp-ambiguity" style="display:none"></div>
+    <div id="tab-comp-ocr" style="display:none"></div>
+    <div id="tab-comp-chat" style="display:none"></div>
+
+    <!-- ═══ Compare Tab ═══ -->
+    <div id="tab-compare" style="display:none">
+      <div class="eval-main-header">
+        <h1>Compare Runs</h1>
+        <div class="subtitle">Compare metadata, P/R/F1, and case results between two eval runs</div>
+      </div>
+      <div class="compare-bar">
+        <strong>Run A:</strong>
+        <select id="compare-a"></select>
+        <strong style="margin-left:.5rem">Run B:</strong>
+        <select id="compare-b"></select>
+        <button class="btn-save btn-primary" onclick="runDiff()" style="margin-left:.5rem">Compare</button>
+      </div>
+      <div id="diff-result"></div>
+    </div>
+
+    <!-- ═══ Traces Tab ═══ -->
+    <div id="tab-traces" style="display:none">
+      <div class="eval-main-header">
+        <h1>LLM Traces</h1>
+        <div class="subtitle">Raw LLM call logs across all components</div>
+      </div>
+      <table class="eval-table">
+        <thead><tr><th>Time</th><th>Component</th><th>Model</th><th>Latency</th><th>Tokens</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="traces-body"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody>
+      </table>
+      <div id="traces-pagination" style="margin-top:.8rem; text-align:center; font-size:.8rem;"></div>
+      <div id="trace-detail-panel"></div>
+    </div>
+
+  </div><!-- /eval-main -->
+</div><!-- /eval-shell -->
+
+<script>
+const API = window.API_BASE || "";
+let currentTracePage = 1;
+let allRuns = [];
+let latestRun = null;
+let currentPromptKey = null;
+let currentPromptVersion = null;
+
+/* ── Component Definitions ───────────────────── */
+const COMP_DEFS = {
+  fraud: {
+    name: "Fraud Analyzer",
+    icon: "&#9888;",
+    subtitle: "Rules 11-14 | GPT-4o | Template/Contradiction/PersonAmount/Vagueness",
+    promptKeys: ["fraud_system", "fraud_user_template"],
+    configKeys: ["template_score_threshold", "vagueness_threshold"],
+    casePrefix: ["fraud_llm"],
+    evalCmd: "pytest backend/tests/test_eval_harness.py -k 'llm' -v",
+  },
+  ambiguity: {
+    name: "Ambiguity Detector",
+    icon: "&#9678;",
+    subtitle: "Claude / MiniMax | Risk Level + Recommendation",
+    promptKeys: ["ambiguity_llm"],
+    configKeys: ["ambiguity_llm_trigger_threshold"],
+    configExtra: "ambiguity_weights",
+    casePrefix: ["ambiguity_"],
+    evalCmd: "pytest backend/tests/test_eval_harness.py -k 'ambiguity' -v",
+  },
+  ocr: {
+    name: "OCR",
+    icon: "&#9998;",
+    subtitle: "GPT-4o Vision | Receipt Image Extraction",
+    promptKeys: ["ocr_system"],
+    configKeys: [],
+    casePrefix: ["ocr_"],
+    evalCmd: "pytest backend/tests/test_eval_harness.py -k 'ocr' -v",
+  },
+  chat: {
+    name: "Chat Agent",
+    icon: "&#9993;",
+    subtitle: "GPT-4o | Employee Submit / QA / Manager Explain",
+    promptKeys: ["chat_employee_submit", "chat_employee_qa", "chat_manager_explain"],
+    configKeys: [],
+    casePrefix: ["chat_", "agent_"],
+    evalCmd: "pytest backend/tests/test_agent_eval.py -v",
+  },
+};
+
+/* ── Tab Switching ───────────────────────────── */
+const ALL_TABS = ["overview", "comp-fraud", "comp-ambiguity", "comp-ocr", "comp-chat", "compare", "traces"];
+
+function switchTab(tab, btn) {
+  document.querySelectorAll(".sidebar-nav-item").forEach(function(b) { b.classList.remove("active"); });
+  if (btn) btn.classList.add("active");
+  ALL_TABS.forEach(function(t) {
+    var el = document.getElementById("tab-" + t);
+    if (el) el.style.display = t === tab ? "" : "none";
+  });
+  // Show trace filters only on traces tab
+  document.getElementById("trace-filters").style.display = tab === "traces" ? "" : "none";
+
+  if (tab === "overview") loadOverview();
+  if (tab === "traces") loadTraces();
+  if (tab === "compare") loadCompareSelectors();
+  if (tab.startsWith("comp-")) {
+    var compKey = tab.replace("comp-", "");
+    loadComponentView(compKey);
+  }
+}
+
+/* ── Overview ────────────────────────────────── */
+async function loadOverview() {
+  try {
+    // Load stats
+    var sr = await fetch(API + "/api/eval/stats");
+    var stats = await sr.json();
+    var trend = stats.trend || [];
+    document.getElementById("kpi-total-runs").textContent = trend.length;
+
+    if (trend.length > 0) {
+      var latest = trend[trend.length - 1];
+      var latestRate = latest.pass_rate != null ? latest.pass_rate : null;
+      document.getElementById("kpi-pass-rate").textContent =
+        latestRate != null ? (latestRate * 100).toFixed(0) + "%" : "--";
+
+      if (trend.length >= 2) {
+        var prev = trend[trend.length - 2];
+        if (latestRate != null && prev.pass_rate != null) {
+          var delta = ((latestRate - prev.pass_rate) * 100).toFixed(1);
+          var sign = delta > 0 ? "+" : "";
+          var el = document.getElementById("kpi-pass-delta");
+          el.textContent = sign + delta + "%";
+          el.style.color = delta > 0 ? "#16a34a" : delta < 0 ? "#dc2626" : "var(--gray-900)";
+        }
+      } else {
+        document.getElementById("kpi-pass-delta").textContent = "--";
+      }
+
+      // Trend chart
+      var chart = document.getElementById("trend-chart");
+      chart.innerHTML = "";
+      trend.forEach(function(t) {
+        var bar = document.createElement("div");
+        bar.className = "trend-bar";
+        var pct = (t.pass_rate || 0) * 100;
+        bar.style.height = Math.max(4, pct * 0.55) + "px";
+        bar.style.background = pct >= 80 ? "#16a34a" : pct >= 50 ? "#d97706" : "#dc2626";
+        bar.title = pct.toFixed(0) + "%";
+        chart.appendChild(bar);
+      });
+    }
+
+    // Load latest run for metrics + cases count
+    var rr = await fetch(API + "/api/eval/runs?page=1&page_size=10");
+    var rd = await rr.json();
+    allRuns = rd.items || [];
+    if (allRuns.length > 0) {
+      latestRun = allRuns[0];
+      document.getElementById("kpi-latest-cases").textContent = latestRun.total_cases;
+      renderOverviewMetrics(latestRun);
+      renderOverviewRuns(allRuns);
+    }
+  } catch (e) { console.error("loadOverview:", e); }
+}
+
+function renderOverviewMetrics(run) {
+  var cm = run.component_metrics || {};
+  var keys = Object.keys(cm);
+  if (keys.length === 0) {
+    document.getElementById("overview-metrics-table").innerHTML =
+      '<div class="empty-state">No detection quality data. Run eval with deterministic fraud rules.</div>';
+    return;
+  }
+  var rows = "";
+  keys.forEach(function(comp) {
+    var c = cm[comp];
+    var pFmt = c.precision != null ? (c.precision * 100).toFixed(0) + "%" : "N/A";
+    var rFmt = c.recall != null ? (c.recall * 100).toFixed(0) + "%" : "N/A";
+    var fFmt = c.f1 != null ? (c.f1 * 100).toFixed(0) + "%" : "N/A";
+    var pColor = c.precision != null && c.precision < 0.8 ? "#d97706" : "#16a34a";
+    var rColor = c.recall != null && c.recall < 0.8 ? "#dc2626" : "#16a34a";
+    var tp = c["\u6b63\u786e\u6807\u8bb0"] || 0;
+    var fp = c["\u8bef\u62a5"] || 0;
+    var fn = c["\u6f0f\u62a5"] || 0;
+    var tn = c["\u6b63\u786e\u653e\u884c"] || 0;
+    rows += "<tr>"
+      + '<td><span class="badge badge-component">' + esc(comp) + "</span></td>"
+      + "<td>" + tp + "</td>"
+      + "<td>" + fp + "</td>"
+      + "<td>" + fn + "</td>"
+      + "<td>" + tn + "</td>"
+      + '<td style="color:' + pColor + '; font-weight:700">' + pFmt + "</td>"
+      + '<td style="color:' + rColor + '; font-weight:700">' + rFmt + "</td>"
+      + '<td style="font-weight:700">' + fFmt + "</td>"
+      + "</tr>";
+  });
+  document.getElementById("overview-metrics-table").innerHTML =
+    '<table class="eval-table">'
+    + "<thead><tr><th>Component</th><th>\u6b63\u786e\u6807\u8bb0</th><th>\u8bef\u62a5</th><th>\u6f0f\u62a5</th><th>\u6b63\u786e\u653e\u884c</th><th>\u7cbe\u786e\u7387</th><th>\u53ec\u56de\u7387</th><th>F1</th></tr></thead>"
+    + "<tbody>" + rows + "</tbody></table>";
+}
+
+function renderOverviewRuns(runs) {
+  var tbody = document.getElementById("overview-runs-body");
+  if (runs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No eval runs yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = runs.map(function(run) {
+    var pct = run.pass_rate != null ? (run.pass_rate * 100).toFixed(0) : "--";
+    var color = run.pass_rate >= 0.8 ? "#16a34a" : run.pass_rate >= 0.5 ? "#d97706" : "#dc2626";
+    return "<tr>"
+      + '<td style="color:var(--gray-500)">' + fmtTime(run.started_at) + "</td>"
+      + "<td>" + run.total_cases + "</td>"
+      + "<td>" + run.passed_cases + "</td>"
+      + '<td><span style="color:' + color + '; font-weight:700">' + pct + "%</span></td>"
+      + "<td>" + (run.trigger || "manual") + "</td>"
+      + '<td><button class="btn btn-outline btn-sm" onclick="switchTab(\'overview\', null); showRunDetail(\'' + run.id + '\')">Detail</button></td>'
+      + "</tr>";
+  }).join("");
+}
+
+/* ── Run Detail (shared) ─────────────────────── */
+var currentRunDetail = null;
+
+async function showRunDetail(id, targetPanelId) {
+  var panelId = targetPanelId || "overview-run-detail";
+  // ensure panel exists
+  var panel = document.getElementById(panelId);
+  if (!panel) {
+    var container = document.getElementById("tab-overview");
+    var div = document.createElement("div");
+    div.id = panelId;
+    container.appendChild(div);
+    panel = div;
+  }
+  try {
+    var r = await fetch(API + "/api/eval/runs/" + id);
+    var run = await r.json();
+    currentRunDetail = run;
+    if (!run.results) return;
+    var sorted = run.results.slice().sort(function(a, b) {
+      if (a.passed !== b.passed) return a.passed ? 1 : -1;
+      return (a.case_id || "").localeCompare(b.case_id || "");
+    });
+    var m = run.metadata || {};
+    var pills = [
+      ["Prompt", m.prompt_version], ["Model", m.model], ["Temp", m.temperature],
+      ["TopP", m.top_p], ["MaxTok", m.max_tokens], ["Parsing", m.parsing_version],
+      ["Dataset", m.dataset_hash], ["Cases", m.dataset_case_count],
+      ["Git", m.git_commit], ["Config", m.config_hash],
+    ].filter(function(kv) { return kv[1] != null && kv[1] !== ""; })
+     .map(function(kv) { return '<span class="meta-pill"><span class="pill-key">' + kv[0] + ':</span> ' + esc(String(kv[1])) + "</span>"; })
+     .join("");
+
+    var caseRows = buildCaseRows(sorted);
+
+    panel.innerHTML = '<div class="trace-detail">'
+      + '<h3 style="margin:0 0 .5rem; font-size:.9rem; font-weight:700">'
+      + "Run Detail \u2014 " + run.total_cases + " cases, " + run.passed_cases + " passed</h3>"
+      + '<div style="font-size:.75rem; color:var(--gray-500); margin-bottom:.6rem">' + fmtTime(run.started_at) + " \u2014 " + fmtTime(run.finished_at) + "</div>"
+      + (pills ? '<div class="meta-pills">' + pills + "</div>" : "")
+      + '<table class="eval-table" style="margin-top:.8rem">'
+      + "<thead><tr><th>Case</th><th>Component</th><th>Result</th><th>\u5206\u7c7b</th><th>\u63cf\u8ff0</th></tr></thead>"
+      + "<tbody>" + caseRows + "</tbody></table>"
+      + '<button class="btn-save btn-secondary" style="margin-top:.8rem" onclick="document.getElementById(\'' + panelId + '\').innerHTML=\'\'">Close</button>'
+      + "</div>";
+  } catch (e) { console.error("showRunDetail:", e); }
+}
+
+function buildCaseRows(cases) {
+  return cases.map(function(c, idx) {
+    var clsClass = {"\u6b63\u786e\u6807\u8bb0": "badge-pass", "\u6b63\u786e\u653e\u884c": "badge-pass", "\u8bef\u62a5": "badge-changed", "\u6f0f\u62a5": "badge-regression"};
+    var clsBadge = c.classification ? ' <span class="badge ' + (clsClass[c.classification] || "") + '">' + c.classification + "</span>" : "";
+
+    var mainRow = '<tr style="cursor:pointer" onclick="toggleCaseDetail(\'' + idx + '\')">'
+      + "<td>" + esc(c.case_id) + "</td>"
+      + '<td><span class="badge badge-component">' + (c.component || "--") + "</span></td>"
+      + "<td>" + (c.passed ? '<span class="badge badge-pass">PASS</span>' : '<span class="badge badge-fail">FAIL</span>') + "</td>"
+      + "<td>" + clsBadge + "</td>"
+      + '<td style="color:var(--gray-500); font-size:.75rem">' + esc(c.description || "") + "</td>"
+      + "</tr>";
+
+    var detailParts = [];
+    if (c.expected) detailParts.push("<strong>\u671f\u671b\u8f93\u51fa:</strong> " + esc(JSON.stringify(c.expected)));
+    if (c.actual_output) detailParts.push("<strong>\u5b9e\u9645\u8f93\u51fa:</strong> " + esc(JSON.stringify(c.actual_output)));
+    if (c.input_summary) detailParts.push('<strong>\u8f93\u5165\u6458\u8981:</strong><pre style="margin:.3rem 0; white-space:pre-wrap">' + esc(JSON.stringify(c.input_summary, null, 2)) + "</pre>");
+    if (c.related_config) {
+      var configPills = Object.entries(c.related_config).map(function(kv) {
+        return '<span class="meta-pill"><span class="pill-key">' + esc(kv[0]) + ':</span> ' + kv[1] + "</span>";
+      }).join("");
+      detailParts.push('<strong>\u5173\u8054\u914d\u7f6e:</strong> <span class="meta-pills" style="display:inline-flex">' + configPills + "</span>");
+    }
+    if (c.error) detailParts.push('<strong>\u9519\u8bef:</strong> <span style="color:#dc2626">' + esc(c.error) + "</span>");
+
+    var detailRow = '<tr id="case-detail-' + idx + '" style="display:none">'
+      + '<td colspan="5" style="background:var(--gray-50); padding:.8rem; font-size:.78rem; border-left:3px solid var(--brand)">'
+      + detailParts.join("<br>")
+      + "</td></tr>";
+    return mainRow + detailRow;
+  }).join("");
+}
+
+function toggleCaseDetail(idx) {
+  var row = document.getElementById("case-detail-" + idx);
+  if (row) row.style.display = row.style.display === "none" ? "" : "none";
+}
+
+/* ── Component View ──────────────────────────── */
+async function loadComponentView(compKey) {
+  var def = COMP_DEFS[compKey];
+  if (!def) return;
+  var container = document.getElementById("tab-comp-" + compKey);
+
+  // Header + Run Eval button
+  var html = '<div class="eval-main-header" style="display:flex; justify-content:space-between; align-items:flex-start">'
+    + "<div><h1>" + def.icon + " " + def.name + "</h1>"
+    + '<div class="subtitle">' + def.subtitle + "</div></div>"
+    + '<div><button class="btn-save btn-primary" id="run-eval-btn-' + compKey + '" onclick="triggerEval(\'' + compKey + '\')" style="white-space:nowrap">'
+    + '&#9654; Run Eval</button>'
+    + '<div id="eval-status-' + compKey + '" style="font-size:.72rem; color:var(--gray-500); margin-top:.3rem; text-align:right"></div>'
+    + "</div></div>";
+
+  // Placeholder sections — filled async
+  html += '<div id="comp-' + compKey + '-prompts" class="comp-section">'
+    + '<div class="comp-section-title"><span class="icon">&#9998;</span> Prompts</div>'
+    + '<div class="empty-state">Loading...</div></div>';
+
+  html += '<div id="comp-' + compKey + '-config" class="comp-section">'
+    + '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>'
+    + '<div class="empty-state">Loading...</div></div>';
+
+  html += '<div id="comp-' + compKey + '-cases" class="comp-section">'
+    + '<div class="comp-section-title"><span class="icon">&#9654;</span> Eval Cases (Latest Run)</div>'
+    + '<div class="empty-state">Loading...</div></div>';
+
+  container.innerHTML = html;
+
+  // Load data in parallel
+  await Promise.all([
+    loadComponentPrompts(compKey),
+    loadComponentConfig(compKey),
+    loadComponentCases(compKey),
+  ]);
+}
+
+/* ── Component: Prompts ──────────────────────── */
+async function loadComponentPrompts(compKey) {
+  var def = COMP_DEFS[compKey];
+  var target = document.getElementById("comp-" + compKey + "-prompts");
+  try {
+    var r = await fetch(API + "/api/eval/prompts");
+    var data = await r.json();
+    var allPrompts = data.prompts || {};
+    var filtered = {};
+    def.promptKeys.forEach(function(k) {
+      if (allPrompts[k]) filtered[k] = allPrompts[k];
+    });
+    var keys = Object.keys(filtered);
+    if (keys.length === 0) {
+      target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9998;</span> Prompts</div>'
+        + '<div class="empty-state">No prompts configured for this component.</div>';
+      return;
+    }
+
+    var listHtml = '<div class="comp-section-title"><span class="icon">&#9998;</span> Prompts</div>'
+      + '<div style="display:flex; gap:1.5rem">'
+      + '<div style="width:260px; flex-shrink:0"><div class="prompt-list">';
+    keys.forEach(function(k) {
+      var p = filtered[k];
+      listHtml += '<div class="prompt-card" id="pcard-' + compKey + '-' + k + '" onclick="selectCompPrompt(\'' + compKey + "','" + k + '\')">'
+        + '<div class="prompt-card-title">' + esc(p.name) + "</div>"
+        + '<div class="prompt-card-meta">'
+        + 'Active: <strong>' + esc(p.active_version) + "</strong> | " + p.version_count + " version(s)"
+        + "</div></div>";
+    });
+    listHtml += "</div></div>";
+    listHtml += '<div style="flex:1; min-width:0" id="comp-' + compKey + '-prompt-editor">'
+      + '<div class="empty-state">Select a prompt to view and edit.</div></div>';
+    listHtml += "</div>";
+    target.innerHTML = listHtml;
+  } catch (e) {
+    target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9998;</span> Prompts</div>'
+      + '<div class="empty-state">Failed to load prompts.</div>';
+  }
+}
+
+async function selectCompPrompt(compKey, promptKey) {
+  currentPromptKey = promptKey;
+  // Highlight active card
+  var parent = document.getElementById("comp-" + compKey + "-prompts");
+  parent.querySelectorAll(".prompt-card").forEach(function(c) { c.classList.remove("active"); });
+  var card = document.getElementById("pcard-" + compKey + "-" + promptKey);
+  if (card) card.classList.add("active");
+
+  try {
+    var r = await fetch(API + "/api/eval/prompts/" + promptKey);
+    var prompt = await r.json();
+    if (prompt.error) return;
+    var activeVer = prompt.active_version || Object.keys(prompt.versions || {})[0] || "v1";
+    currentPromptVersion = activeVer;
+    renderCompPromptEditor(compKey, promptKey, prompt, activeVer);
+  } catch (e) { console.error("selectCompPrompt:", e); }
+}
+
+function renderCompPromptEditor(compKey, key, prompt, selectedVersion) {
+  var versions = prompt.versions || {};
+  var ver = versions[selectedVersion] || {};
+  var versionKeys = Object.keys(versions).sort();
+  var isActive = prompt.active_version === selectedVersion;
+
+  var editorEl = document.getElementById("comp-" + compKey + "-prompt-editor");
+  var h = '<div style="margin-bottom:.6rem">'
+    + '<div style="font-size:.95rem; font-weight:700; color:var(--gray-900)">' + esc(prompt.name) + "</div>"
+    + '<div style="font-size:.75rem; color:var(--gray-500); margin-top:.15rem">' + esc(prompt.description || "") + "</div>"
+    + "</div>";
+
+  h += '<div class="prompt-version-bar">';
+  versionKeys.forEach(function(v) {
+    h += '<button class="prompt-version-chip ' + (v === selectedVersion ? "active" : "") + '"'
+      + " onclick=\"switchCompPromptVer('" + compKey + "','" + key + "','" + v + "')\">"
+      + v + (prompt.active_version === v ? " *" : "") + "</button>";
+  });
+  h += '<button class="prompt-version-chip" onclick="createCompNewVersion(\'' + compKey + "','" + key + '\')"'
+    + ' style="border-style:dashed; color:var(--gray-400)">+ New</button>';
+  h += "</div>";
+
+  h += '<div style="display:flex; gap:.6rem; align-items:center; margin-bottom:.6rem; font-size:.75rem; color:var(--gray-500)">'
+    + "<span>Created: " + (ver.created_at || "--") + "</span>";
+  if (ver.notes) h += "<span>| " + esc(ver.notes) + "</span>";
+  if (isActive) {
+    h += ' <span class="badge badge-pass">ACTIVE</span>';
+  } else {
+    h += ' <button class="btn-save btn-secondary" style="padding:.2rem .6rem; font-size:.72rem" onclick="setCompActiveVer(\'' + compKey + "','" + key + "','" + selectedVersion + "')\">Set Active</button>";
+  }
+  h += "</div>";
+
+  h += '<div class="prompt-editor">'
+    + '<textarea id="prompt-content">' + esc(ver.content || "") + "</textarea></div>";
+  h += '<div style="margin-top:.6rem">'
+    + '<label style="font-size:.72rem; font-weight:600; color:var(--gray-500); display:block; margin-bottom:.2rem">NOTES</label>'
+    + '<input type="text" id="prompt-notes" value="' + esc(ver.notes || "") + '" style="width:100%; padding:.4rem .6rem; border:1px solid var(--gray-200); border-radius:6px; font-size:.78rem; box-sizing:border-box">'
+    + "</div>";
+  h += '<div class="config-actions">'
+    + '<button class="btn-save btn-primary" onclick="saveCompPromptVer(\'' + compKey + "','" + key + "','" + selectedVersion + "')\">Save</button>"
+    + '<button class="btn-save btn-secondary" onclick="saveAsCompNewVer(\'' + compKey + "','" + key + "')\">Save as New...</button>"
+    + '<span id="prompt-save-feedback" class="save-feedback"></span>'
+    + "</div>";
+
+  editorEl.innerHTML = h;
+}
+
+async function switchCompPromptVer(compKey, key, ver) {
+  currentPromptVersion = ver;
+  var r = await fetch(API + "/api/eval/prompts/" + key);
+  var prompt = await r.json();
+  renderCompPromptEditor(compKey, key, prompt, ver);
+}
+
+async function saveCompPromptVer(compKey, key, ver) {
+  var content = document.getElementById("prompt-content").value;
+  var notes = document.getElementById("prompt-notes").value;
+  try {
+    var r = await fetch(API + "/api/eval/prompts/" + key + "/versions/" + ver, {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({content: content, notes: notes}),
+    });
+    if (r.ok) {
+      var fb = document.getElementById("prompt-save-feedback");
+      fb.textContent = "Saved!";
+      setTimeout(function() { fb.textContent = ""; }, 2000);
+    }
+  } catch (e) { alert("Failed: " + e.message); }
+}
+
+function createCompNewVersion(compKey, key) {
+  var name = window.prompt("New version name (e.g. v2):");
+  if (!name) return;
+  var content = document.getElementById("prompt-content") ? document.getElementById("prompt-content").value : "";
+  fetch(API + "/api/eval/prompts/" + key + "/versions/" + name, {
+    method: "PUT", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({content: content, notes: "Created from " + (currentPromptVersion || "scratch")}),
+  }).then(function() { selectCompPrompt(compKey, key); });
+}
+
+function saveAsCompNewVer(compKey, key) {
+  var name = window.prompt("Save as new version name:");
+  if (!name) return;
+  var content = document.getElementById("prompt-content").value;
+  var notes = document.getElementById("prompt-notes").value;
+  fetch(API + "/api/eval/prompts/" + key + "/versions/" + name, {
+    method: "PUT", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({content: content, notes: notes}),
+  }).then(function() { currentPromptVersion = name; selectCompPrompt(compKey, key); });
+}
+
+async function setCompActiveVer(compKey, key, ver) {
+  try {
+    await fetch(API + "/api/eval/prompts/" + key + "/active", {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({version: ver}),
+    });
+    selectCompPrompt(compKey, key);
+  } catch (e) { alert("Failed: " + e.message); }
+}
+
+/* ── Component: Config ───────────────────────── */
+async function loadComponentConfig(compKey) {
+  var def = COMP_DEFS[compKey];
+  var target = document.getElementById("comp-" + compKey + "-config");
+  try {
+    var r = await fetch(API + "/api/eval/config");
+    var cfg = await r.json();
+    var thresholds = cfg.config_thresholds || {};
+    var relevant = {};
+
+    // Pick relevant keys
+    def.configKeys.forEach(function(k) {
+      if (k in thresholds) relevant[k] = thresholds[k];
+      if (k in cfg) relevant[k] = cfg[k];
+    });
+
+    // Extra nested config (e.g. ambiguity_weights)
+    if (def.configExtra && cfg[def.configExtra]) {
+      var extra = cfg[def.configExtra];
+      Object.keys(extra).forEach(function(k) { relevant[k] = extra[k]; });
+    }
+
+    var keys = Object.keys(relevant);
+    if (keys.length === 0) {
+      target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>'
+        + '<div class="empty-state">No tunable thresholds for this component.</div>';
+      return;
+    }
+
+    var h = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>';
+    h += '<div class="config-grid">';
+    keys.forEach(function(k) {
+      var val = relevant[k];
+      h += '<div class="config-field">'
+        + "<label>" + esc(k) + "</label>"
+        + '<input type="text" id="comp-cfg-' + compKey + "-" + k + '" value="' + val + '" data-key="' + esc(k) + '">'
+        + "</div>";
+    });
+    h += "</div>";
+    h += '<div class="config-actions">'
+      + '<button class="btn-save btn-primary" onclick="saveComponentConfig(\'' + compKey + "')\">Save Config</button>"
+      + '<span id="comp-cfg-feedback-' + compKey + '" class="save-feedback"></span>'
+      + "</div>";
+
+    // Also show model + sampling if relevant (fraud/ambiguity use LLM)
+    if (compKey === "fraud" || compKey === "ambiguity") {
+      h += '<div style="margin-top:1rem"><div class="config-section-title">LLM Parameters</div>'
+        + '<div class="config-grid">'
+        + '<div class="config-field"><label>Model</label><input type="text" id="comp-cfg-' + compKey + '-model" value="' + esc(cfg.model || "") + '"></div>'
+        + '<div class="config-field"><label>Temperature</label><input type="number" id="comp-cfg-' + compKey + '-temperature" step="0.1" value="' + (cfg.temperature || 0) + '"></div>'
+        + '<div class="config-field"><label>Max Tokens</label><input type="number" id="comp-cfg-' + compKey + '-max_tokens" step="128" value="' + (cfg.max_tokens || 1024) + '"></div>'
+        + "</div></div>";
+    }
+
+    target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>' + h;
+  } catch (e) {
+    target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>'
+      + '<div class="empty-state">Failed to load config.</div>';
+  }
+}
+
+async function saveComponentConfig(compKey) {
+  var def = COMP_DEFS[compKey];
+  try {
+    // Read current full config
+    var r = await fetch(API + "/api/eval/config");
+    var cfg = await r.json();
+    var thresholds = cfg.config_thresholds || {};
+
+    // Update relevant threshold fields
+    def.configKeys.forEach(function(k) {
+      var input = document.getElementById("comp-cfg-" + compKey + "-" + k);
+      if (input) {
+        var v = input.value;
+        var num = parseFloat(v);
+        if (k in thresholds) thresholds[k] = isNaN(num) ? v : num;
+        else cfg[k] = isNaN(num) ? v : num;
+      }
+    });
+
+    // Update extra nested config
+    if (def.configExtra) {
+      var extra = cfg[def.configExtra] || {};
+      var inputs = document.querySelectorAll('[id^="comp-cfg-' + compKey + '-"]');
+      inputs.forEach(function(input) {
+        var dk = input.getAttribute("data-key");
+        if (dk && dk in extra) {
+          var num = parseFloat(input.value);
+          extra[dk] = isNaN(num) ? input.value : num;
+        }
+      });
+      cfg[def.configExtra] = extra;
+    }
+
+    // Update LLM params if present
+    var modelEl = document.getElementById("comp-cfg-" + compKey + "-model");
+    if (modelEl) cfg.model = modelEl.value;
+    var tempEl = document.getElementById("comp-cfg-" + compKey + "-temperature");
+    if (tempEl) cfg.temperature = parseFloat(tempEl.value) || 0;
+    var tokEl = document.getElementById("comp-cfg-" + compKey + "-max_tokens");
+    if (tokEl) cfg.max_tokens = parseInt(tokEl.value) || 1024;
+
+    cfg.config_thresholds = thresholds;
+
+    await fetch(API + "/api/eval/config", {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(cfg),
+    });
+    var fb = document.getElementById("comp-cfg-feedback-" + compKey);
+    if (fb) { fb.textContent = "Saved!"; setTimeout(function() { fb.textContent = ""; }, 2000); }
+  } catch (e) { alert("Failed: " + e.message); }
+}
+
+/* ── Component: Cases ────────────────────────── */
+async function loadComponentCases(compKey) {
+  var def = COMP_DEFS[compKey];
+  var target = document.getElementById("comp-" + compKey + "-cases");
+  try {
+    // Get latest run if not cached
+    if (!latestRun) {
+      var r = await fetch(API + "/api/eval/runs?page=1&page_size=1");
+      var d = await r.json();
+      if (d.items && d.items.length > 0) {
+        var rr = await fetch(API + "/api/eval/runs/" + d.items[0].id);
+        latestRun = await rr.json();
+      }
+    }
+    if (!latestRun || !latestRun.results) {
+      target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9654;</span> Eval Cases (Latest Run)</div>'
+        + '<div class="empty-state">No eval run data. Run: <code>' + esc(def.evalCmd) + "</code></div>";
+      return;
+    }
+
+    // Filter cases by component prefix
+    var cases = latestRun.results.filter(function(c) {
+      if (!c.case_id && !c.component) return false;
+      return def.casePrefix.some(function(prefix) {
+        return (c.case_id && c.case_id.startsWith(prefix)) || (c.component && c.component.indexOf(prefix) >= 0);
+      });
+    });
+
+    // Also get component metrics
+    var cm = latestRun.component_metrics || {};
+    var relevantMetrics = {};
+    Object.keys(cm).forEach(function(k) {
+      var match = def.casePrefix.some(function(prefix) { return k.indexOf(prefix) >= 0; });
+      if (match) relevantMetrics[k] = cm[k];
+    });
+
+    var h = '<div class="comp-section-title"><span class="icon">&#9654;</span> Eval Cases (Latest Run)</div>';
+
+    // P/R/F1 summary for this component
+    var metricKeys = Object.keys(relevantMetrics);
+    if (metricKeys.length > 0) {
+      h += '<div style="margin-bottom:.8rem"><table class="eval-table">'
+        + "<thead><tr><th>Rule</th><th>\u6b63\u786e\u6807\u8bb0</th><th>\u8bef\u62a5</th><th>\u6f0f\u62a5</th><th>\u6b63\u786e\u653e\u884c</th><th>\u7cbe\u786e\u7387</th><th>\u53ec\u56de\u7387</th><th>F1</th></tr></thead><tbody>";
+      metricKeys.forEach(function(k) {
+        var c = relevantMetrics[k];
+        var pFmt = c.precision != null ? (c.precision * 100).toFixed(0) + "%" : "N/A";
+        var rFmt = c.recall != null ? (c.recall * 100).toFixed(0) + "%" : "N/A";
+        var fFmt = c.f1 != null ? (c.f1 * 100).toFixed(0) + "%" : "N/A";
+        h += "<tr>"
+          + '<td><span class="badge badge-component">' + esc(k) + "</span></td>"
+          + "<td>" + (c["\u6b63\u786e\u6807\u8bb0"] || 0) + "</td>"
+          + "<td>" + (c["\u8bef\u62a5"] || 0) + "</td>"
+          + "<td>" + (c["\u6f0f\u62a5"] || 0) + "</td>"
+          + "<td>" + (c["\u6b63\u786e\u653e\u884c"] || 0) + "</td>"
+          + '<td style="font-weight:700">' + pFmt + "</td>"
+          + '<td style="font-weight:700">' + rFmt + "</td>"
+          + '<td style="font-weight:700">' + fFmt + "</td>"
+          + "</tr>";
+      });
+      h += "</tbody></table></div>";
+    }
+
+    if (cases.length === 0) {
+      h += '<div class="empty-state">No eval cases for this component in latest run.<br>Run: <code>' + esc(def.evalCmd) + "</code></div>";
+    } else {
+      var passed = cases.filter(function(c) { return c.passed; }).length;
+      h += '<div style="font-size:.78rem; color:var(--gray-500); margin-bottom:.5rem">'
+        + cases.length + " cases, " + passed + " passed (" + (passed / cases.length * 100).toFixed(0) + "%)</div>";
+
+      var sorted = cases.slice().sort(function(a, b) {
+        if (a.passed !== b.passed) return a.passed ? 1 : -1;
+        return (a.case_id || "").localeCompare(b.case_id || "");
+      });
+
+      h += '<table class="eval-table">'
+        + "<thead><tr><th>Case</th><th>Component</th><th>Result</th><th>\u5206\u7c7b</th><th>\u63cf\u8ff0</th></tr></thead>"
+        + "<tbody>" + buildCaseRows(sorted) + "</tbody></table>";
+    }
+
+    target.innerHTML = h;
+  } catch (e) {
+    target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9654;</span> Eval Cases (Latest Run)</div>'
+      + '<div class="empty-state">Failed to load cases.</div>';
+  }
+}
+
+/* ── Traces ──────────────────────────────────── */
+async function loadTraces(page) {
+  if (page) currentTracePage = page;
+  var comp = document.getElementById("filter-component").value;
+  var err = document.getElementById("filter-error").value;
+  var sort = document.getElementById("sort-field").value;
+  var order = document.getElementById("sort-order").value;
+  var url = API + "/api/eval/traces?page=" + currentTracePage + "&page_size=15&sort=" + sort + "&order=" + order;
+  if (comp) url += "&component=" + comp;
+  if (err) url += "&has_error=" + err;
+  try {
+    var r = await fetch(url);
+    var data = await r.json();
+    var tbody = document.getElementById("traces-body");
+    if (!data.items || data.items.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No traces yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.items.map(function(t) {
+      return "<tr>"
+        + '<td style="color:var(--gray-500)">' + fmtTime(t.created_at) + "</td>"
+        + '<td><span class="badge badge-component">' + t.component + "</span></td>"
+        + "<td>" + (t.model || "--") + "</td>"
+        + "<td>" + (t.latency_ms != null ? t.latency_ms + "ms" : "--") + "</td>"
+        + '<td style="color:var(--gray-500)">' + fmtTokens(t.token_usage) + "</td>"
+        + "<td>" + (t.error ? '<span class="badge badge-fail">ERROR</span>' : '<span class="badge badge-pass">OK</span>') + "</td>"
+        + '<td><button class="btn btn-outline btn-sm" onclick="showTrace(\'' + t.id + '\')">Detail</button></td>'
+        + "</tr>";
+    }).join("");
+    var totalPages = Math.ceil(data.total / 15);
+    var pag = document.getElementById("traces-pagination");
+    if (totalPages > 1) {
+      var html = "";
+      if (currentTracePage > 1) html += '<a href="#" onclick="loadTraces(' + (currentTracePage - 1) + "); return false\">&larr; Prev</a> ";
+      html += "Page " + currentTracePage + "/" + totalPages;
+      if (currentTracePage < totalPages) html += ' <a href="#" onclick="loadTraces(' + (currentTracePage + 1) + '); return false">Next &rarr;</a>';
+      pag.innerHTML = html;
+    } else { pag.innerHTML = ""; }
+  } catch (e) { console.error("loadTraces:", e); }
+}
+
+async function showTrace(id) {
+  try {
+    var r = await fetch(API + "/api/eval/traces/" + id);
+    var t = await r.json();
+    document.getElementById("trace-detail-panel").innerHTML = '<div class="trace-detail">'
+      + '<h3 style="margin:0 0 .8rem; font-size:.9rem; font-weight:700">'
+      + 'Trace Detail \u2014 <span class="badge badge-component">' + t.component + "</span> "
+      + (t.error ? '<span class="badge badge-fail">ERROR</span>' : '<span class="badge badge-pass">OK</span>')
+      + "</h3>"
+      + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1rem; font-size:.78rem">'
+      + "<div><strong>Model:</strong> " + (t.model || "--") + "</div>"
+      + "<div><strong>Latency:</strong> " + (t.latency_ms != null ? t.latency_ms + "ms" : "--") + "</div>"
+      + "<div><strong>Tokens:</strong> " + fmtTokens(t.token_usage) + "</div>"
+      + "<div><strong>Submission:</strong> " + (t.submission_id || "--") + "</div>"
+      + "</div>"
+      + (t.error ? '<div style="margin-bottom:1rem"><strong>Error:</strong> <span style="color:#dc2626">' + esc(t.error) + "</span></div>" : "")
+      + "<div style=\"margin-bottom:.8rem\"><strong>Prompt:</strong><pre>" + esc(JSON.stringify(t.prompt, null, 2)) + "</pre></div>"
+      + "<div style=\"margin-bottom:.8rem\"><strong>Response:</strong><pre>" + esc(t.response || "(empty)") + "</pre></div>"
+      + "<div><strong>Parsed Output:</strong><pre>" + esc(JSON.stringify(t.parsed_output, null, 2)) + "</pre></div>"
+      + '<button class="btn-save btn-secondary" style="margin-top:.8rem" onclick="document.getElementById(\'trace-detail-panel\').innerHTML=\'\'">Close</button>'
+      + "</div>";
+  } catch (e) { console.error("showTrace:", e); }
+}
+
+/* ── Compare Runs ────────────────────────────── */
+async function loadCompareSelectors() {
+  if (allRuns.length === 0) {
+    try {
+      var r = await fetch(API + "/api/eval/runs?page=1&page_size=50");
+      var data = await r.json();
+      allRuns = data.items || [];
+    } catch (e) { return; }
+  }
+  var opts = allRuns.map(function(run) {
+    var m = run.metadata || {};
+    var label = fmtTime(run.started_at) + " | " + (run.pass_rate * 100).toFixed(0) + "% | " + (m.prompt_version || "?") + " | " + (m.model || "?");
+    return '<option value="' + run.id + '">' + label + "</option>";
+  }).join("");
+  document.getElementById("compare-a").innerHTML = opts;
+  document.getElementById("compare-b").innerHTML = opts;
+  if (allRuns.length >= 2) {
+    document.getElementById("compare-a").selectedIndex = 1;
+    document.getElementById("compare-b").selectedIndex = 0;
+  }
+}
+
+async function runDiff() {
+  var idA = document.getElementById("compare-a").value;
+  var idB = document.getElementById("compare-b").value;
+  if (!idA || !idB) return;
+  if (idA === idB) { document.getElementById("diff-result").innerHTML = '<div class="empty-state">Please select two different runs.</div>'; return; }
+  try {
+    var r = await fetch(API + "/api/eval/runs/" + idA + "/diff/" + idB);
+    var diff = await r.json();
+    if (diff.error) { document.getElementById("diff-result").innerHTML = '<div class="empty-state">' + esc(diff.error) + "</div>"; return; }
+
+    var s = diff.summary;
+    var html = '<div class="trace-detail">';
+    html += '<div style="display:flex; gap:1rem; margin-bottom:1rem; font-size:.82rem">'
+      + "<span><strong>Metadata changes:</strong> " + s.metadata_changes + "</span>"
+      + ' <span class="badge badge-improvement">+' + s.improvements + " improved</span>"
+      + ' <span class="badge badge-regression">' + s.regressions + " regressed</span></div>";
+
+    var raRate = diff.run_a.pass_rate != null ? (diff.run_a.pass_rate * 100).toFixed(0) + "%" : "--";
+    var rbRate = diff.run_b.pass_rate != null ? (diff.run_b.pass_rate * 100).toFixed(0) + "%" : "--";
+    html += '<div class="diff-grid">'
+      + '<div class="diff-col"><div class="diff-col-header">Run A: ' + fmtTime(diff.run_a.started_at) + " (" + raRate + ")</div></div>"
+      + '<div class="diff-col"><div class="diff-col-header">Run B: ' + fmtTime(diff.run_b.started_at) + " (" + rbRate + ")</div></div></div>";
+
+    // Metadata diff
+    var metaKeys = Object.keys(diff.metadata_diff);
+    if (metaKeys.length > 0) {
+      html += '<div style="margin:1rem 0"><strong style="font-size:.82rem">Changed Factors</strong>'
+        + '<table class="eval-table" style="margin-top:.4rem"><thead><tr><th>Factor</th><th>Run A</th><th>Run B</th></tr></thead><tbody>';
+      metaKeys.forEach(function(k) {
+        var d = diff.metadata_diff[k];
+        var va = typeof d.a === "object" ? JSON.stringify(d.a) : String(d.a != null ? d.a : "--");
+        var vb = typeof d.b === "object" ? JSON.stringify(d.b) : String(d.b != null ? d.b : "--");
+        html += "<tr>"
+          + '<td><span class="badge badge-changed">' + esc(k) + "</span></td>"
+          + '<td class="diff-val-old">' + esc(va) + "</td>"
+          + '<td class="diff-val-new">' + esc(vb) + "</td></tr>";
+      });
+      html += "</tbody></table></div>";
+    }
+
+    // P/R delta
+    try {
+      var runs = await Promise.all([
+        fetch(API + "/api/eval/runs/" + idA).then(function(r) { return r.json(); }),
+        fetch(API + "/api/eval/runs/" + idB).then(function(r) { return r.json(); }),
+      ]);
+      var cmA = runs[0].component_metrics || {};
+      var cmB = runs[1].component_metrics || {};
+      var allComps = new Set(Object.keys(cmA).concat(Object.keys(cmB)));
+      if (allComps.size > 0) {
+        html += '<div style="margin:1rem 0"><strong style="font-size:.82rem">\u68c0\u6d4b\u8d28\u91cf\u53d8\u5316 (P/R/F1 Delta)</strong>'
+          + '<table class="eval-table" style="margin-top:.4rem"><thead><tr><th>Component</th><th>\u7cbe\u786e\u7387</th><th>\u53ec\u56de\u7387</th><th>F1</th></tr></thead><tbody>';
+        allComps.forEach(function(comp) {
+          var a = cmA[comp] || {};
+          var b = cmB[comp] || {};
+          function fmtD(va, vb) {
+            if (va == null && vb == null) return "--";
+            if (va == null) return '<span style="color:#16a34a">NEW ' + (vb * 100).toFixed(0) + "%</span>";
+            if (vb == null) return '<span style="color:var(--gray-400)">REMOVED</span>';
+            var d = ((vb - va) * 100).toFixed(1);
+            var sg = d > 0 ? "+" : "";
+            var cl = d > 0 ? "#16a34a" : d < 0 ? "#dc2626" : "var(--gray-500)";
+            return (va * 100).toFixed(0) + "% \u2192 " + (vb * 100).toFixed(0) + '% <span style="color:' + cl + '; font-weight:700">(' + sg + d + "%)</span>";
+          }
+          html += "<tr>"
+            + '<td><span class="badge badge-component">' + esc(comp) + "</span></td>"
+            + "<td>" + fmtD(a.precision, b.precision) + "</td>"
+            + "<td>" + fmtD(a.recall, b.recall) + "</td>"
+            + "<td>" + fmtD(a.f1, b.f1) + "</td></tr>";
+        });
+        html += "</tbody></table></div>";
+      }
+    } catch (e) {}
+
+    // Case diff
+    if (diff.case_diff.length > 0) {
+      html += '<div style="margin:1rem 0"><strong style="font-size:.82rem">Case Result Changes</strong>'
+        + '<table class="eval-table" style="margin-top:.4rem"><thead><tr><th>Case</th><th>Run A</th><th>Run B</th><th>Change</th></tr></thead><tbody>';
+      diff.case_diff.forEach(function(c) {
+        var isReg = c.a === true && c.b === false;
+        var isImp = c.a === false && c.b === true;
+        var badge = isReg ? '<span class="badge badge-regression">REGRESSION</span>'
+          : isImp ? '<span class="badge badge-improvement">IMPROVEMENT</span>'
+          : '<span class="badge badge-changed">CHANGED</span>';
+        html += "<tr><td>" + esc(c.case_id) + "</td>"
+          + "<td>" + (c.a === true ? '<span class="badge badge-pass">PASS</span>' : c.a === false ? '<span class="badge badge-fail">FAIL</span>' : "--") + "</td>"
+          + "<td>" + (c.b === true ? '<span class="badge badge-pass">PASS</span>' : c.b === false ? '<span class="badge badge-fail">FAIL</span>' : "--") + "</td>"
+          + "<td>" + badge + "</td></tr>";
+      });
+      html += "</tbody></table></div>";
+    }
+
+    html += "</div>";
+    document.getElementById("diff-result").innerHTML = html;
+  } catch (e) { console.error("runDiff:", e); }
+}
+
+/* ── Run Eval Trigger ─────────────────────────── */
+async function triggerEval(compKey) {
+  var btn = document.getElementById("run-eval-btn-" + compKey);
+  var status = document.getElementById("eval-status-" + compKey);
+  btn.disabled = true;
+  btn.textContent = "Running...";
+  status.textContent = "";
+
+  // Map compKey to backend component name
+  var compMap = { fraud: "deterministic", ambiguity: "ambiguity", ocr: "deterministic", chat: "all" };
+  var component = compMap[compKey] || "deterministic";
+
+  try {
+    var r = await fetch(API + "/api/eval/trigger", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({component: component}),
+    });
+    var data = await r.json();
+    if (data.status === "already_running") {
+      status.textContent = "Eval already running...";
+      btn.textContent = "\u25b6 Run Eval";
+      btn.disabled = false;
+      return;
+    }
+    status.textContent = "Eval started, waiting for results...";
+    // Poll for completion
+    pollEvalStatus(compKey);
+  } catch (e) {
+    status.textContent = "Failed: " + e.message;
+    btn.textContent = "\u25b6 Run Eval";
+    btn.disabled = false;
+  }
+}
+
+async function pollEvalStatus(compKey) {
+  var btn = document.getElementById("run-eval-btn-" + compKey);
+  var status = document.getElementById("eval-status-" + compKey);
+  var poll = setInterval(async function() {
+    try {
+      var r = await fetch(API + "/api/eval/trigger/status");
+      var data = await r.json();
+      if (!data.running) {
+        clearInterval(poll);
+        btn.disabled = false;
+        btn.textContent = "\u25b6 Run Eval";
+        status.textContent = "Done! Refreshing...";
+        // Reload latest run data and refresh cases
+        latestRun = null;
+        await loadComponentCases(compKey);
+        // Also reload overview if we go back
+        allRuns = [];
+        status.textContent = "Completed at " + new Date().toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+      }
+    } catch (e) {}
+  }, 2000);
+}
+
+/* ── Utils ────────────────────────────────────── */
+function fmtTime(iso) {
+  if (!iso) return "--";
+  var d = new Date(iso);
+  return d.toLocaleDateString("zh-CN", {month: "short", day: "numeric"}) + " " + d.toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"});
+}
+function fmtTokens(u) { return u ? (u.input || 0) + "\u2192" + (u.output || 0) : "--"; }
+function esc(s) { return s ? s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") : ""; }
+
+/* ── Init ─────────────────────────────────────── */
+loadOverview();
+</script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+<h2>Admin 预算表 — 趋势列长什么样？</h2>
+<p class="subtitle">同样的数据，两种呈现方式</p>
+
+<div class="split">
+
+  <div class="mockup" data-choice="a" onclick="toggleSelect(this)" style="cursor:pointer; border:2px solid transparent; border-radius:8px; transition:border-color .15s">
+    <div class="mockup-header">A — 纯文字列</div>
+    <div class="mockup-body" style="padding:.75rem; font-size:.78rem">
+      <table style="width:100%; border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1px solid #e5e7eb; color:#9ca3af; text-align:left; font-size:.7rem">
+            <th style="padding:.35rem .5rem">成本中心</th>
+            <th style="padding:.35rem .5rem">已用</th>
+            <th style="padding:.35rem .5rem">月均</th>
+            <th style="padding:.35rem .5rem">预计超标</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #f3f4f6">
+            <td style="padding:.4rem .5rem; font-weight:600">ENG-TRAVEL</td>
+            <td style="padding:.4rem .5rem; color:#f59e0b; font-weight:600">87%</td>
+            <td style="padding:.4rem .5rem">¥2,175/月</td>
+            <td style="padding:.4rem .5rem">
+              <span style="background:#fee2e2; color:#991b1b; font-size:.68rem; padding:.15rem .4rem; border-radius:4px; font-weight:600">⚠ 5月28日</span>
+            </td>
+          </tr>
+          <tr style="border-bottom:1px solid #f3f4f6">
+            <td style="padding:.4rem .5rem; font-weight:600">MKT-EVENTS</td>
+            <td style="padding:.4rem .5rem; color:#22c55e">43%</td>
+            <td style="padding:.4rem .5rem">¥1,200/月</td>
+            <td style="padding:.4rem .5rem; color:#9ca3af; font-size:.72rem">季度内安全</td>
+          </tr>
+          <tr>
+            <td style="padding:.4rem .5rem; font-weight:600">HR-RECRUIT</td>
+            <td style="padding:.4rem .5rem; color:#f59e0b">78%</td>
+            <td style="padding:.4rem .5rem">¥3,400/月</td>
+            <td style="padding:.4rem .5rem">
+              <span style="background:#fef3c7; color:#92400e; font-size:.68rem; padding:.15rem .4rem; border-radius:4px; font-weight:600">~ 6月中</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="font-size:.7rem; color:#9ca3af; margin-top:.5rem">简洁，加载快，无额外依赖</p>
+    </div>
+  </div>
+
+  <div class="mockup" data-choice="b" onclick="toggleSelect(this)" style="cursor:pointer; border:2px solid transparent; border-radius:8px; transition:border-color .15s">
+    <div class="mockup-header">B — 文字 + 迷你 sparkline</div>
+    <div class="mockup-body" style="padding:.75rem; font-size:.78rem">
+      <table style="width:100%; border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1px solid #e5e7eb; color:#9ca3af; text-align:left; font-size:.7rem">
+            <th style="padding:.35rem .5rem">成本中心</th>
+            <th style="padding:.35rem .5rem">已用</th>
+            <th style="padding:.35rem .5rem">近3月趋势</th>
+            <th style="padding:.35rem .5rem">预计超标</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #f3f4f6">
+            <td style="padding:.4rem .5rem; font-weight:600">ENG-TRAVEL</td>
+            <td style="padding:.4rem .5rem; color:#f59e0b; font-weight:600">87%</td>
+            <td style="padding:.4rem .5rem">
+              <!-- SVG sparkline: upward trend -->
+              <svg width="60" height="20" viewBox="0 0 60 20">
+                <polyline points="0,18 15,14 30,10 45,6 60,3"
+                  fill="none" stroke="#ef4444" stroke-width="1.5" stroke-linejoin="round"/>
+                <circle cx="60" cy="3" r="2" fill="#ef4444"/>
+              </svg>
+            </td>
+            <td style="padding:.4rem .5rem">
+              <span style="background:#fee2e2; color:#991b1b; font-size:.68rem; padding:.15rem .4rem; border-radius:4px; font-weight:600">⚠ 5月28日</span>
+            </td>
+          </tr>
+          <tr style="border-bottom:1px solid #f3f4f6">
+            <td style="padding:.4rem .5rem; font-weight:600">MKT-EVENTS</td>
+            <td style="padding:.4rem .5rem; color:#22c55e">43%</td>
+            <td style="padding:.4rem .5rem">
+              <!-- SVG sparkline: flat trend -->
+              <svg width="60" height="20" viewBox="0 0 60 20">
+                <polyline points="0,12 15,13 30,11 45,12 60,12"
+                  fill="none" stroke="#22c55e" stroke-width="1.5" stroke-linejoin="round"/>
+                <circle cx="60" cy="12" r="2" fill="#22c55e"/>
+              </svg>
+            </td>
+            <td style="padding:.4rem .5rem; color:#9ca3af; font-size:.72rem">季度内安全</td>
+          </tr>
+          <tr>
+            <td style="padding:.4rem .5rem; font-weight:600">HR-RECRUIT</td>
+            <td style="padding:.4rem .5rem; color:#f59e0b">78%</td>
+            <td style="padding:.4rem .5rem">
+              <!-- SVG sparkline: accelerating -->
+              <svg width="60" height="20" viewBox="0 0 60 20">
+                <polyline points="0,16 15,15 30,13 45,9 60,4"
+                  fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-linejoin="round"/>
+                <circle cx="60" cy="4" r="2" fill="#f59e0b"/>
+              </svg>
+            </td>
+            <td style="padding:.4rem .5rem">
+              <span style="background:#fef3c7; color:#92400e; font-size:.68rem; padding:.15rem .4rem; border-radius:4px; font-weight:600">~ 6月中</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="font-size:.7rem; color:#9ca3af; margin-top:.5rem">趋势一目了然，纯 SVG 无依赖，后端返回 3 个月的月度数据点</p>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:1rem">点击选择 — 或在终端告诉我。查看 <strong>http://localhost:51082</strong></p>

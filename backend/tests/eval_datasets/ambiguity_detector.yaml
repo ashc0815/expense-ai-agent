@@ -1,0 +1,104 @@
+# Eval cases for Ambiguity Detector (6-factor scoring model)
+# Graded by: code (score range + recommendation enum)
+# These test the deterministic scoring path (no LLM deep review)
+
+- id: ambiguity_auto_pass
+  component: ambiguity_detector
+  description: "清晰描述 + 正常金额 + 工作日 → auto_pass"
+  input:
+    expense_type: "meals"
+    amount: 120.0
+    city: "上海"
+    date: "2026-04-14"       # Monday
+    description: "与产品经理讨论Q2路线图，工作午餐"
+    attendees: ["张三", "李四"]
+    employee_level: "L3"
+    history: []
+    fraud_signals: []
+  expect:
+    score_range: [0, 29]
+    recommendation: "auto_pass"
+
+- id: ambiguity_vague_description
+  component: ambiguity_detector
+  description: "模糊描述触发 description_vague 因素"
+  input:
+    expense_type: "meals"
+    amount: 200.0
+    city: "上海"
+    date: "2026-04-14"
+    description: "费用"
+    attendees: []
+    employee_level: "L3"
+    history: []
+    fraud_signals: []
+  expect:
+    score_range: [20, 50]
+    recommendation_in: ["human_review", "auto_pass"]
+    triggered_contains: ["description_vague"]
+
+- id: ambiguity_weekend_meal
+  component: ambiguity_detector
+  description: "周末餐费触发 time_anomaly"
+  input:
+    expense_type: "meals"
+    amount: 150.0
+    city: "上海"
+    date: "2026-04-19"       # Saturday
+    description: "周末加班工作餐"
+    attendees: []
+    employee_level: "L3"
+    history: []
+    fraud_signals: []
+  expect:
+    triggered_contains: ["time_anomaly"]
+
+- id: ambiguity_amount_boundary
+  component: ambiguity_detector
+  description: "金额接近限额触发 amount_boundary"
+  input:
+    expense_type: "meals"
+    amount: 98.0              # 接近 100 限额的 90-110%
+    city: "上海"
+    date: "2026-04-14"
+    description: "客户午餐会议"
+    attendees: ["客户王总"]
+    employee_level: "L1"
+    history: []
+    fraud_signals: []
+  expect:
+    triggered_contains: ["amount_boundary"]
+
+- id: ambiguity_multi_factor_high
+  component: ambiguity_detector
+  description: "多因素触发 → 高分 suggest_reject"
+  input:
+    expense_type: "meals"
+    amount: 99.0
+    city: "未知城市XYZ"
+    date: "2026-04-19"       # Saturday
+    description: "费用"
+    attendees: []
+    employee_level: "L1"
+    history: []
+    fraud_signals:
+      - {rule: "rule_6", score: 80, message: "round amount"}
+  expect:
+    score_range: [50, 100]
+    recommendation_in: ["human_review", "suggest_reject"]
+
+- id: ambiguity_unknown_city
+  component: ambiguity_detector
+  description: "未知城市触发 city_mismatch"
+  input:
+    expense_type: "transport_local"
+    amount: 50.0
+    city: "阿克苏地区温宿县"
+    date: "2026-04-14"
+    description: "出差打车费"
+    attendees: []
+    employee_level: "L3"
+    history: []
+    fraud_signals: []
+  expect:
+    triggered_contains: ["city_mismatch"]

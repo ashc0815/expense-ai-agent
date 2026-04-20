@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>审批队列 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <link rel="stylesheet" href="/shared/ai-card.css">
+  <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
+  <style>
+    body { overflow: hidden; }
+    .kbd { display: inline-block; padding: .1rem .4rem; background: var(--gray-100);
+      border: 1px solid var(--gray-300); border-radius: 4px;
+      font-size: .7rem; font-family: var(--mono); color: var(--gray-500); }
+    .risk-pill { font-size: .7rem; font-weight: 700; padding: .1rem .4rem;
+      border-radius: 99px; }
+    .line-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    .line-table th { text-align: left; font-size: .72rem; color: var(--gray-400);
+      font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
+      padding: .5rem .6rem; border-bottom: 1px solid var(--gray-100); }
+    .line-table td { padding: .55rem .6rem; border-bottom: 1px solid var(--gray-50); }
+    .line-table tr:last-child td { border-bottom: none; }
+    .processing-badge { background: #dbeafe; color: #1e40af; font-size: .7rem;
+      padding: .15rem .35rem; border-radius: 4px; font-weight: 600; }
+    .reviewed-badge { background: #dcfce7; color: #166534; font-size: .7rem;
+      padding: .15rem .35rem; border-radius: 4px; font-weight: 600; }
+    .failed-badge { background: #fee2e2; color: #991b1b; font-size: .7rem;
+      padding: .15rem .35rem; border-radius: 4px; font-weight: 600; }
+  </style>
+</head>
+<body>
+<div id="nav-root"></div>
+<script src="/shared/i18n.js"></script>
+<script src="/shared/auth.js"></script>
+<script src="/shared/nav.js"></script>
+
+<div id="notif-banner" style="display:none; background:#fef3c7; border-bottom:1px solid #fbbf24; padding:.6rem 1rem; font-size:.85rem">
+  <div style="max-width:1400px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:1rem">
+    <div id="notif-body" style="color:#92400e"></div>
+    <button id="notif-dismiss" style="background:transparent; border:none; color:#92400e; cursor:pointer; font-size:.85rem; font-weight:600">全部标为已读</button>
+  </div>
+</div>
+
+<script>
+(async function loadNotifs() {
+  try {
+    const r = await fetch("/api/notifications?unread_only=true", {
+      headers: window.auth ? await window.auth.getHeaders() : {},
+    });
+    if (!r.ok) return;
+    const { items } = await r.json();
+    if (!items.length) return;
+    const el = document.getElementById("notif-banner");
+    const body = document.getElementById("notif-body");
+    body.innerHTML = `<strong>🔔 ${items.length} 条新通知</strong> · ` +
+      items.slice(0, 3).map(n => `${n.title}`).join(" · ") +
+      (items.length > 3 ? ` · 还有 ${items.length - 3} 条…` : "");
+    el.style.display = "block";
+    document.getElementById("notif-dismiss").onclick = async () => {
+      for (const n of items) {
+        await fetch(`/api/notifications/${n.id}/read`, {
+          method: "POST",
+          headers: window.auth ? await window.auth.getHeaders() : {},
+        });
+      }
+      el.style.display = "none";
+    };
+  } catch (e) { /* ignore */ }
+})();
+</script>
+
+<div class="inbox-layout page-wide">
+
+  <!-- ── LEFT: Report list ── -->
+  <div class="inbox-list">
+    <div class="inbox-list-header">
+      <div class="inbox-list-title">待审批报销单</div>
+      <div class="inbox-list-sub" id="count-label">加载中…</div>
+    </div>
+    <div class="inbox-items" id="inbox-items">
+      <div style="padding:2rem; text-align:center; color:var(--gray-300)">
+        <span class="spinner"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RIGHT: Detail panel ── -->
+  <div class="inbox-detail" id="inbox-detail">
+    <div class="inbox-empty">
+      <div class="inbox-empty-icon">📋</div>
+      <div style="font-size:.9rem; font-weight:500">选择一张报销单查看详情</div>
+      <div style="font-size:.78rem">
+        <span class="kbd">A</span> 批准 &nbsp; <span class="kbd">T</span> 退回 &nbsp; <span class="kbd">R</span> 拒绝
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Approve/Reject modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal-box">
+    <div class="modal-title" id="modal-title">审批</div>
+    <div class="form-group">
+      <label>审批意见（可选）</label>
+      <textarea id="modal-comment" rows="3" placeholder="填写审批意见…"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">取消</button>
+      <button class="btn" id="modal-confirm" onclick="confirmModal()">确认</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const authH = async () => (window.auth ? await window.auth.getHeaders() : {});
+  let reports = [];
+  let selectedId = null;
+  let modalAction = null;
+  let modalReportId = null;
+
+  const CAT_LABEL = { meal: "餐饮", transport: "交通", accommodation: "住宿",
+                       entertainment: "招待", other: "其他" };
+  const fmtMoney = (c, a) => `${c || "CNY"} ${Number(a || 0).toFixed(2)}`;
+
+  // ── Load list ────────────────────────────────────────────────
+  window.loadList = async function () {
+    try {
+      const r = await fetch("/api/reports/queue/pending", { headers: await authH() });
+      if (!r.ok) throw new Error(r.status);
+      const data = await r.json();
+      reports = data.items;
+      document.getElementById("count-label").textContent =
+        data.total + " 张待审批";
+      renderList();
+    } catch (err) {
+      document.getElementById("inbox-items").innerHTML =
+        `<div style="padding:1rem" class="alert alert-error">加载失败</div>`;
+    }
+  };
+
+  function renderList() {
+    const el = document.getElementById("inbox-items");
+    if (!reports.length) {
+      el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--gray-300)">
+        暂无待审批报销单</div>`;
+      return;
+    }
+    el.innerHTML = reports.map(r => {
+      const riskColor = r.max_risk_score < 30 ? "var(--t1)" : r.max_risk_score < 55 ? "var(--t2)" :
+        r.max_risk_score < 75 ? "var(--t3)" : "var(--t4)";
+      const riskBg = r.max_risk_score < 30 ? "var(--t1-bg)" : r.max_risk_score < 55 ? "var(--t2-bg)" :
+        r.max_risk_score < 75 ? "var(--t3-bg)" : "var(--t4-bg)";
+      return `
+        <div class="inbox-item${r.id === selectedId ? " active" : ""}"
+          id="item-${r.id}" onclick="selectItem('${r.id}')">
+          <div class="inbox-item-top">
+            <div class="inbox-item-name">${r.title}</div>
+            <div class="inbox-item-amount">${r.home_currency || "CNY"} ${(r.total_converted != null ? r.total_converted : r.total_amount).toFixed(2)}</div>
+          </div>
+          <div class="inbox-item-sub">
+            <span>${r.employee_name} · ${r.line_count} 笔</span>
+            <span style="display:flex;gap:.3rem;align-items:center">
+              ${r.worst_tier ? `<span class="risk-pill"
+                style="background:${riskBg};color:${riskColor}">${r.worst_tier}</span>` : ""}
+              ${r.still_processing ? `<span class="processing-badge">AI 审核中</span>` :
+                `<span class="reviewed-badge">已审核</span>`}
+            </span>
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  // ── Select item ──────────────────────────────────────────────
+  window.selectItem = function (id) {
+    selectedId = id;
+    document.querySelectorAll(".inbox-item").forEach(el =>
+      el.classList.toggle("active", el.id === "item-" + id));
+    const report = reports.find(r => r.id === id);
+    if (report) renderDetail(report);
+  };
+
+  // ── Detail panel ─────────────────────────────────────────────
+  function renderDetail(r) {
+    const canApprove = !r.still_processing;
+    const lineStatusBadge = (status) => {
+      if (status === "processing") return `<span class="processing-badge">AI 审核中</span>`;
+      if (status === "reviewed") return `<span class="reviewed-badge">已审核</span>`;
+      if (status === "review_failed") return `<span class="failed-badge">审核失败</span>`;
+      return `<span>${status}</span>`;
+    };
+
+    let html = `
+      <div class="detail-header">
+        <div>
+          <div class="detail-title">${r.title}</div>
+          <div style="font-size:.78rem;color:var(--gray-400);margin-top:.15rem">
+            ${r.employee_name} · ${r.department || ""} · ${r.line_count} 笔 ·
+            提交于 ${new Date(r.submitted_at).toLocaleDateString()}
+          </div>
+        </div>
+        <div class="detail-actions">
+          <button class="btn btn-danger btn-sm" onclick="openModal('reject','${r.id}')"
+            ${canApprove ? "" : "disabled"}>
+            拒绝 <span class="kbd" style="border-color:rgba(255,255,255,.3);
+              color:rgba(255,255,255,.7);background:rgba(0,0,0,.15)">R</span>
+          </button>
+          <button class="btn btn-sm" style="background:#f97316;color:white;border:none"
+            onclick="openModal('return','${r.id}')"
+            ${canApprove ? "" : "disabled"}>
+            退回 <span class="kbd" style="border-color:rgba(255,255,255,.3);
+              color:rgba(255,255,255,.7);background:rgba(0,0,0,.15)">T</span>
+          </button>
+          <button class="btn btn-success btn-sm" onclick="openModal('approve','${r.id}')"
+            ${canApprove ? "" : "disabled"}>
+            批准 <span class="kbd" style="border-color:rgba(255,255,255,.3);
+              color:rgba(255,255,255,.7);background:rgba(0,0,0,.15)">A</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="detail-body">
+
+        <!-- Aggregate -->
+        <div class="detail-row" style="margin-bottom:1.25rem">
+          <div>
+            <div class="detail-field-label">报销总额</div>
+            <div style="font-size:1.5rem;font-weight:800;color:var(--gray-900);
+              letter-spacing:-.5px">
+              ${r.home_currency || "CNY"} ${(r.total_converted != null ? r.total_converted : r.total_amount).toFixed(2)}
+            </div>
+          </div>
+          <div>
+            <div class="detail-field-label">最高风险评分</div>
+            ${r.max_risk_score > 0 ? `
+              <div style="font-size:1.25rem;font-weight:700;color:var(--gray-900)">
+                ${r.max_risk_score.toFixed(0)}<span style="font-size:.8rem;color:var(--gray-400)">/100</span>
+                ${r.worst_tier ? `<span class="badge badge-${r.worst_tier}" style="margin-left:.4rem;
+                  vertical-align:middle">${r.worst_tier}</span>` : ""}
+              </div>` :
+              `<div style="color:var(--gray-300);font-size:.875rem">待 AI 审核</div>`}
+          </div>
+        </div>
+
+        ${r.still_processing ? `
+          <div class="alert alert-warning" style="margin-bottom:1rem">
+            <span style="font-size:1rem">⏳</span>
+            <div>部分发票 AI 审核中，审核完成后可批准/拒绝整张报销单。</div>
+          </div>` : ""}
+
+        <!-- Line items table -->
+        <div style="font-size:.8rem;font-weight:700;text-transform:uppercase;
+          letter-spacing:.4px;color:var(--gray-400);margin-bottom:.5rem">费用明细 <span style="font-weight:400;text-transform:none;letter-spacing:0">— 点击行查看详情</span></div>
+        <table class="line-table">
+          <thead>
+            <tr><th>日期</th><th>商户</th><th>类别</th><th>金额</th><th>风险</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            ${r.lines.map((l, i) => `
+              <tr style="cursor:pointer" onclick="showLineDetail('${r.id}', ${i})"
+                  id="line-row-${l.id}" class="line-row">
+                <td>${l.date || "—"}</td>
+                <td>${l.merchant || "—"}</td>
+                <td>${CAT_LABEL[l.category] || l.category || "—"}</td>
+                <td style="font-weight:600">${fmtMoney(l.currency, l.amount)}</td>
+                <td>${l.tier ? `<span class="risk-pill" style="background:var(--${l.tier.toLowerCase()}-bg, #f1f5f9);
+                  color:var(--${l.tier.toLowerCase()}, #475569)">${l.tier}</span>` : "—"}</td>
+                <td>${lineStatusBadge(l.status)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+
+        <!-- Line detail panel (hidden until row clicked) -->
+        <div id="line-detail" style="display:none"></div>
+
+      </div>`;
+
+    document.getElementById("inbox-detail").innerHTML = html;
+    _currentReport = r;
+  }
+
+  let _currentReport = null;
+  const isFinance = () => {
+    const u = window.auth && window.auth.getUser && window.auth.getUser();
+    return u && (u.roles || []).includes("finance_admin");
+  };
+
+  window.showLineDetail = function (reportId, lineIdx) {
+    const r = _currentReport;
+    if (!r) return;
+    const l = r.lines[lineIdx];
+    if (!l) return;
+
+    // Highlight row
+    document.querySelectorAll(".line-row").forEach(el =>
+      el.style.background = el.id === "line-row-" + l.id ? "var(--gray-50)" : "");
+
+    const FIELD_LABELS = {
+      merchant: "商户", amount: "金额", currency: "币种", category: "类别",
+      date: "日期", invoice_number: "发票号码", invoice_code: "发票代码",
+      seller_tax_id: "销方税号", buyer_tax_id: "购方税号",
+      tax_amount: "税额", project_code: "项目代码", description: "说明",
+      department: "部门", cost_center: "成本中心", gl_account: "科目",
+    };
+
+    const editable = isFinance();
+
+    const fieldRow = (key, val) => {
+      if (val === null || val === undefined) val = "";
+      if (editable) {
+        return `<div class="detail-row" style="padding:.4rem 0; border-bottom:1px solid var(--gray-50)">
+          <span style="color:var(--gray-400);font-size:.78rem;min-width:80px">${FIELD_LABELS[key] || key}</span>
+          <input type="text" value="${String(val).replace(/"/g, '&quot;')}"
+            data-field="${key}" data-sub-id="${l.id}" data-report-id="${reportId}"
+            onchange="editLineField(this)"
+            style="flex:1; border:1px solid var(--gray-200); border-radius:4px; padding:.25rem .5rem;
+              font-size:.82rem; background:white; outline:none;">
+        </div>`;
+      }
+      return `<div class="detail-row" style="padding:.4rem 0; border-bottom:1px solid var(--gray-50)">
+        <span style="color:var(--gray-400);font-size:.78rem;min-width:80px">${FIELD_LABELS[key] || key}</span>
+        <span style="font-size:.85rem;color:var(--gray-900)">${val || "—"}</span>
+      </div>`;
+    };
+
+    const risk = l.risk_score || 0;
+    const riskClass = risk < 30 ? "low" : risk < 55 ? "medium" : risk < 75 ? "high" : "critical";
+
+    // AI timeline
+    const timeline = l.audit_report?.timeline || [];
+    const skillNames = ["收据验证","额度审批","合规检查","凭证生成","支付处理"];
+    const timelineHTML = timeline.length ? `
+      <div style="margin-top:1rem">
+        <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;
+          letter-spacing:.3px;color:var(--gray-400);margin-bottom:.5rem">AI 审核流程</div>
+        <div class="timeline">
+          ${timeline.map((t, i) => {
+            const cls = t.skipped ? "skip" : t.passed ? "pass" : "fail";
+            return `<div class="timeline-item">
+              <div class="timeline-dot ${cls}"></div>
+              <div class="timeline-skill">${skillNames[i] || "Skill " + (i+1)}</div>
+              <div class="timeline-msg">${t.message || (t.skipped ? "已跳过" : "")}</div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>` : "";
+
+    document.getElementById("line-detail").innerHTML = `
+      <hr style="border:none;border-top:1px solid var(--gray-100);margin:1rem 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
+        <div>
+          <div style="font-size:1rem;font-weight:700;color:var(--gray-900)">${l.merchant || "—"}</div>
+          <div style="font-size:.78rem;color:var(--gray-400)">${l.date} · ${CAT_LABEL[l.category] || l.category}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:1.2rem;font-weight:800;color:var(--gray-900)">${fmtMoney(l.currency, l.amount)}</div>
+          ${l.tier ? `<span class="badge badge-${l.tier}">${l.tier}</span>` : ""}
+          ${risk > 0 ? `<span style="font-size:.75rem;color:var(--gray-400);margin-left:.3rem">${risk.toFixed(0)}/100</span>` : ""}
+        </div>
+      </div>
+
+      ${l.receipt_url ? `
+        <div style="margin-bottom:1rem;text-align:center">
+          <img src="${l.receipt_url}" alt="发票" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--gray-100)"
+            onerror="this.style.display='none'">
+        </div>` : ""}
+
+      <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;
+        letter-spacing:.3px;color:var(--gray-400);margin-bottom:.4rem">
+        ${editable ? "字段明细（可编辑）" : "字段明细"}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:0">
+        ${fieldRow("merchant", l.merchant)}
+        ${fieldRow("amount", l.amount)}
+        ${fieldRow("currency", l.currency)}
+        ${fieldRow("category", l.category)}
+        ${fieldRow("date", l.date)}
+        ${fieldRow("invoice_number", l.invoice_number)}
+        ${fieldRow("invoice_code", l.invoice_code)}
+        ${fieldRow("seller_tax_id", l.seller_tax_id)}
+        ${fieldRow("buyer_tax_id", l.buyer_tax_id)}
+        ${fieldRow("tax_amount", l.tax_amount)}
+        ${fieldRow("project_code", l.project_code)}
+        ${fieldRow("description", l.description)}
+        ${fieldRow("department", l.department)}
+        ${fieldRow("cost_center", l.cost_center)}
+        ${fieldRow("gl_account", l.gl_account)}
+      </div>
+      ${timelineHTML}
+    `;
+    document.getElementById("line-detail").style.display = "block";
+  };
+
+  window.editLineField = async function (input) {
+    const field = input.dataset.field;
+    const subId = input.dataset.subId;
+    const reportId = input.dataset.reportId;
+    const value = input.value;
+    input.style.borderColor = "var(--gray-200)";
+    try {
+      const r = await fetch(`/api/reports/${reportId}/lines/${subId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authH()) },
+        body: JSON.stringify({ field, value }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.status);
+      input.style.borderColor = "#22c55e";
+      setTimeout(() => input.style.borderColor = "var(--gray-200)", 1500);
+    } catch (err) {
+      input.style.borderColor = "#ef4444";
+      alert("保存失败: " + err.message);
+    }
+  }
+
+  // ── Modal ────────────────────────────────────────────────────
+  window.openModal = function (action, id) {
+    modalAction = action;
+    modalReportId = id;
+    const titles = { approve: "批准整张报销单", reject: "拒绝整张报销单", return: "退回修改" };
+    const labels = { approve: "确认批准", reject: "确认拒绝", return: "确认退回" };
+    const classes = { approve: "btn btn-success", reject: "btn btn-danger", return: "btn" };
+    document.getElementById("modal-title").textContent = titles[action] || action;
+    const btn = document.getElementById("modal-confirm");
+    btn.textContent = labels[action] || action;
+    btn.className = classes[action] || "btn";
+    if (action === "return") btn.style.cssText = "background:#f97316;color:white;border:none";
+    else btn.style.cssText = "";
+    document.getElementById("modal-comment").value = "";
+    document.getElementById("modal-comment").placeholder =
+      action === "return" ? "请填写退回原因（必填）…" : "填写审批意见（可选）";
+    document.getElementById("modal").classList.add("open");
+  };
+  window.closeModal = function () {
+    document.getElementById("modal").classList.remove("open");
+  };
+  window.confirmModal = async function () {
+    const comment = document.getElementById("modal-comment").value;
+    if (modalAction === "return" && !comment.trim()) {
+      alert("退回时必须填写原因");
+      return;
+    }
+    const btn = document.getElementById("modal-confirm");
+    btn.disabled = true;
+    try {
+      let endpoint, bodyData;
+      if (modalAction === "return") {
+        endpoint = `/api/reports/${modalReportId}/return`;
+        bodyData = { reason: comment };
+      } else {
+        endpoint = modalAction === "approve"
+          ? `/api/reports/${modalReportId}/approve`
+          : `/api/reports/${modalReportId}/reject`;
+        bodyData = { comment };
+      }
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authH()) },
+        body: JSON.stringify(bodyData),
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.detail || r.status);
+      }
+      closeModal();
+      await loadList();
+      const actionLabel = { approve: "批准", reject: "拒绝", return: "退回" };
+      document.getElementById("inbox-detail").innerHTML = `
+        <div class="inbox-empty">
+          <div class="inbox-empty-icon">✅</div>
+          <div style="font-size:.9rem;font-weight:500">已${actionLabel[modalAction]}</div>
+        </div>`;
+      selectedId = null;
+    } catch (err) {
+      alert("操作失败：" + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  // ── Keyboard shortcuts ───────────────────────────────────────
+  document.addEventListener("keydown", e => {
+    if (!selectedId) return;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+    const r = reports.find(r => r.id === selectedId);
+    if (!r || r.still_processing) return;
+    if (e.key === "a" || e.key === "A") openModal("approve", selectedId);
+    if (e.key === "t" || e.key === "T") openModal("return", selectedId);
+    if (e.key === "r" || e.key === "R") openModal("reject", selectedId);
+  });
+
+  // ── Init ────────────────────────────────────────────────────
+  loadList();
+})();
+</script>
+</body>
+</html>

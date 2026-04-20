@@ -10,14 +10,14 @@ DATABASE_URL 未设置时默认 sqlite+aiosqlite:///./concurshield.db
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import calendar
 from decimal import Decimal
 
 from sqlalchemy import (
-    JSON, Boolean, Column, Date, DateTime, Float, Numeric, String, Text,
+    JSON, Boolean, Column, Date, DateTime, Float, Integer, Numeric, String, Text,
     UniqueConstraint, or_, select, func,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -56,7 +56,9 @@ class Employee(Base):
     bank_account  = Column(String(50),  nullable=True)
     level         = Column(String(10),  nullable=True)          # L1-L7
     hire_date     = Column(Date,        nullable=True)
+    resignation_date = Column(Date,    nullable=True)
     city          = Column(String(50),  nullable=True, default="上海")
+    home_currency = Column(String(3), nullable=False, default="CNY")
     created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                            onupdate=lambda: datetime.now(timezone.utc))
@@ -68,7 +70,7 @@ class Submission(Base):
     id               = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     employee_id      = Column(String(64),  nullable=False)
     status           = Column(String(50),  nullable=False, default="processing")
-    # processing | reviewed | manager_approved | finance_approved | exported | rejected | review_failed
+    # processing | reviewed | manager_approved | finance_approved | exported | rejected | review_failed | needs_revision
 
     # ── 用户填写 / OCR 提取 ──────────────────────────────────────
     amount           = Column(Numeric(12, 2), nullable=False)
@@ -83,7 +85,7 @@ class Submission(Base):
     receipt_url      = Column(String(500), nullable=False)
 
     # ── 发票字段 (ERP 入账必需) ──────────────────────────────────
-    invoice_number   = Column(String(50),  nullable=True, unique=True)  # 发票号码 - 全局唯一
+    invoice_number   = Column(String(50),  nullable=True)               # 发票号码 — soft dedup only for MVP
     invoice_code     = Column(String(50),  nullable=True)               # 发票代码
     seller_tax_id    = Column(String(50),  nullable=True)               # 销方税号
     buyer_tax_id     = Column(String(50),  nullable=True)               # 购方税号
@@ -119,6 +121,13 @@ class Submission(Base):
     budget_unblocked_by  = Column(String(64), nullable=True)
     budget_unblocked_at  = Column(DateTime(timezone=True), nullable=True)
 
+    # ── 报销单关联 (多笔打包成一张报销单) ─────────────────────────
+    report_id        = Column(String(36),  nullable=True, index=True)
+
+    # ── 汇率 ────────────────────────────────────────────────────────
+    exchange_rate    = Column(Numeric(10, 6), nullable=True)   # 1 invoice_currency = X home_currency
+    converted_amount = Column(Numeric(12, 2), nullable=True)   # amount * exchange_rate
+
     # ── 时间戳 ──────────────────────────────────────────────────
     created_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
@@ -145,6 +154,9 @@ class Draft(Base):
     # 完整对话历史（含 tool_use / tool_result），用于 agent 继续对话
     submitted_as   = Column(String(36),  nullable=True)
     # 转正后的 submission id（null 表示未提交）
+    layer          = Column(String(16),  nullable=True, default=None)
+    entry          = Column(String(16),  nullable=True, default=None)
+    report_id      = Column(String(36),  nullable=True, index=True)
     created_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                             onupdate=lambda: datetime.now(timezone.utc))
@@ -193,6 +205,97 @@ class BudgetPolicy(Base):
                                 onupdate=lambda: datetime.now(timezone.utc))
 
 
+class TelemetryEvent(Base):
+    __tablename__ = "telemetry_events"
+
+    id                  = Column(String(36), primary_key=True,
+                                 default=lambda: str(uuid.uuid4()))
+    draft_id            = Column(String(36), nullable=False, index=True)
+    entry               = Column(String(16), nullable=False)
+    final_layer         = Column(String(16), nullable=False)
+    ocr_confidence_min  = Column(Numeric(4, 3), nullable=True)
+    classify_confidence = Column(Numeric(4, 3), nullable=True)
+    fields_edited_count = Column(Integer, nullable=False, default=0)
+    time_to_attest_ms   = Column(Integer, nullable=True)
+    attest_or_abandoned = Column(String(16), nullable=False)
+    created_at          = Column(DateTime(timezone=True),
+                                 default=lambda: datetime.now(timezone.utc))
+
+
+class Report(Base):
+    """报销单 — 多笔 submission / draft 打包成一张，员工提交审批。
+
+    状态:
+      open      — 开放式购物车,员工可继续添加/编辑
+      pending   — 已提交,等待经理审批
+      approved  — 经理已批准
+      rejected  — 经理已拒绝
+      needs_revision — 经理退回修改
+      withdrawn — 已撤回 (从 pending/approved 回到 open)
+    """
+    __tablename__ = "reports"
+
+    id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    employee_id   = Column(String(64),  nullable=False, index=True)
+    title         = Column(String(255), nullable=False, default="新建报销单")
+    status        = Column(String(20),  nullable=False, default="open")
+    revision_reason = Column(String(500), nullable=True)
+    submitted_at  = Column(DateTime(timezone=True), nullable=True)
+    withdrawn_at  = Column(DateTime(timezone=True), nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at    = Column(DateTime(timezone=True),
+                            default=lambda: datetime.now(timezone.utc),
+                            onupdate=lambda: datetime.now(timezone.utc))
+
+
+class LLMTrace(Base):
+    """LLM 调用追踪 — 记录每次 LLM 调用的完整上下文，用于 eval 和 debug。"""
+    __tablename__ = "llm_traces"
+
+    id              = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    component       = Column(String(50),  nullable=False, index=True)   # fraud_rule_11, ambiguity_detector, ocr
+    submission_id   = Column(String(36),  nullable=True, index=True)    # 关联的报销单
+    model           = Column(String(50),  nullable=False)               # gpt-4o, claude-sonnet-4-20250514, MiniMax-M2
+    prompt          = Column(JSON,        nullable=False)               # 完整 messages 数组
+    response        = Column(Text,        nullable=True)                # LLM 原始返回
+    parsed_output   = Column(JSON,        nullable=True)                # 结构化解析结果
+    latency_ms      = Column(Integer,     nullable=True)
+    token_usage     = Column(JSON,        nullable=True)                # {"input": N, "output": N}
+    error           = Column(Text,        nullable=True)                # 错误信息（如有）
+    created_at      = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class EvalRun(Base):
+    """Eval 运行记录 — 每次 eval 执行的汇总结果。"""
+    __tablename__ = "eval_runs"
+
+    id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    started_at    = Column(DateTime(timezone=True), nullable=False)
+    finished_at   = Column(DateTime(timezone=True), nullable=True)
+    total_cases   = Column(Integer, nullable=True)
+    passed_cases  = Column(Integer, nullable=True)
+    pass_rate     = Column(Float,   nullable=True)
+    results       = Column(JSON,    nullable=True)    # [{case_id, component, passed, score, latency_ms, error}]
+    trigger       = Column(String(50), nullable=False, default="manual")  # manual | ci | pytest
+    run_metadata  = Column("metadata", JSON, nullable=True)  # 6 factors: prompt_version, model, sampling, config, parsing, dataset
+    component_metrics = Column(JSON, nullable=True)  # per-component P/R/F1: {comp: {正确标记, 误报, 漏报, 正确放行, precision, recall, f1}}
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Notification(Base):
+    """站内通知 — 经理收到撤回等事件时的提醒。"""
+    __tablename__ = "notifications"
+
+    id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    recipient_id  = Column(String(64),  nullable=False, index=True)
+    kind          = Column(String(32),  nullable=False)   # report_withdrawn | ...
+    title         = Column(String(255), nullable=False)
+    body          = Column(Text,        nullable=True)
+    link          = Column(String(500), nullable=True)
+    read_at       = Column(DateTime(timezone=True), nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 # ── 预算期间工具 ──────────────────────────────────────────────────
 
 def _current_period() -> str:
@@ -217,6 +320,26 @@ def _period_date_range(period: str) -> tuple[str, str]:
     else:
         year = int(period)
         return f"{year}-01-01", f"{year}-12-31"
+
+
+def _rolling_months(n: int) -> list[tuple[str, str]]:
+    """Return (start_date, end_date) ISO string pairs for the last n complete calendar months.
+
+    Returned newest-first: index 0 is last month, index n-1 is n months ago.
+    Example on 2026-04-14 with n=3:
+      [('2026-03-01', '2026-03-31'), ('2026-02-01', '2026-02-28'), ('2026-01-01', '2026-01-31')]
+    """
+    today = date.today()
+    result = []
+    year, month = today.year, today.month
+    for _ in range(n):
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+        last_day = calendar.monthrange(year, month)[1]
+        result.append((f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day:02d}"))
+    return result
 
 
 # ── 初始化 ────────────────────────────────────────────────────────
@@ -285,6 +408,86 @@ async def list_submissions(
         "page_size": page_size,
         "has_next": (page * page_size) < total,
     }
+
+
+async def list_recent_descriptions(
+    db: AsyncSession,
+    employee_id: str,
+    days: int = 30,
+    limit: int = 20,
+) -> list[str]:
+    """Return recent non-empty descriptions for an employee (for template detection)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()[:10]
+    result = await db.execute(
+        select(Submission.description)
+        .where(
+            Submission.employee_id == employee_id,
+            Submission.description.isnot(None),
+            Submission.description != "",
+            Submission.date >= cutoff,
+        )
+        .order_by(Submission.created_at.desc())
+        .limit(limit)
+    )
+    return [row[0] for row in result.all()]
+
+
+async def list_submissions_by_merchant(
+    db: AsyncSession,
+    merchant: str,
+    days: int = 90,
+    limit: int = 100,
+) -> list:
+    """All submissions to a given merchant across all employees (for collusion/vendor rules)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()[:10]
+    result = await db.execute(
+        select(Submission)
+        .where(Submission.merchant == merchant, Submission.date >= cutoff)
+        .order_by(Submission.created_at.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_approvals_by_approver(
+    db: AsyncSession,
+    approver_id: str,
+    days: int = 90,
+) -> list:
+    """All submissions approved by a given approver (for approval pattern analysis)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()[:10]
+    result = await db.execute(
+        select(Submission)
+        .where(
+            Submission.approver_id == approver_id,
+            Submission.approved_at.isnot(None),
+            Submission.date >= cutoff,
+        )
+        .order_by(Submission.approved_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def list_employee_submissions_by_quarter(
+    db: AsyncSession,
+    employee_id: str,
+) -> dict[str, float]:
+    """Return {quarter_label: total_amount} for seasonal analysis."""
+    result = await db.execute(
+        select(Submission.date, Submission.amount)
+        .where(Submission.employee_id == employee_id)
+        .order_by(Submission.date)
+    )
+    rows = result.all()
+    quarter_totals: dict[str, float] = {}
+    for row_date, amount in rows:
+        try:
+            d = date.fromisoformat(row_date) if isinstance(row_date, str) else row_date
+            q = f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+            quarter_totals[q] = quarter_totals.get(q, 0) + float(amount)
+        except (ValueError, TypeError):
+            continue
+    return quarter_totals
 
 
 async def update_submission_status(
@@ -572,6 +775,155 @@ async def mark_draft_submitted(
     return draft
 
 
+# ── CRUD — reports ───────────────────────────────────────────────
+
+async def create_report(
+    db: AsyncSession, employee_id: str, title: str = "新建报销单"
+) -> Report:
+    report = Report(employee_id=employee_id, title=title, status="open")
+    db.add(report)
+    await db.commit()
+    await db.refresh(report)
+    return report
+
+
+async def get_report(db: AsyncSession, report_id: str) -> Optional[Report]:
+    result = await db.execute(select(Report).where(Report.id == report_id))
+    return result.scalar_one_or_none()
+
+
+async def list_reports_for_employee(
+    db: AsyncSession, employee_id: str, status: Optional[str] = None
+) -> list[Report]:
+    stmt = select(Report).where(Report.employee_id == employee_id)
+    if status:
+        stmt = stmt.where(Report.status == status)
+    stmt = stmt.order_by(Report.updated_at.desc())
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_or_create_open_report(
+    db: AsyncSession, employee_id: str
+) -> Report:
+    """Most-recent open report for the employee, or a fresh one."""
+    stmt = (
+        select(Report)
+        .where(Report.employee_id == employee_id, Report.status == "open")
+        .order_by(Report.updated_at.desc())
+    )
+    result = await db.execute(stmt)
+    existing = result.scalars().first()
+    if existing:
+        return existing
+    return await create_report(db, employee_id)
+
+
+async def list_report_submissions(
+    db: AsyncSession, report_id: str
+) -> list[Submission]:
+    result = await db.execute(
+        select(Submission)
+        .where(Submission.report_id == report_id)
+        .order_by(Submission.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def list_report_drafts(
+    db: AsyncSession, report_id: str
+) -> list[Draft]:
+    """Drafts attached to a report that haven't been finalized yet."""
+    result = await db.execute(
+        select(Draft)
+        .where(Draft.report_id == report_id, Draft.submitted_as.is_(None))
+        .order_by(Draft.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def set_report_status(
+    db: AsyncSession,
+    report_id: str,
+    status: str,
+    *,
+    submitted_at: Optional[datetime] = None,
+    withdrawn_at: Optional[datetime] = None,
+) -> Optional[Report]:
+    report = await get_report(db, report_id)
+    if not report:
+        return None
+    report.status = status
+    if submitted_at is not None:
+        report.submitted_at = submitted_at
+    if withdrawn_at is not None:
+        report.withdrawn_at = withdrawn_at
+    report.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(report)
+    return report
+
+
+async def attach_draft_to_report(
+    db: AsyncSession, draft_id: str, report_id: str
+) -> Optional[Draft]:
+    draft = await get_draft(db, draft_id)
+    if not draft:
+        return None
+    draft.report_id = report_id
+    draft.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(draft)
+    return draft
+
+
+# ── CRUD — notifications ─────────────────────────────────────────
+
+async def create_notification(
+    db: AsyncSession,
+    *,
+    recipient_id: str,
+    kind: str,
+    title: str,
+    body: Optional[str] = None,
+    link: Optional[str] = None,
+) -> Notification:
+    n = Notification(
+        recipient_id=recipient_id, kind=kind,
+        title=title, body=body, link=link,
+    )
+    db.add(n)
+    await db.commit()
+    await db.refresh(n)
+    return n
+
+
+async def list_notifications(
+    db: AsyncSession, recipient_id: str, *, unread_only: bool = False
+) -> list[Notification]:
+    stmt = select(Notification).where(Notification.recipient_id == recipient_id)
+    if unread_only:
+        stmt = stmt.where(Notification.read_at.is_(None))
+    stmt = stmt.order_by(Notification.created_at.desc())
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def mark_notification_read(
+    db: AsyncSession, notification_id: str
+) -> Optional[Notification]:
+    result = await db.execute(
+        select(Notification).where(Notification.id == notification_id)
+    )
+    n = result.scalar_one_or_none()
+    if not n:
+        return None
+    n.read_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(n)
+    return n
+
+
 # ── 凭证号生成 — YYYYMM-NNNN，按月重置 ────────────────────────────
 
 async def next_voucher_number(db: AsyncSession) -> str:
@@ -796,6 +1148,48 @@ async def get_budget_status(
     }
     if projected_pct is not None:
         out["projected_pct"] = projected_pct
+
+    # ── rolling 3-month trend ──────────────────────────────────────────────
+    month_ranges = _rolling_months(3)
+    month_totals: list[float] = []
+    for m_start, m_end in month_ranges:
+        m_result = await db.execute(
+            select(func.sum(Submission.amount)).where(
+                Submission.cost_center == cost_center,
+                Submission.date >= m_start,
+                Submission.date <= m_end,
+                Submission.status.notin_(["rejected", "review_failed"]),
+            )
+        )
+        month_totals.append(float(m_result.scalar() or 0))
+
+    monthly_avg = sum(month_totals) / len(month_totals) if month_totals else 0.0
+    remaining = float(budget.total_amount) - spent_f
+
+    if monthly_avg > 0 and remaining > 0:
+        months_until_exhaust = remaining / monthly_avg
+        overrun_date = date.today() + timedelta(days=int(months_until_exhaust * 30))
+        estimated_overrun_date: Optional[str] = overrun_date.isoformat()
+    elif remaining <= 0:
+        months_until_exhaust = 0.0
+        estimated_overrun_date = date.today().isoformat()
+    else:
+        months_until_exhaust = None
+        estimated_overrun_date = None
+
+    if months_until_exhaust is not None and months_until_exhaust < 1.0:
+        overrun_risk = "high"
+    elif months_until_exhaust is not None and months_until_exhaust < 2.0:
+        overrun_risk = "moderate"
+    else:
+        overrun_risk = "ok"
+
+    out["trend"] = {
+        "monthly_avg": round(monthly_avg, 2),
+        "months": list(reversed(month_totals)),  # oldest → newest for sparkline
+        "overrun_risk": overrun_risk,
+        "estimated_overrun_date": estimated_overrun_date,
+    }
     return out
 
 
@@ -811,6 +1205,34 @@ async def unblock_submission(
     await db.commit()
     await db.refresh(sub)
     return sub
+
+
+# ── CRUD — telemetry ─────────────────────────────────────────────
+
+async def insert_telemetry(
+    db: AsyncSession,
+    *,
+    draft_id: str,
+    entry: str,
+    final_layer: str,
+    ocr_confidence_min: float | None,
+    classify_confidence: float | None,
+    fields_edited_count: int,
+    time_to_attest_ms: int | None,
+    attest_or_abandoned: str,
+) -> None:
+    ev = TelemetryEvent(
+        draft_id=draft_id,
+        entry=entry,
+        final_layer=final_layer,
+        ocr_confidence_min=ocr_confidence_min,
+        classify_confidence=classify_confidence,
+        fields_edited_count=fields_edited_count,
+        time_to_attest_ms=time_to_attest_ms,
+        attest_or_abandoned=attest_or_abandoned,
+    )
+    db.add(ev)
+    await db.commit()
 
 
 # ── Demo 数据种子 ─────────────────────────────────────────────────
@@ -832,10 +1254,10 @@ async def seed_budget_demo(db: AsyncSession) -> None:
     await upsert_budget_policy(db, "MKT-EVENTS", 0.75, 0.90, "block", "seed")
 
     # Seed demo employees if they don't exist
-    for emp_id, name, cc in [
-        ("E001", "Zhang Wei", "ENG-TRAVEL"),
-        ("E002", "Li Mei",   "MKT-EVENTS"),
-        ("E003", "Wang Fang","ENG-TRAVEL"),
+    for emp_id, name, cc, hc in [
+        ("E001", "Zhang Wei", "ENG-TRAVEL", "CNY"),
+        ("E002", "Li Mei",   "MKT-EVENTS", "AUD"),
+        ("E003", "Wang Fang","ENG-TRAVEL", "CNY"),
     ]:
         existing = await db.execute(select(Employee).where(Employee.id == emp_id))
         if existing.scalar_one_or_none() is not None:
@@ -844,6 +1266,7 @@ async def seed_budget_demo(db: AsyncSession) -> None:
             id=emp_id, name=name,
             department="Engineering" if cc == "ENG-TRAVEL" else "Marketing",
             cost_center=cc,
+            home_currency=hc,
         ))
 
     await db.flush()

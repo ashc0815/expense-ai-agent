@@ -77,6 +77,16 @@ async def get_my_budget_snapshot(
     else:  # info
         msg = f"💡 {cc} 本季度预算已用 {pct}%，剩余 ¥{remaining:,.0f}。"
 
+    # ── trend narrative (append when overrun_risk is high) ────────────────
+    trend = status.get("trend")
+    if trend and trend.get("overrun_risk") == "high" and trend.get("estimated_overrun_date"):
+        avg = trend["monthly_avg"]
+        overrun_date_str = trend["estimated_overrun_date"]
+        msg += (
+            f" 按近 3 个月月均 ¥{avg:,.0f} 的消费节奏，"
+            f"预计 {overrun_date_str} 前后预算耗尽。"
+        )
+
     return {"message": msg, "signal": sig, "usage_pct": status["usage_pct"]}
 
 

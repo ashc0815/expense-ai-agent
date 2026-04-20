@@ -1,0 +1,190 @@
+# Eval cases for Layer Decision (submission routing)
+# Pure function: decide_layer(ocr, classify, dedupe, budget, missing_optional) → "1"|"2"|"3_soft"|"3_hard"
+# Graded by: code (exact layer match)
+
+# ═══════════════════════════════════════════════════════════════
+# Layer 1 — Happy path (all good)
+# ═══════════════════════════════════════════════════════════════
+
+- id: layer_happy_path
+  component: layer_decision
+  description: "所有字段高置信度、预算OK、无重复 → Layer 1"
+  input:
+    ocr: {amount: 120.5, merchant: "海底捞", date: "2026-04-10"}
+    classify: {confidence: 0.95}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "1"
+
+- id: layer_happy_exact_high_conf
+  component: layer_decision
+  description: "classify置信度刚好0.8 → 仍是Layer 1"
+  input:
+    ocr: {amount: 100, merchant: "餐厅", date: "2026-04-10"}
+    classify: {confidence: 0.8}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "1"
+
+# ═══════════════════════════════════════════════════════════════
+# Layer 2 — Minor issues
+# ═══════════════════════════════════════════════════════════════
+
+- id: layer2_missing_merchant
+  component: layer_decision
+  description: "merchant为空 → fix_count=1 → Layer 2"
+  input:
+    ocr: {amount: 120.5, merchant: "", date: "2026-04-10"}
+    classify: {confidence: 0.9}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "2"
+
+- id: layer2_mid_confidence
+  component: layer_decision
+  description: "classify置信度0.6(mid区间0.5-0.8) → Layer 2"
+  input:
+    ocr: {amount: 120.5, merchant: "餐厅", date: "2026-04-10"}
+    classify: {confidence: 0.6}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "2"
+
+- id: layer2_budget_warn
+  component: layer_decision
+  description: "预算告警 → Layer 2"
+  input:
+    ocr: {amount: 5000, merchant: "酒店", date: "2026-04-10"}
+    classify: {confidence: 0.9}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "warn"}
+  expect:
+    layer: "2"
+
+- id: layer2_duplicate
+  component: layer_decision
+  description: "检测到重复 → Layer 2"
+  input:
+    ocr: {amount: 120.5, merchant: "餐厅", date: "2026-04-10"}
+    classify: {confidence: 0.9}
+    dedupe: {is_duplicate: true}
+    budget: {signal: "ok"}
+  expect:
+    layer: "2"
+
+- id: layer2_one_missing_optional
+  component: layer_decision
+  description: "1个可选字段缺失 → fix_count=1 → Layer 2"
+  input:
+    ocr: {amount: 120.5, merchant: "餐厅", date: "2026-04-10"}
+    classify: {confidence: 0.9}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+    missing_optional_fields: ["project_code"]
+  expect:
+    layer: "2"
+
+- id: layer2_classify_boundary_low
+  component: layer_decision
+  description: "classify置信度刚好0.5(mid下界) → Layer 2"
+  input:
+    ocr: {amount: 100, merchant: "餐厅", date: "2026-04-10"}
+    classify: {confidence: 0.5}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "2"
+
+# ═══════════════════════════════════════════════════════════════
+# Layer 3 soft — Too many issues
+# ═══════════════════════════════════════════════════════════════
+
+- id: layer3_soft_three_fixes
+  component: layer_decision
+  description: "amount+merchant为空+低classify → fix_count=3 → Layer 3 soft"
+  input:
+    ocr: {amount: 0, merchant: "", date: "2026-04-10"}
+    classify: {confidence: 0.3}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "3_soft"
+
+- id: layer3_soft_missing_optionals
+  component: layer_decision
+  description: "1个OCR字段空+2个可选字段缺失 → fix_count=3 → Layer 3 soft"
+  input:
+    ocr: {amount: 0, merchant: "餐厅", date: "2026-04-10"}
+    classify: {confidence: 0.9}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+    missing_optional_fields: ["project_code", "description"]
+  expect:
+    layer: "3_soft"
+
+# ═══════════════════════════════════════════════════════════════
+# Layer 3 hard — Fatal errors
+# ═══════════════════════════════════════════════════════════════
+
+- id: layer3_hard_not_receipt
+  component: layer_decision
+  description: "not_a_receipt=true → Layer 3 hard"
+  input:
+    ocr: {amount: 120, merchant: "餐厅", date: "2026-04-10", not_a_receipt: true}
+    classify: {confidence: 0.9}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "3_hard"
+
+- id: layer3_hard_all_empty
+  component: layer_decision
+  description: "OCR三个关键字段全为空 → Layer 3 hard"
+  input:
+    ocr: {amount: 0, merchant: "", date: ""}
+    classify: {confidence: 0.9}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "3_hard"
+
+- id: layer3_hard_all_none
+  component: layer_decision
+  description: "OCR三个关键字段全为None → Layer 3 hard"
+  input:
+    ocr: {}
+    classify: {confidence: 0.9}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "3_hard"
+
+# ═══════════════════════════════════════════════════════════════
+# Edge cases — Boundary conditions
+# ═══════════════════════════════════════════════════════════════
+
+- id: layer_classify_below_mid
+  component: layer_decision
+  description: "classify置信度0.49(低于mid) → fix_count+1 → Layer 2"
+  input:
+    ocr: {amount: 100, merchant: "餐厅", date: "2026-04-10"}
+    classify: {confidence: 0.49}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "2"
+
+- id: layer_classify_zero
+  component: layer_decision
+  description: "classify置信度0 → fix_count+1 → Layer 2"
+  input:
+    ocr: {amount: 100, merchant: "餐厅", date: "2026-04-10"}
+    classify: {confidence: 0}
+    dedupe: {is_duplicate: false}
+    budget: {signal: "ok"}
+  expect:
+    layer: "2"

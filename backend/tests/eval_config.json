@@ -1,0 +1,37 @@
+{
+  "prompt_version": "v1",
+  "prompt_notes": "Initial fraud analyzer + ambiguity detector prompts",
+  "model": "gpt-4o-2025-03-01",
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "max_tokens": 1024,
+  "config_thresholds": {
+    "threshold_proximity_pct": 0.03,
+    "threshold_proximity_limit": 300.0,
+    "threshold_proximity_min_count": 3,
+    "weekend_meal_max_weeks": 4,
+    "round_amount_pct": 0.5,
+    "round_amount_min_count": 5,
+    "consecutive_invoice_min": 3,
+    "rush_days_before_last": 30,
+    "rush_amount_multiplier": 3.0,
+    "fx_deviation_pct": 0.02,
+    "template_score_threshold": 70,
+    "vagueness_threshold": 60,
+    "vendor_frequency_threshold": 6,
+    "seasonal_spike_multiplier": 2.5,
+    "approver_speed_ratio": 3.0,
+    "collusion_min_pair_count": 3
+  },
+  "ambiguity_weights": {
+    "description_vague": 0.25,
+    "amount_boundary": 0.20,
+    "pattern_anomaly": 0.25,
+    "time_anomaly": 0.15,
+    "city_mismatch": 0.15
+  },
+  "ambiguity_llm_trigger_threshold": 50,
+  "parsing_version": "v1",
+  "parsing_notes": "JSON extraction with regex fallback",
+  "dataset_version": "auto"
+}
