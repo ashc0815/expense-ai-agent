@@ -205,29 +205,166 @@ processing -> reviewed -> manager_approved -> finance_approved -> exported
 
 ---
 
-## Eval 评估框架
+## Eval 评估平台
 
-```bash
-# 运行全部测试（无需外部服务）
-pytest backend/tests/ -v
+Eval 系统分三层：**YAML 测试数据集** 定义测什么，**统一评估引擎** 用代码评分器执行测试，**Eval Observatory** 提供可视化仪表盘 + REST API 浏���结果、对比运行、管理 Prompt���
 
-# 只跑 eval harness（业务场景，带通过率汇总）
-pytest backend/tests/test_agent_eval.py -v -s
+### 架构
+
+```
++-------------------+     pytest      +---------------------+     POST     +-------------------+
+|  YAML 数据集       | ------------->  |  统一评估引擎        | ----------> |  Observatory API  |
+|                   |                 |  test_eval_harness   |             |  /api/eval/runs   |
+|  fraud_llm_rules  |   逐 case      |  .py                 |  运行结果   |                   |
+|  fraud_rules_det  |   代码评分      |                      |  + 元数据   |  存入 DB:         |
+|  ambiguity_detect | <----------->  |  通过率汇总           |             |  EvalRun, LLMTrace|
+|  layer_decision   |  code_graders  |  P/R/F1 按组件统计    |             |                   |
+|  category_classif |  .py           |                      |             |  Eval 仪表盘       |
++-------------------+                +---------------------+             +-------------------+
 ```
 
-**Eval Harness 结构**（`backend/tests/eval_cases.yaml` + `test_agent_eval.py`）：
+### 被评估的 5 个组件
 
-| 类别 | 验证内容 |
-|------|----------|
-| QA 意图路由 | 月度/季度消费、最近记录、无关问题 -> 正确 tool 或无 tool |
-| 解释卡 tier 映射 | T1 -> approve、T3 -> review、T4 -> reject + advisory 内容 |
-| 角色访问控制 | 员工 403、财务 200 |
-| 白名单安全注入 | 注入 forbidden tool -> 被 dispatcher 拦截 |
-| 确定性欺诈规则 | 欺诈检测规则的输入/输出验证 |
+| 组件 | 数据集文件 | 用例数 | 测试内容 |
+|------|-----------|--------|----------|
+| **确定性欺诈规则** | `fraud_rules_deterministic.yaml` | ~60 | 14 条规则函数（同餐重复、地理冲突、阈值接近、周末频率、整数金额、连号发票、商户类别不匹配、离职前突击、汇率套利、共谋模式、供应商频率、季节异常、幽灵员工、时间戳冲突）。每条提供输入 + 期望信号（触发/不触发） |
+| **LLM 欺诈分析** | `fraud_llm_rules.yaml` | ~15 | GPT-4o 语义分析（模板检测、票据矛盾、人均金额合理性、描述模糊度评分）。支持 pass^k 多次试验以应对非确定性输出。需要 `OPENAI_API_KEY` |
+| **模糊检测器** | `ambiguity_detector.yaml` | ~12 | 五维评分模型：分数范围验证、触发因素核查、推荐动作检查（auto_pass / human_review / suggest_reject） |
+| **分层决策** | `layer_decision.yaml` | ~20 | 快速提交分层路由：给定 OCR/分类/查重/预算信号，验证正确的层级分配（green/yellow/red） |
+| **类别分类器** | `category_classifier.yaml` | ~20 | 商户名 -> 费用类别映射（餐费/交通/住宿/娱乐/其他） |
 
-新增业务场景只需在 YAML 里加一行，不需要改 Python。
+### YAML 测试用例格式
 
-Eval 仪表盘可视化：`http://localhost:8000/eval/dashboard.html`
+所有用例遵循统一结构：
+
+```yaml
+- id: rule1_positive_overlap
+  component: fraud_rules_deterministic
+  rule: duplicate_attendee
+  description: "A和B同日同商户报餐，B的attendee含A -> 应触发"
+  input:
+    submissions:
+      - id: "s1"
+        employee_id: "emp-A"
+        amount: 200
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "海底捞"
+        attendees: ["emp-B"]
+      - id: "s2"
+        employee_id: "emp-B"
+        amount: 180
+        category: "meal"
+        date: "2026-04-10"
+        merchant: "海底捞"
+        attendees: ["emp-A"]
+  expect:
+    has_signal: true
+    rule_name: "duplicate_attendee"
+```
+
+新增测试场景只需在 YAML 里加一条，不需要改 Python。
+
+### 代码评分器（评分环节无 LLM）
+
+所有评分都是确定性的 -- `backend/tests/graders/code_graders.py`：
+
+| 评分器 | 检查内容 |
+|--------|----------|
+| `grade_score_range` | 实际分数在 [lo, hi] 范��内 |
+| `grade_field_match` | 字段值精确匹配 |
+| `grade_enum_in` | 值在允许集合内 |
+| `grade_list_contains` | 列表包含所有必需项 |
+| `grade_bool` | 布尔匹配（用于 `has_signal`） |
+| `classify_detection` | TP/FP/FN/TN 分类，计算 P/R/F1 |
+
+通用 `grade_case(actual_output, expect)` 函数自动分派：`*_range` 键用范围评���器，`has_signal` 用布尔评分器，`layer` 用精确匹配，等等。
+
+### 6 因素可复现性追踪
+
+每次评估运行捕获 6 个因素到 `eval_config.json`，确保可复现：
+
+| 因素 | 追踪内容 | 示例 |
+|------|----------|------|
+| **Prompt 版本** | 当前激活的 prompt 模板 | `v1` |
+| **模型** | LLM 模型 + 快照 | `gpt-4o-2025-03-01` |
+| **采样参数** | temperature, top_p, max_tokens | `0.0, 1.0, 1024` |
+| **配置阈值** | 规则级别的调参旋钮 | `threshold_proximity_pct: 0.03` |
+| **解析版本** | LLM 输出如何解析为结构化数据 | `v1 (JSON + regex fallback)` |
+| **数据集哈希** | 所有 YAML 数据集文件的联合 MD5 | 自动计算 |
+
+当通过率下降时，通��� `GET /api/eval/runs/{a}/diff/{b}` 对比两次运行，精确定位哪个因素变了、哪些用例回退了。
+
+### Observatory 仪表盘 & API
+
+**Web 界面** `http://localhost:8000/eval/dashboard.html`：
+- KPI 卡片：总用例数、通过率、按组件分解
+- 通过率趋势图（最近 10 次运行）
+- 逐 case 下钻：输入、期望、实际输出、分类
+- 运行对比（diff 视图）：元数据变化 + case 回退/改进
+- Prompt 管理：查看/编辑/版本化 prompt 模板，设置激活版本
+- 一键触发评估（后台运行 pytest）
+
+**REST API** `/api/eval/`：
+
+| 方法 | 路径 | 功能 |
+|------|------|------|
+| `GET` | `/runs` | 评估运行列表（分页） |
+| `GET` | `/runs/{id}` | 单次运行详情 + 所有 case 结果 |
+| `POST` | `/runs` | 记录评估运行（由引擎自动调用） |
+| `GET` | `/runs/{a}/diff/{b}` | 对比两次运行：元数据差异 + case 回退 |
+| `GET` | `/traces` | LLM 调用追踪列表（可按组件/错误状态过滤） |
+| `GET` | `/traces/{id}` | 单条追踪 + 完整 prompt & response |
+| `GET` | `/stats` | 聚合统计：通过率趋势 + 组件错误率 |
+| `GET/PUT` | `/config` | 读取/更新 6 因素配置 |
+| `POST` | `/trigger` | 触发评估（后台 pytest 子进程） |
+| `GET` | `/trigger/status` | 检查评估是否正在运行 |
+| `GET` | `/prompts` | 所有 prompt 模板及版本数 |
+| `GET` | `/prompts/{key}` | 完整 prompt + 所有版本 |
+| `PUT` | `/prompts/{key}/versions/{v}` | 创建/更新 prompt 版本 |
+| `PUT` | `/prompts/{key}/active` | 设置激活的 prompt 版本 |
+
+### 检测质量指标
+
+对确定性欺诈规则，引擎按规则计算 **Precision / Recall / F1**：
+
+```
+  -- Detection Quality (P/R) --
+  fraud_rule_duplicate_attendee:    P=100% R=100% F1=100%
+  fraud_rule_threshold_proximity:   P=100% R=100% F1=100%
+  fraud_rule_weekend_frequency:     P=100% R=67%  F1=80%
+```
+
+分类矩阵使用业务语言：
+- **正确标记** (TP) = 规则正确触发
+- **误报** (FP) = 规则不该触发但触发了
+- **漏报** (FN) = 规则该触发但没触发
+- **正确放行** (TN) = 规则正确地没有触发
+
+### 运行评估
+
+```bash
+# 运行全部 eval case（确定性部分无需 API Key）
+pytest backend/tests/test_eval_harness.py -v
+
+# 只跑欺诈规则
+pytest backend/tests/test_eval_harness.py -v -k deterministic
+
+# 只跑模糊检测器
+pytest backend/tests/test_eval_harness.py -v -k ambiguity
+
+# 带 LLM 欺诈分析（需要 OPENAI_API_KEY）
+OPENAI_API_KEY=sk-... pytest backend/tests/test_eval_harness.py -v -k llm
+
+# Agent 行为评估（独立引擎）
+pytest backend/tests/test_agent_eval.py -v -s
+
+# 通过 Observatory API 触发（从仪表盘一键运行）
+curl -X POST http://localhost:8000/api/eval/trigger \
+  -H 'Content-Type: application/json' -d '{"component": "all"}'
+```
+
+结果自动 POST 到 Observatory API（如果服务在运行）；否则保存到 `backend/tests/eval_last_run.json`，稍后导入
 
 ---
 
