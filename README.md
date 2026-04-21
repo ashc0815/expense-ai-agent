@@ -1,237 +1,244 @@
-# ExpenseFlow with Eval
+# ExpenseFlow
 
-**智能费用报销审核系统** — 配置驱动 + Agent Only for Ambiguity
+AI-powered enterprise expense management platform — end-to-end automation from receipt submission to payment, with a built-in 5-Skill compliance pipeline, conversational Agent assistant, and Eval framework.
 
-## 项目定位
+## What This Project Does
 
-ConcurShield 是一个完全配置驱动的费用报销审核 Agent。它不是替代 Concur 系统，而是在 Concur 之上增加一层智能审核：
+ExpenseFlow simulates a complete enterprise reimbursement system: employee uploads receipt → AI auto-review (OCR, rules engine, ambiguity detection) → manager approval (with AI decision explanation) → finance review → voucher generation → payment execution.
 
-- **规则层**：所有费用标准、审批流程、会计科目全部定义在 YAML 配置文件中，零代码适配不同客户
-- **智能层**：AmbiguityDetector 在规则层之上，用五维评分模型捕获规则无法覆盖的模糊情况
-- **Phase 2 预留**：当模糊评分 > 50 时触发 LLM 深度语义分析接口（当前版本为规则评分）
+**Core Differentiators:**
 
-## 核心差异化
+1. **5-Skill Compliance Pipeline** — Receipt validation, approval chain, compliance check (with AmbiguityDetector 5-factor scoring), voucher generation, payment execution — all configuration-driven
+2. **Conversational Agent** — Employees complete reimbursements via natural language (OCR → category suggestion → dedup check → budget check); managers get AI explanation cards for approval decisions
+3. **Eval Framework** — YAML-defined test cases covering Agent routing, risk tiering, RBAC permissions, and tool whitelist security
 
-### 1. 所有规则配置化，零代码适配不同客户
-
-```
-客户A想跳过审批     → workflow.yaml: approval.enabled: false
-客户B的住宿限额不同  → policy.yaml: limits.accommodation_per_night 改数字
-客户C多了个费用类型   → expense_types.yaml 加一段配置
-```
-
-**从不需要改一行代码。**
-
-### 2. 城市标准化模块 — 修复 Concur 已知缺陷
-
-Concur 系统的已知问题：同一城市在不同报销单中出现 "Shanghai"、"SH"、"沪"、"上海" 四种写法，导致费用标准匹配错误。
+## System Architecture
 
 ```
-CityNormalizer:
-  "Shanghai" → "上海" → tier_1 → 住宿限额500
-  "SH"       → "上海" → tier_1 → 住宿限额500
-  "沪"       → "上海" → tier_1 → 住宿限额500
-  "蓉"       → "成都" → tier_2 → 住宿限额350
+Employee submits receipt
+  |
+  v
++--------------------------- FastAPI Backend ----------------------------+
+|                                                                        |
+|  +--------------+    +--------------------------------------+          |
+|  |  Chat Agent  |    |     5-Skill Compliance Pipeline      |          |
+|  |              |    |                                      |          |
+|  | - Submit     |    |  Receipt -> Approval -> Compliance   |          |
+|  | - Q&A        |    |            | AmbiguityDetector       |          |
+|  | - Explain    |    |  Voucher -> Payment                  |          |
+|  +------+-------+    +--------------+-----------------------+          |
+|         |                           |                                  |
+|  +------v---------------------------v--------------------------+       |
+|  |                     Data Layer                              |       |
+|  |  SQLAlchemy Async | Submissions | Drafts | Budgets          |       |
+|  |  Employees | AuditLogs | CostCenterBudgets                  |       |
+|  +-------------------------------------------------------------+       |
+|                          |                                             |
+|  +-----------------------v---------------------------------+           |
+|  |                  YAML Config Layer                      |           |
+|  |  policy | approval_flow | expense_types | workflow      |           |
+|  |  city_mapping | fx_rates                                |           |
+|  +---------------------------------------------------------+           |
++------------------------------------------------------------------------+
+       |                                      |
+  +----v------+                      +--------v--------+
+  | Frontend  |                      | Eval Framework  |
+  | Employee  |                      | YAML test cases |
+  | Manager   |                      | Agent behavior  |
+  | Finance   |                      | verification    |
+  +-----------+                      +-----------------+
 ```
 
-### 3. AmbiguityDetector — 规则层之上捕获规则漏判
+## 5-Skill Compliance Pipeline
 
-五维加权评分模型（0-100分）：
+After each expense submission, the backend asynchronously executes 5 Skills, all orchestrated by `workflow.yaml`:
 
-| 因素 | 权重 | 触发条件 |
-|------|------|----------|
-| 描述模糊度 | 25% | 描述 <10字 或含泛化词（"其他""杂项""费用"） |
-| 金额边界 | 20% | 金额在限额的 90%-110% 区间 |
-| 模式异常 | 25% | 7天内 ≥3笔同类型 ±15% 金额 |
-| 时间异常 | 15% | 周末的餐费/交通费 |
-| 城市不匹配 | 15% | 城市名未识别 或 标准化前后不一致 |
+| Skill | Function | Key Capabilities |
+|-------|----------|-----------------|
+| **01 Receipt Validation** | Invoice format, header, dedup, date checks | Global unique invoice number constraint; city name normalization ("SH"/"Shanghai" → unified) |
+| **02 Approval Chain** | Build approval chain by expense type x amount x employee level | Timeout escalation (24h remind → 48h escalate → 72h auto-escalate); level exemptions |
+| **03 Compliance Check** | Per-line-item A/B/C compliance + AmbiguityDetector | 5-factor ambiguity scoring (description vagueness / amount boundary / pattern anomaly / time anomaly / city mismatch); score >50 triggers Claude deep analysis |
+| **04 Voucher Generation** | Accounting entries, VAT splitting | Auto-split input tax for special VAT invoices; debit-credit balance validation |
+| **05 Payment Execution** | 5-point pre-check + payment simulation | >=5000 bank transfer, <5000 petty cash |
 
-评分 → 决策：`<30` 自动通过 / `30-70` 人工复核 / `>70` 建议拒绝
+**Shield Mechanism:** When Skill-03's ambiguity score triggers human review (30-70) or suggests rejection (>70), the pipeline stops and marks `PENDING_REVIEW`, awaiting manual intervention.
 
-## 架构
+**Configuration-Driven:** Skip approval by setting `workflow.yaml: approval.enabled: false`; change expense limits by editing numbers in `policy.yaml` — zero code changes to adapt for different clients.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    main.py (入口)                        │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│              ExpenseController (总控)                     │
-│         读取 workflow.yaml 编排以下 5 个 skill            │
-│                                                          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
-│  │ Skill-01 │→│ Skill-02 │→│ Skill-03 │→ ...           │
-│  │ 发票验证 │  │ 审批流程 │  │ 合规审查 │               │
-│  └──────────┘  └──────────┘  └─────┬────┘               │
-│                                     │                    │
-│                          ┌──────────▼─────────┐          │
-│                          │ AmbiguityDetector   │          │
-│                          │ 五维模糊评分模型    │          │
-│                          │ score > 30 → Shield │          │
-│                          └────────────────────┘          │
-│                                                          │
-│  ┌──────────┐  ┌──────────┐                              │
-│  │ Skill-04 │→│ Skill-05 │                              │
-│  │ 凭证生成 │  │ 付款执行 │                              │
-│  └──────────┘  └──────────┘                              │
-└──────────────────────────────────────────────────────────┘
-         │                    │                  │
-┌────────▼────────┐ ┌────────▼────────┐ ┌───────▼────────┐
-│  PolicyEngine   │ │ CityNormalizer  │ │  ConfigLoader  │
-│  (规则引擎)     │ │  (城市标准化)   │ │  (配置单例)    │
-└─────────────────┘ └─────────────────┘ └────────────────┘
-         │                    │                  │
-┌────────▼────────────────────▼──────────────────▼────────┐
-│                    YAML 配置层                           │
-│  policy.yaml · approval_flow.yaml · expense_types.yaml  │
-│  city_mapping.yaml · workflow.yaml                       │
-└─────────────────────────────────────────────────────────┘
-```
+## Conversational Agent
 
-## 项目结构
+Three Agent roles, each with independent tool whitelists (preventing prompt injection):
+
+| Role | Scenario | Available Tools |
+|------|----------|----------------|
+| **employee_submit** | Employee filling reimbursement | OCR extraction, category suggestion, invoice dedup, draft editing, budget query |
+| **employee_qa** | Employee querying history | View recent expenses, expense details, spend summary, budget status (read-only) |
+| **manager_explain** | Manager approval assistance | View pending expenses, employee history → output risk assessment + approval recommendation |
+
+**LLM Abstraction:** Defaults to MockLLM (deterministic state machine, no API Key needed, ideal for demo and testing). Set `OPENAI_API_KEY` + `AGENT_USE_REAL_LLM=1` to switch to GPT-4o.
+
+## Approval & Budget Workflow
+
+### State Machine
 
 ```
-concurshield-agent/
-├── main.py                       # 入口：跑通7个测试场景
-├── config/
-│   ├── __init__.py               # ConfigLoader（全局单例）
-│   ├── policy.yaml               # 费用标准、城市分级、员工等级限额
-│   ├── approval_flow.yaml        # 审批矩阵、超时升级机制
-│   ├── expense_types.yaml        # 费用类型、会计科目、增值税配置
-│   ├── city_mapping.yaml         # 城市名标准化映射
-│   └── workflow.yaml             # 流程编排（启用/禁用/失败策略）
-├── models/
-│   ├── expense.py                # 全部数据模型
-│   └── enums.py                  # 枚举（含 FinalStatus）
-├── skills/
-│   ├── skill_01_receipt.py       # 四重发票校验
-│   ├── skill_02_approval.py      # 审批链+超时模拟
-│   ├── skill_03_compliance.py    # A/B/C 合规判定 + AmbiguityDetector
-│   ├── skill_04_voucher.py       # 记账凭证+增值税拆分
-│   └── skill_05_payment.py       # 五重预校验+付款模拟
-├── agent/
-│   ├── controller.py             # ExpenseController（workflow 编排引擎）
-│   └── ambiguity_detector.py     # 五维模糊评分模型
-├── rules/
-│   ├── policy_engine.py          # 策略引擎（配置驱动，零硬编码）
-│   └── city_normalizer.py        # 城市名标准化
-├── mock_data/
-│   └── sample_reports.py         # 7个测试场景工厂函数
-└── tests/
-    └── test_full_flow.py         # 7场景端到端 + 单元测试
+processing → reviewed → manager_approved → finance_approved → exported
+                              |                    |
+                          rejected              rejected
 ```
 
-## 配置示例
+### Budget Control
 
-### 改费用限额（不碰代码）
+Each cost center has quarterly budgets, checked in real-time on submission:
+- **info** (75%-95%): approaching budget warning
+- **blocked** (>=95%): auto-blocked, requires finance unlock
+- **over_budget** (>100%): over-budget alert
+
+## Role-Based Access Control (RBAC)
+
+| Role | Capabilities |
+|------|-------------|
+| **employee** | Submit expenses, view own expenses, chat assistant |
+| **manager** | Approve team expenses, view AI explanation cards |
+| **finance_admin** | Finance approval, unlock budget blocks, export vouchers, bulk operations |
+| **admin** | Employee management, policy configuration, audit logs, budget settings |
+
+## Eval Framework
+
+YAML-defined test cases to verify Agent behavior correctness:
 
 ```yaml
-# policy.yaml — 只改数字
-limits:
-  accommodation_per_night:
-    tier_1: { L1: 500, L2: 700, L3: 1000, L4: 不限 }  # ← 改这里
+# Example: verify QA Agent routing
+- name: monthly_spend_query
+  agent_role: employee_qa
+  input: "How much did I spend this month?"
+  expect:
+    tool_calls_include: ["get_spend_summary"]
+    tool_calls_exclude: ["update_draft_field"]
 ```
 
-### 跳过审批（不碰代码）
+Coverage dimensions:
+- **Agent Routing**: natural language → correct tool calls
+- **Risk Tiering**: T1 → recommend approve, T3 → recommend review, T4 → recommend reject
+- **RBAC Enforcement**: employee cannot call explain endpoint (403)
+- **Whitelist Security**: QA Agent rejects write tools (even if LLM is prompt-injected)
+- **Deterministic Rules**: fraud detection rule input/output validation
 
-```yaml
-# workflow.yaml — 改 enabled
-pipeline:
-  - skill: approval
-    enabled: false   # ← 改这里
+## Project Structure
+
+```
+backend/
+  main.py                          # FastAPI entry point
+  config.py                        # DATABASE_URL and env config
+  storage.py                       # File storage abstraction
+  api/
+    middleware/auth.py              # RBAC auth middleware
+    routes/
+      submissions.py               # Expense submission + 5-Skill pipeline trigger
+      chat.py                      # Chat Agent (3 roles)
+      reports.py                   # Expense report management
+      approvals.py                 # Manager approval
+      finance.py                   # Finance approval + voucher export
+      budget.py                    # Budget management
+      fx.py                        # Foreign currency conversion
+      admin.py                     # Admin policy configuration
+      employees.py                 # Employee CRUD
+      ocr.py                       # OCR recognition API
+      eval.py                      # Eval dashboard API
+  db/store.py                      # SQLAlchemy async ORM + CRUD
+  quick/
+    pipeline.py                    # Quick pipeline orchestration
+    layer_decision.py              # Layered decision engine
+    finalize.py                    # Draft -> formal submission conversion
+  services/
+    fraud_rules.py                 # Deterministic fraud detection rules
+    llm_fraud_analyzer.py          # LLM fraud analysis
+    fx_service.py                  # Exchange rate service
+    config_loader.py               # YAML config loader
+    trace.py                       # Call chain tracing
+  tests/
+    eval_datasets/                 # Eval YAML test datasets
+    graders/                       # Custom graders
+    test_*.py                      # Unit + integration tests
+agent/
+  controller.py                    # ExpenseController - workflow orchestration
+  ambiguity_detector.py            # 5-factor scoring + Claude API deep analysis
+skills/
+  skill_01_receipt.py              # 4-layer receipt validation
+  skill_02_approval.py             # Approval chain + timeout escalation
+  skill_03_compliance.py           # A/B/C compliance judgment + Shield
+  skill_04_voucher.py              # Accounting voucher + VAT splitting
+  skill_05_payment.py              # 5-point pre-check + payment simulation
+config/
+  policy.yaml                      # Expense limits, city tiers, employee level caps
+  approval_flow.yaml               # Approval matrix, timeout escalation rules
+  expense_types.yaml               # Expense types, accounting codes, VAT config
+  workflow.yaml                    # Pipeline orchestration (enable/disable/fail)
+  city_mapping.yaml                # City name normalization mapping
+  fx_rates.yaml                    # Foreign exchange rates
+frontend/
+  employee/                        # Employee: submit, drafts, reports, history
+  manager/                         # Manager: approval queue
+  finance/                         # Finance: review, export
+  admin/                           # Admin: policy, employees, audit logs
+  eval/                            # Eval dashboard
+  shared/                          # Common JS/CSS, API wrapper, auth
+models/                            # Data models (Pydantic)
+rules/                             # Policy engine + city normalization
+mock_data/                         # 7 test scenario factory functions
+scripts/seed_demo_data.py          # Demo data seed script
+Dockerfile                         # Container deployment
+docker-compose.yml                 # Docker Compose orchestration
+requirements.txt                   # Python dependencies
 ```
 
-### 新增费用类型（不碰代码）
-
-```yaml
-# expense_types.yaml — 加配置
-expense_types:
-  training:
-    name_zh: 培训费
-    subtypes:
-      - id: external_training
-        name_zh: 外部培训
-        requires_invoice: true
-        accounting_debit: 管理费用-培训费
-```
-
-## 运行方式
-
-### 方式一：Web UI（推荐）🌐
+## Quick Start
 
 ```bash
-pip install pyyaml flask
+# Install dependencies
+pip install -r requirements.txt
 
-python app.py
-# 浏览器打开 http://localhost:5000
+# Start backend (dev mode)
+uvicorn backend.main:app --reload --port 8000
+
+# Access points
+# Employee:  http://localhost:8000/employee/quick.html
+# Manager:   http://localhost:8000/manager/queue.html
+# Finance:   http://localhost:8000/finance/review.html
+# Admin:     http://localhost:8000/admin/dashboard.html
+# Eval:      http://localhost:8000/eval/dashboard.html
+# API Docs:  http://localhost:8000/docs
 ```
 
-Web UI 提供完整的交互界面：
-- **左侧栏**：7 个预设场景卡片（Case 5/6/7 标注 ★ Showcase）
-- **主区域**：选中场景 → 运行审核 → 实时展示报销单详情 / 5 步流水线 / 最终状态
-- **Shield 报告**：当模糊检测触发时，展示触发因素、LLM 深度分析（风险等级、风险点、需补充材料）
-- **Case 5 特殊区**：展示注入历史数据后 score 从 67.5 → 92.5 的对比
-- **中文处理日志**：实时显示每一步的中文日志
-- **批量运行**：一键跑全部 7 个场景并对比结果
-
-### 方式二：CLI Demo
+### Environment Variables
 
 ```bash
-pip install pyyaml
+# Required
+DATABASE_URL=sqlite+aiosqlite:///./concurshield.db  # Default; use PostgreSQL in production
 
-python main.py                                # 跑全部 7 个场景
-python -m unittest tests.test_full_flow -v    # 跑 56 个单元测试
+# Optional - AI features
+ANTHROPIC_API_KEY=sk-...        # AmbiguityDetector deep analysis (triggered when score > 50)
+OPENAI_API_KEY=sk-...           # Chat Agent uses GPT-4o (default MockLLM needs no key)
+AGENT_USE_REAL_LLM=1            # Enable real LLM (default off, uses deterministic MockLLM)
 ```
 
-### 方式三：静态 Dashboard
-
-打开 `dashboard.html` 查看 7 个场景的汇总可视化（Chart.js 饼图 + 柱图 + 配置展示）。
-
-### 可选：启用 LLM 深度语义分析
-
-当 `ambiguity_score > 50` 时，AmbiguityDetector 会调用 LLM 做深度合规审计。
-支持多个提供商（优先级 MiniMax → Claude → fallback 规则模型）。
-
-**使用 MiniMax M2**（OpenAI 兼容接口）：
+## Running Tests
 
 ```bash
-pip install openai
+# Unit tests
+python -m pytest backend/tests/ -v
 
-# Linux/macOS
-export MINIMAX_API_KEY=你的key
-# 可选：自定义 base_url 和 model
-export MINIMAX_BASE_URL=https://api.minimaxi.com/v1   # 默认（国际站）
-export MINIMAX_MODEL=MiniMax-M2                       # 默认
+# Eval assessment
+python -m pytest backend/tests/test_agent_eval.py -v
 
-# Windows CMD
-set MINIMAX_API_KEY=你的key
-set MINIMAX_BASE_URL=https://api.minimaxi.com/v1
-set MINIMAX_MODEL=MiniMax-M2
-
-# Windows PowerShell
-$env:MINIMAX_API_KEY="你的key"
+# Full flow tests (7 scenarios)
+python -m pytest tests/test_full_flow.py -v
 ```
 
-> 如果你用的是 MiniMax 国内站，把 `MINIMAX_BASE_URL` 改成 `https://api.minimax.chat/v1`。
-> 模型 ID 以 MiniMax 控制台显示为准。
+## Tech Stack
 
-**使用 Claude**：
-
-```bash
-pip install anthropic
-export ANTHROPIC_API_KEY=你的key
-```
-
-**都不配置** → 自动 fallback 到规则评分模型（零依赖可用）。
-
-## 测试场景
-
-| Case | 场景 | 预期结果 | 验证点 |
-|------|------|----------|--------|
-| 1 | 正常报销 L1上海 480+80 | COMPLETED | 全A，5步全过 |
-| 2 | 重复发票 | REJECTED | Skill-01拦截，不进审批 |
-| 3 | 超标拒绝 L1成都住宿420(限350) | REJECTED | 超70>50，C级 |
-| 4 | 警告通过 L1成都住宿380(限350) | COMPLETED | 超30≤50，B级 |
-| 5 | Shield showcase | PENDING_REVIEW | 城市标准化+4因素触发 |
-| 6 | 模式异常 3笔相似餐费 | human_review | 规则A级但模式异常 |
-| 7 | 等级差异 同¥500 L1/L2 | L1拒绝/L2通过 | 配置驱动验证 |
+- **Backend**: FastAPI, SQLAlchemy (async), aiosqlite/asyncpg
+- **AI**: Claude API (AmbiguityDetector), OpenAI GPT-4o (Chat Agent), MockLLM (default)
+- **Frontend**: Vanilla HTML/JS (no framework dependencies)
+- **Database**: SQLite (dev) / PostgreSQL (production)
+- **Config**: YAML configuration-driven (policy, workflow, approval, expense types, city mapping)
