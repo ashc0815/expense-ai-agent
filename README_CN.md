@@ -24,50 +24,38 @@ ExpenseFlow 模拟了一套完整的企业报销系统：员工上传发票 -> A
 ## 架构总览
 
 ```
-                      +------------------------------------------+
-                      |           3 种 Agent 形态                 |
-                      |                                          |
-  员工 submit 页 ----->  Agent 1: 全交互式 Chat (SSE)            |
-  上传发票，AI 填字段     agent_role = employee_submit             |
-                      |  tools: extract / suggest / check_dup /  |
-                      |         get_history / update_draft /     |
-                      |         check_budget                     |
-                      +------------------+-----------------------+
-                                         | 用户点"提交"
-                                         v
-                               POST /api/submissions
-                                         | BackgroundTask
-                                         v
-                         +-------------------------------+
-                         |     5-Skill 审核 Workflow      |
-                         |  skill_01 发票验证             |
-                         |  skill_02 审批链构建           |
-                         |  skill_03 合规 + AmbiguityDet  |
-                         |  skill_04 凭证生成             |
-                         |  skill_05 付款执行             |
-                         +---------------+---------------+
-                                         | tier / risk_score / timeline[0:3]
-                                         v status = reviewed
-  +----------------------------------------------------------+
-  |                    审批流                                 |
-  |  经理审批  POST /api/submissions/{id}/approve             |
-  |         -> append timeline[3]: 凭证已生成                 |
-  |                    |                                      |
-  |  财务审批  POST /api/finance/submissions/{id}/approve     |
-  |         -> append timeline[4]: 付款已执行                 |
-  +----------------------------------------------------------+
-
-  员工 my-reports 页 --->  Agent 2: 只读 QA Drawer (SSE, stateless)
-                         agent_role = employee_qa
-                         tools: get_recent / get_detail /
-                                get_summary / get_budget
-                         [无任何写操作，prompt injection 无法写 DB]
-
-  经理/财务 审批页 ----->  Agent 3: 嵌入式 AI 解释卡 (单次 JSON)
-                         agent_role = manager_explain
-                         tools: get_submission_for_review /
-                                get_employee_history
-                         [10 秒/单决策，不是对话，不降低审批吞吐]
+员工提交发票
+  |
+  v
++--------------------------- FastAPI Backend ----------------------------+
+|                                                                        |
+|  +--------------+    +--------------------------------------+          |
+|  |  Chat Agent  |    |     5-Skill 合规审核管道              |          |
+|  |              |    |                                      |          |
+|  | - Submit     |    |  发票验证 -> 审批链 -> 合规检查        |          |
+|  | - Q&A        |    |            | AmbiguityDetector       |          |
+|  | - Explain    |    |  凭证生成 -> 付款执行                 |          |
+|  +------+-------+    +--------------+-----------------------+          |
+|         |                           |                                  |
+|  +------v---------------------------v--------------------------+       |
+|  |                     数据层                                  |       |
+|  |  SQLAlchemy Async | Submissions | Drafts | Budgets          |       |
+|  |  Employees | AuditLogs | CostCenterBudgets                  |       |
+|  +-------------------------------------------------------------+       |
+|                          |                                             |
+|  +-----------------------v---------------------------------+           |
+|  |                  YAML 配置层                             |           |
+|  |  policy | approval_flow | expense_types | workflow      |           |
+|  |  city_mapping | fx_rates                                |           |
+|  +---------------------------------------------------------+           |
++------------------------------------------------------------------------+
+       |                                      |
+  +----v------+                      +--------v--------+
+  | 前端       |                      | Eval 评估框架   |
+  | 员工端     |                      | YAML 测试用例   |
+  | 经理端     |                      | Agent 行为      |
+  | 财务端     |                      | 验证            |
+  +-----------+                      +-----------------+
 ```
 
 ---
