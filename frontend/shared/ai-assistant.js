@@ -80,27 +80,29 @@
   document.head.appendChild(style);
 
   // ── Inject HTML ──
+  const _t = window.t || (k => k);
   const wrapper = document.createElement("div");
+  const welcomeText = _t("ai.welcome-qa").replace(/\n/g, "<br>");
   wrapper.innerHTML = `
     <div class="ai-overlay" id="ai-overlay"></div>
-    <button class="ai-fab" id="ai-fab" title="AI 助手">💡</button>
+    <button class="ai-fab" id="ai-fab" title="${_t("ai.title")}">💡</button>
     <div class="ai-drawer" id="ai-drawer">
       <div class="ai-drawer-header">
-        <h3>AI 报销助手</h3>
+        <h3>${_t("ai.title")}</h3>
         <button class="ai-drawer-close" id="ai-close">✕</button>
       </div>
       <div class="ai-messages" id="ai-messages">
-        <div class="ai-msg assistant">你好！我是报销助手，可以帮你：<br>• 查询历史报销记录<br>• 查看预算使用情况<br>• 解答报销相关问题</div>
+        <div class="ai-msg assistant">${welcomeText}</div>
       </div>
       <div class="ai-suggestions" id="ai-suggestions">
-        <button data-q="我这个月报了多少钱？">月度报销</button>
-        <button data-q="我的预算还剩多少？">预算余额</button>
-        <button data-q="最近有重复报销吗？">查重复</button>
-        <button data-q="交通费报销政策是什么？">报销政策</button>
+        <button data-q="${_t("ai.sug-monthly-q")}">${_t("ai.sug-monthly")}</button>
+        <button data-q="${_t("ai.sug-budget-q")}">${_t("ai.sug-budget")}</button>
+        <button data-q="${_t("ai.sug-dup-q")}">${_t("ai.sug-dup")}</button>
+        <button data-q="${_t("ai.sug-policy-q")}">${_t("ai.sug-policy")}</button>
       </div>
       <div class="ai-input-bar">
-        <input id="ai-input" placeholder="问我任何报销问题…">
-        <button id="ai-send-btn">发送</button>
+        <input id="ai-input" placeholder="${_t("ai.placeholder-qa")}">
+        <button id="ai-send-btn">${_t("ai.send")}</button>
       </div>
     </div>`;
   document.body.appendChild(wrapper);
@@ -140,7 +142,7 @@
 
     const aDiv = document.createElement("div");
     aDiv.className = "ai-msg assistant";
-    aDiv.textContent = "思考中…";
+    aDiv.textContent = _t("ai.thinking");
     msgBox.appendChild(aDiv);
     msgBox.scrollTop = msgBox.scrollHeight;
 
@@ -192,7 +194,7 @@
         chatHistory.push({ role: "assistant", content: fullText });
       }
     } catch (err) {
-      aDiv.innerHTML = '<span style="color:#ef4444">请求失败: ' + esc(err.message) + "</span>";
+      aDiv.innerHTML = '<span style="color:#ef4444">' + esc(_t("ai.request-fail")) + esc(err.message) + "</span>";
     } finally {
       streaming = false;
       document.getElementById("ai-send-btn").disabled = false;

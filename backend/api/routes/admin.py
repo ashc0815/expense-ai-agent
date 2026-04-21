@@ -28,22 +28,22 @@ router = APIRouter()
 
 # ── 内存策略存储（生产可换 DB/Redis）────────────────────────────
 _POLICY: dict = {
-    "meal_limit_cny": 200.0,
-    "transport_limit_cny": 500.0,
-    "accommodation_limit_cny": 800.0,
+    "category_limits": {
+        "meal": 200.0,
+        "transport": 500.0,
+        "accommodation": 800.0,
+    },
     "max_amount_cny": 5000.0,
     "allowed_categories": ["meal", "transport", "accommodation", "entertainment", "other"],
     "require_receipt_above_cny": 100.0,
     "auto_approve_below_cny": 50.0,
-    # ── GL 账户映射 (类别 → 科目号)，提交时自动落库 ──
     "gl_mapping": {
-        "meal":          "6602.02",   # 业务招待费 - 餐饮
-        "transport":     "6601.03",   # 差旅费 - 交通
-        "accommodation": "6601.04",   # 差旅费 - 住宿
-        "entertainment": "6602.01",   # 业务招待费 - 招待
-        "other":         "6603.99",   # 其他费用
+        "meal":          "6602.02",
+        "transport":     "6601.03",
+        "accommodation": "6601.04",
+        "entertainment": "6602.01",
+        "other":         "6603.99",
     },
-    # ── 项目库 (简单字符串列表，员工提交时下拉选)──
     "projects": [
         {"code": "P-2026-A1", "name": "AI 防欺诈平台"},
         {"code": "P-2026-A2", "name": "ERP 集成升级"},
@@ -52,12 +52,11 @@ _POLICY: dict = {
 
 
 class PolicyUpdate(BaseModel):
-    meal_limit_cny: Optional[float] = None
-    transport_limit_cny: Optional[float] = None
-    accommodation_limit_cny: Optional[float] = None
+    category_limits: Optional[dict] = None
     max_amount_cny: Optional[float] = None
     require_receipt_above_cny: Optional[float] = None
     auto_approve_below_cny: Optional[float] = None
+    allowed_categories: Optional[list] = None
     gl_mapping: Optional[dict] = None
     projects: Optional[list] = None
 

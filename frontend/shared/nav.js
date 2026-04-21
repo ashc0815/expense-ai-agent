@@ -31,7 +31,6 @@
   function _buildNav(user) {
     // Resolve _t lazily at render time so i18n.js is guaranteed to have run
     const _t      = global.t || (k => k);
-    const devOn   = global.auth && global.auth.isDev();
     const curLang = (global.i18n && global.i18n.lang) || "zh";
     const isEn    = curLang === "en";
 
@@ -44,13 +43,6 @@
       return `<a href="${item.href}" class="nav-link${active ? " active" : ""}">
         ${_t(item.key)}</a>`;
     }).join("");
-
-    const initials = (user.name || user.id || "?")
-      .split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
-
-    const primaryRole = userRoles.includes("finance_admin") ? "finance_admin"
-      : userRoles.includes("manager") ? "manager" : "employee";
-    const roleKey = ROLE_KEYS[primaryRole] || "role.employee";
     const saved = localStorage.getItem("mock_role") || "employee";
 
     return `
@@ -68,14 +60,6 @@
       <option value="manager"       ${saved === "manager"       ? "selected" : ""}>👔 ${_t("role.manager")}</option>
       <option value="finance_admin" ${saved === "finance_admin" ? "selected" : ""}>💼 ${_t("role.finance_admin")}</option>
     </select>
-    <span class="role-chip">${_t(roleKey)}</span>
-    <div class="user-avatar">${initials}</div>
-    <button class="btn-dev-toggle"
-            title="${devOn ? (isEn ? "Disable Dev Mode" : "关闭 Dev 模式") : (isEn ? "Enable Dev Mode" : "开启 Dev 模式")}"
-            onclick="auth.setDev(!auth.isDev()); location.reload();"
-            style="padding:.3rem .5rem; border:1px solid ${devOn ? "#6366f1" : "#d1d5db"}; border-radius:4px; font-size:.8rem; background:${devOn ? "#eef2ff" : "white"}; cursor:pointer; color:${devOn ? "#4338ca" : "#6b7280"}">
-      🔧${devOn ? " ON" : ""}
-    </button>
     <button
       onclick="i18n.setLang('${isEn ? "zh" : "en"}')"
       title="${isEn ? "切换到中文" : "Switch to English"}"

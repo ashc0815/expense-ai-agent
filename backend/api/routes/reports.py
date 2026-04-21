@@ -778,6 +778,29 @@ EDITABLE_FIELDS = {
 }
 
 
+class RenameBody(BaseModel):
+    title: str
+
+
+@router.patch("/{report_id}/title")
+async def rename_report(
+    report_id: str,
+    body: RenameBody,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await get_report(db, report_id)
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if report.employee_id != ctx.user_id:
+        raise HTTPException(403, "Not your report")
+    if report.status not in ("open", "needs_revision"):
+        raise HTTPException(400, "Cannot rename a submitted report")
+    report.title = body.title.strip() or report.title
+    await db.commit()
+    return {"ok": True, "title": report.title}
+
+
 class PatchLineBody(BaseModel):
     field: str
     value: Any

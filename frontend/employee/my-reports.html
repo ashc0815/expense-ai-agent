@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>我的报销 — ExpenseFlow</title>
+  <title data-i18n="myreports.title">我的报销</title>
   <link rel="stylesheet" href="/shared/styles.css">
   <script>
     window.AUTH_MODE = "mock";
@@ -52,7 +52,7 @@
     .line .d { color: #94a3b8; font-size: .75rem; margin-right: .8rem; }
     .line .a { font-weight: 700; color: #0f172a; min-width: 90px; text-align: right; }
     .line.draft { background: #fffbeb; }
-    .line.draft .m::after { content: " · 未扫描完成"; color: #b45309; font-size: .7rem; }
+    .line.draft .m::after { content: attr(data-draft-suffix); color: #b45309; font-size: .7rem; }
     .empty-lines { padding: 1.2rem; color: #94a3b8; text-align: center; font-size: .8rem; }
 
     .report-foot {
@@ -87,15 +87,15 @@
 
   <main class="reports-wrap">
     <div class="top-bar">
-      <h1>我的报销单</h1>
+      <h1 data-i18n="myreports.title">我的报销单</h1>
       <div style="display:flex; gap:.5rem">
-        <button class="btn-ghost" onclick="newReport()">+ 新建报销单</button>
-        <a href="/employee/quick.html" class="btn-primary" style="text-decoration:none">快速添加发票 →</a>
+        <button class="btn-ghost" onclick="newReport()" data-i18n="myreports.new-btn">+ 新建报销单</button>
+        <a href="/employee/quick.html" class="btn-primary" style="text-decoration:none" data-i18n="myreports.quick-link">快速添加发票 →</a>
       </div>
     </div>
 
     <div id="reports-body">
-      <div style="text-align:center; padding:2rem; color:#94a3b8">加载中…</div>
+      <div style="text-align:center; padding:2rem; color:#94a3b8" data-i18n="myreports.loading">加载中…</div>
     </div>
   </main>
 
@@ -103,16 +103,18 @@
 const authH = async () => (window.auth ? await window.auth.getHeaders() : {});
 const fmtMoney = (c, a) => `${c || "CNY"} ${Number(a || 0).toFixed(2)}`;
 const STATUS_LABEL = {
-  open: "开放中", pending: "审批中",
-  approved: "已批准", manager_approved: "经理已批", finance_approved: "财务已批",
-  rejected: "已拒绝", needs_revision: "需修改", withdrawn: "已撤回", exported: "已入账",
+  open: t('myreports.status-open'), pending: t('myreports.status-pending'),
+  approved: t('myreports.status-approved'), manager_approved: t('myreports.status-mgr'),
+  finance_approved: t('myreports.status-fin'),
+  rejected: t('myreports.status-rejected'), needs_revision: t('myreports.status-revision'),
+  withdrawn: t('myreports.status-withdrawn'), exported: t('myreports.status-exported'),
 };
 
 async function load() {
   const r = await fetch("/api/reports", { headers: await authH() });
   if (!r.ok) {
     document.getElementById("reports-body").innerHTML =
-      `<div style="text-align:center;padding:2rem;color:#dc2626">加载失败: ${r.status}</div>`;
+      `<div style="text-align:center;padding:2rem;color:#dc2626">${t('myreports.load-fail')}${r.status}</div>`;
     return;
   }
   const { items } = await r.json();
@@ -122,7 +124,7 @@ async function load() {
 function render(items) {
   const el = document.getElementById("reports-body");
   if (!items.length) {
-    el.innerHTML = `<div style="text-align:center;padding:2rem;color:#94a3b8">暂无报销单。点击「快速添加发票」开始。</div>`;
+    el.innerHTML = `<div style="text-align:center;padding:2rem;color:#94a3b8">${t('myreports.empty')}</div>`;
     return;
   }
   items.sort((a, b) => {
@@ -138,33 +140,34 @@ function renderCard(r) {
   const isPendingOrApproved = ["pending", "approved", "manager_approved", "finance_approved"].includes(r.status);
   const lines = (r.lines || []).concat((r.pending_drafts || []).map(d => ({...d, status: "draft"})));
   const lineCount = r.line_count + (r.pending_drafts || []).length;
+  const draftSuffix = t('myreports.draft-suffix');
   const linesHTML = lines.length === 0
-    ? `<div class="empty-lines">还没有费用，点击进入添加。</div>`
+    ? `<div class="empty-lines">${t('myreports.empty-lines')}</div>`
     : `<ul class="line-list">${lines.slice(0, 5).map(l => `
         <li class="line ${l.status === 'draft' ? 'draft' : ''}">
           <span class="d">${l.date || "—"}</span>
-          <span class="m">${l.merchant || "—"}</span>
+          <span class="m" data-draft-suffix="${draftSuffix}">${l.merchant || "—"}</span>
           <span class="a">${fmtMoney(l.currency, l.amount)}</span>
-        </li>`).join("")}${lines.length > 5 ? `<li class="line" style="color:#94a3b8;font-size:.8rem;justify-content:center">还有 ${lines.length - 5} 笔…</li>` : ""}</ul>`;
+        </li>`).join("")}${lines.length > 5 ? `<li class="line" style="color:#94a3b8;font-size:.8rem;justify-content:center">${t('myreports.more-lines').replace('{n}', lines.length - 5)}</li>` : ""}</ul>`;
 
   const total = `≈ ${fmtMoney(r.home_currency || "CNY", r.total_converted != null ? r.total_converted : (r.total_amount || 0))}`;
   const detailUrl = `/employee/report.html?report_id=${r.id}`;
   const actions = [];
   if (isOpen) {
-    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">查看详情</a>`);
-    actions.push(`<button class="btn-primary" onclick="event.stopPropagation();submitReport('${r.id}')" ${lines.length ? '' : 'disabled'}>提交</button>`);
+    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">${t('myreports.btn-detail')}</a>`);
+    actions.push(`<button class="btn-primary" onclick="event.stopPropagation();submitReport('${r.id}')" ${lines.length ? '' : 'disabled'}>${t('myreports.btn-submit')}</button>`);
   }
   if (isPendingOrApproved) {
-    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">查看详情</a>`);
-    actions.push(`<button class="btn-danger" onclick="event.stopPropagation();withdrawReport('${r.id}')">撤回</button>`);
+    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">${t('myreports.btn-detail')}</a>`);
+    actions.push(`<button class="btn-danger" onclick="event.stopPropagation();withdrawReport('${r.id}')">${t('myreports.btn-withdraw')}</button>`);
   }
   const isNeedsRevision = r.status === "needs_revision";
   if (isNeedsRevision) {
-    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">修改</a>`);
-    actions.push(`<button class="btn-primary" onclick="event.stopPropagation();resubmitReport('${r.id}')">重新提交</button>`);
+    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">${t('myreports.btn-edit')}</a>`);
+    actions.push(`<button class="btn-primary" onclick="event.stopPropagation();resubmitReport('${r.id}')">${t('myreports.btn-resubmit')}</button>`);
   }
   if (!isOpen && !isPendingOrApproved && !isNeedsRevision) {
-    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">查看详情</a>`);
+    actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">${t('myreports.btn-detail')}</a>`);
   }
 
   return `
@@ -172,39 +175,40 @@ function renderCard(r) {
       <div class="report-head">
         <div>
           <div class="report-title">${r.title}</div>
-          <div class="report-meta">${lineCount} 笔 · ${new Date(r.created_at).toLocaleDateString()}</div>
+          <div class="report-meta">${t('myreports.line-count').replace('{n}', lineCount)} · ${new Date(r.created_at).toLocaleDateString()}</div>
         </div>
         <span class="rstatus ${r.status}">${STATUS_LABEL[r.status] || r.status}</span>
       </div>
       ${linesHTML}
-      ${r.status === "needs_revision" && r.revision_reason ? `<div class="revision-banner">退回原因：${r.revision_reason}</div>` : ""}
+      ${r.status === "needs_revision" && r.revision_reason ? `<div class="revision-banner">${t('myreports.revision-reason')}${r.revision_reason}</div>` : ""}
       <div class="report-foot">
-        <div class="total">合计 ${total}</div>
+        <div class="total">${t('myreports.total-prefix')} ${total}</div>
         <div class="actions">${actions.join("")}</div>
       </div>
     </div>`;
 }
 
 async function newReport() {
-  const title = prompt("报销单名称：", `${new Date().getMonth()+1}月报销`);
+  const defaultTitle = `${new Date().getMonth()+1}${t('myreports.new-default')}`;
+  const title = prompt(t('myreports.new-prompt'), defaultTitle);
   if (title === null) return;
   const r = await fetch("/api/reports", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(await authH()) },
-    body: JSON.stringify({ title: title || "新建报销单" }),
+    body: JSON.stringify({ title: title || t('myreports.new-fallback') }),
   });
-  if (!r.ok) { alert("创建失败: " + r.status); return; }
+  if (!r.ok) { alert(t('myreports.create-fail') + r.status); return; }
   const body = await r.json();
   window.location.href = `/employee/report.html?report_id=${body.id}`;
 }
 
 async function submitReport(reportId) {
-  if (!confirm("确认提交这张报销单？提交后将进入审批流程。")) return;
+  if (!confirm(t('myreports.submit-confirm'))) return;
   const r = await fetch(`/api/reports/${reportId}/submit`, {
     method: "POST", headers: await authH(),
   });
   if (!r.ok) {
-    let msg = "提交失败: " + r.status;
+    let msg = t('myreports.submit-fail') + r.status;
     try {
       const body = await r.json();
       if (body.detail) msg = body.detail;
@@ -216,28 +220,28 @@ async function submitReport(reportId) {
 }
 
 async function withdrawReport(reportId) {
-  if (!confirm("确认撤回？所有发票将回到草稿状态，需重新提交审批。")) return;
+  if (!confirm(t('myreports.withdraw-confirm'))) return;
   const r = await fetch(`/api/reports/${reportId}/withdraw`, {
     method: "POST", headers: await authH(),
   });
   if (!r.ok) {
-    alert("撤回失败: " + r.status);
+    alert(t('myreports.withdraw-fail') + r.status);
     return;
   }
   const body = await r.json();
   if (body.was_approved) {
-    alert("已撤回（之前为已批准状态），经理将收到通知。");
+    alert(t('myreports.withdraw-was-approved'));
   }
   await load();
 }
 
 async function resubmitReport(reportId) {
-  if (!confirm("确认重新提交？所有发票将重新进入审核流程。")) return;
+  if (!confirm(t('myreports.resubmit-confirm'))) return;
   const r = await fetch(`/api/reports/${reportId}/resubmit`, {
     method: "POST", headers: await authH(),
   });
   if (!r.ok) {
-    let msg = "重新提交失败: " + r.status;
+    let msg = t('myreports.resubmit-fail') + r.status;
     try {
       const body = await r.json();
       if (body.detail) msg = body.detail;

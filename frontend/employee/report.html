@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>报销单详情 — ExpenseFlow</title>
+  <title data-i18n="report.title">报销单详情 — ExpenseFlow</title>
   <link rel="stylesheet" href="/shared/styles.css">
   <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
   <style>
@@ -15,6 +15,14 @@
       margin-bottom: 1.2rem;
     }
     .rp-title { font-size: 1.3rem; font-weight: 800; color: #0f172a; margin: 0; }
+    .rp-title-editable { cursor: pointer; border-bottom: 1px dashed transparent; transition: border-color .2s; }
+    .rp-title-editable:hover { border-bottom-color: #94a3b8; }
+    .rp-title-input {
+      font-size: 1.3rem; font-weight: 800; color: #0f172a; margin: 0;
+      border: 1px solid #e2e8f0; border-radius: 6px; padding: .1rem .4rem;
+      outline: none; width: 100%; box-sizing: border-box;
+    }
+    .rp-title-input:focus { border-color: #18b48e; }
     .rp-meta { color: #94a3b8; font-size: .8rem; margin-top: .25rem; }
     .rp-status {
       display: inline-block; padding: .2rem .6rem; border-radius: 6px;
@@ -179,11 +187,11 @@
 
 <main class="report-page">
   <div style="margin-bottom:.8rem">
-    <a href="/employee/my-reports.html" class="btn-outline" style="font-size:.8rem;padding:.3rem .6rem;text-decoration:none">← 返回报销单列表</a>
+    <a href="/employee/my-reports.html" class="btn-outline" style="font-size:.8rem;padding:.3rem .6rem;text-decoration:none" data-i18n="report.back-list">← 返回报销单列表</a>
   </div>
 
   <div id="report-content">
-    <div style="text-align:center;padding:3rem;color:#94a3b8">加载中…</div>
+    <div style="text-align:center;padding:3rem;color:#94a3b8" data-i18n="report.loading">加载中…</div>
   </div>
 </main>
 
@@ -191,7 +199,7 @@
 <div class="detail-overlay" id="detail-overlay" onclick="closeDetail()"></div>
 <div class="detail-panel" id="detail-panel">
   <div class="dp-header">
-    <h3>费用明细</h3>
+    <h3 data-i18n="report.detail-title">费用明细</h3>
     <button class="dp-close" onclick="closeDetail()">✕</button>
   </div>
   <div class="dp-body" id="detail-body"></div>
@@ -202,12 +210,8 @@ const urlParams = new URLSearchParams(window.location.search);
 const REPORT_ID = urlParams.get("report_id");
 if (!REPORT_ID) { window.location.href = "/employee/my-reports.html"; }
 
-const CAT_LABELS = { meal:"餐饮", transport:"交通", accommodation:"住宿", entertainment:"招待", other:"其他" };
-const STATUS_LABELS = {
-  open:"开放中", pending:"审批中", manager_approved:"经理已批", finance_approved:"财务已批",
-  approved:"已批准", rejected:"已拒绝", exported:"已入账",
-  draft:"扫描中", in_report:"已保存", processing:"审核中", reviewed:"已审核",
-};
+function catLabel(c) { return i18n && i18n.cat ? i18n.cat(c) : c; }
+function statusLabel(s) { return i18n && i18n.status ? i18n.status(s) : s; }
 
 let reportData = null;
 
@@ -219,7 +223,7 @@ async function loadReport() {
   const r = await fetch(`/api/reports/${REPORT_ID}`, { headers: await getAuth() });
   if (!r.ok) {
     document.getElementById("report-content").innerHTML =
-      `<div style="text-align:center;padding:3rem;color:#dc2626">加载失败: ${r.status}</div>`;
+      `<div style="text-align:center;padding:3rem;color:#dc2626">${t('report.load-fail')}: ${r.status}</div>`;
     return;
   }
   reportData = await r.json();
@@ -229,6 +233,7 @@ async function loadReport() {
 function render() {
   const rp = reportData;
   const isOpen = rp.status === "open";
+  const canRename = rp.status === "open" || rp.status === "needs_revision";
   const isPending = ["pending","manager_approved","finance_approved","approved"].includes(rp.status);
   const lines = (rp.lines || []);
   const drafts = (rp.pending_drafts || []).map(d => ({...d, _isDraft: true, status: "draft"}));
@@ -238,32 +243,35 @@ function render() {
   let html = `
     <div class="rp-header">
       <div>
-        <h1 class="rp-title">${rp.title}</h1>
+        ${canRename
+          ? `<h1 class="rp-title rp-title-editable" id="rp-title" onclick="startEditTitle()" title="${t('report.rename-hint')}">${rp.title} <span style="font-size:.7rem;color:#94a3b8;font-weight:400">✎</span></h1>`
+          : `<h1 class="rp-title">${rp.title}</h1>`
+        }
         <div class="rp-meta">
-          <span class="rp-status ${rp.status}">${STATUS_LABELS[rp.status] || rp.status}</span>
-          · ${allItems.length} 笔费用 · 创建于 ${new Date(rp.created_at).toLocaleDateString()}
-          ${rp.submitted_at ? ` · 提交于 ${new Date(rp.submitted_at).toLocaleDateString()}` : ""}
+          <span class="rp-status ${rp.status}">${statusLabel(rp.status)}</span>
+          · ${t('report.items-count').replace('{n}', allItems.length)} · ${t('report.created-at')} ${new Date(rp.created_at).toLocaleDateString()}
+          ${rp.submitted_at ? ` · ${t('report.submitted-at')} ${new Date(rp.submitted_at).toLocaleDateString()}` : ""}
         </div>
       </div>
       <div class="rp-actions">
-        ${isPending ? `<button class="btn-withdraw" onclick="withdrawReport()">撤回</button>` : ""}
-        ${isOpen ? `<button class="btn-submit" id="submit-btn" onclick="submitReport()" ${allItems.length === 0 ? 'disabled' : ''}>提交报销单</button>` : ""}
+        ${isPending ? `<button class="btn-withdraw" onclick="withdrawReport()">${t('report.withdraw-btn')}</button>` : ""}
+        ${isOpen ? `<button class="btn-submit" id="submit-btn" onclick="submitReport()" ${allItems.length === 0 ? 'disabled' : ''}>${t('report.submit-btn')}</button>` : ""}
       </div>
     </div>
 
     <div class="toolbar">
-      <div class="toolbar-left">费用明细 (${allItems.length})</div>
+      <div class="toolbar-left">${t('report.line-section')} (${allItems.length})</div>
       ${isOpen ? `
         <div class="add-menu">
-          <button class="add-btn" onclick="toggleAddMenu()">+ 添加费用 ▾</button>
+          <button class="add-btn" onclick="toggleAddMenu()">${t('report.add-expense')}</button>
           <div class="add-dropdown" id="add-dropdown">
             <a href="/employee/quick.html?report_id=${REPORT_ID}">
-              <div class="dd-label">📷 扫描发票</div>
-              <div class="dd-sub">拍照或上传发票，AI 自动识别</div>
+              <div class="dd-label">${t('report.scan-label')}</div>
+              <div class="dd-sub">${t('report.scan-sub')}</div>
             </a>
             <a href="/employee/quick.html?report_id=${REPORT_ID}">
-              <div class="dd-label">✏️ 手动创建</div>
-              <div class="dd-sub">上传或手动填写费用信息</div>
+              <div class="dd-label">${t('report.manual-label')}</div>
+              <div class="dd-sub">${t('report.manual-sub')}</div>
             </a>
           </div>
         </div>
@@ -274,8 +282,8 @@ function render() {
   if (allItems.length === 0) {
     html += `
       <div class="empty-state">
-        <div class="icon">📋</div>
-        <div>还没有费用。点击「添加费用」开始。</div>
+        <div class="icon">${t('report.empty-icon')}</div>
+        <div>${t('report.empty-msg')}</div>
       </div>
     `;
   } else {
@@ -283,12 +291,12 @@ function render() {
       <table class="exp-table">
         <thead>
           <tr>
-            <th class="col-date">日期</th>
-            <th class="col-receipt">凭证</th>
-            <th class="col-cat">类别</th>
-            <th>商户 / 说明</th>
-            <th class="col-amount">金额</th>
-            <th class="col-status">状态</th>
+            <th class="col-date">${t('report.th-date')}</th>
+            <th class="col-receipt">${t('report.th-receipt')}</th>
+            <th class="col-cat">${t('report.th-category')}</th>
+            <th>${t('report.th-merchant')}</th>
+            <th class="col-amount">${t('report.th-amount')}</th>
+            <th class="col-status">${t('report.th-status')}</th>
             ${isOpen || isPending ? '<th class="col-actions"></th>' : ''}
           </tr>
         </thead>
@@ -307,11 +315,11 @@ function render() {
         <tr onclick="showDetail('${item.id}', ${isDraft ? 'true' : 'false'})">
           <td class="col-date">${item.date || "—"}</td>
           <td class="col-receipt">${hasReceipt ? '<span class="receipt-icon">🧾</span>' : ''}</td>
-          <td class="col-cat"><span class="cat-badge">${CAT_LABELS[cat] || cat}</span></td>
+          <td class="col-cat"><span class="cat-badge">${catLabel(cat)}</span></td>
           <td>${item.merchant || "—"}${item.description ? ` <span style="color:#94a3b8;font-size:.75rem">· ${item.description}</span>` : ""}</td>
           <td class="col-amount">${currency} ${amt}</td>
-          <td class="col-status"><span class="line-status ${status}">${STATUS_LABELS[status] || status}</span></td>
-          ${isOpen || isPending ? `<td class="col-actions"><button class="delete-btn" onclick="event.stopPropagation();removeLine('${item.id}', ${isDraft})" title="删除">✕</button></td>` : ''}
+          <td class="col-status"><span class="line-status ${status}">${statusLabel(status)}</span></td>
+          ${isOpen || isPending ? `<td class="col-actions"><button class="delete-btn" onclick="event.stopPropagation();removeLine('${item.id}', ${isDraft})" title="${t('report.confirm-delete')}">✕</button></td>` : ''}
         </tr>
       `;
     }
@@ -319,22 +327,57 @@ function render() {
     html += `
         </tbody>
       </table>
-      <div class="total-row">合计 ≈ ${rp.home_currency || "CNY"} ${(rp.total_converted != null ? rp.total_converted : total).toFixed(2)}</div>
+      <div class="total-row">${t('report.total-prefix')} ${rp.home_currency || "CNY"} ${(rp.total_converted != null ? rp.total_converted : total).toFixed(2)}</div>
     `;
   }
 
   html += `
     <div class="bottom-bar">
-      <a href="/employee/my-reports.html" class="btn-outline">← 返回列表</a>
+      <a href="/employee/my-reports.html" class="btn-outline">${t('report.back-list-short')}</a>
       <div style="display:flex;gap:.5rem">
         ${isOpen && allItems.length > 0 ? `
-          <button class="btn-submit" onclick="submitReport()">提交报销单</button>
+          <button class="btn-submit" onclick="submitReport()">${t('report.submit-btn')}</button>
         ` : ""}
       </div>
     </div>
   `;
 
   document.getElementById("report-content").innerHTML = html;
+}
+
+// ── Inline title editing ─────────────────────────────────────
+function startEditTitle() {
+  const el = document.getElementById('rp-title');
+  if (!el) return;
+  const current = reportData.title || '';
+  el.outerHTML = `<input id="rp-title-input" class="rp-title-input" value="${current.replace(/"/g, '&quot;')}" autofocus>`;
+  const input = document.getElementById('rp-title-input');
+  input.focus();
+  input.select();
+  input.addEventListener('blur', () => saveTitle(input.value));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = current; input.blur(); }
+  });
+}
+
+async function saveTitle(newTitle) {
+  newTitle = newTitle.trim();
+  if (!newTitle || newTitle === reportData.title) {
+    render();
+    return;
+  }
+  try {
+    const r = await fetch(`/api/reports/${REPORT_ID}/title`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...(await getAuth()) },
+      body: JSON.stringify({ title: newTitle }),
+    });
+    if (r.ok) {
+      reportData.title = newTitle;
+    }
+  } catch {}
+  render();
 }
 
 // ── Add menu toggle ──────────────────────────────────────────
@@ -348,12 +391,12 @@ document.addEventListener("click", (e) => {
 
 // ── Submit report ────────────────────────────────────────────
 async function submitReport() {
-  if (!confirm("确认提交这张报销单？提交后将进入审批流程。")) return;
+  if (!confirm(t('report.confirm-submit'))) return;
   const r = await fetch(`/api/reports/${REPORT_ID}/submit`, {
     method: "POST", headers: await getAuth(),
   });
   if (!r.ok) {
-    let msg = "提交失败: " + r.status;
+    let msg = t('report.submit-fail') + ": " + r.status;
     try { const b = await r.json(); if (b.detail) msg = b.detail; } catch {}
     alert(msg);
     return;
@@ -363,24 +406,24 @@ async function submitReport() {
 
 // ── Withdraw report ──────────────────────────────────────────
 async function withdrawReport() {
-  if (!confirm("确认撤回？所有费用将回到草稿状态，需重新提交审批。")) return;
+  if (!confirm(t('report.confirm-withdraw'))) return;
   const r = await fetch(`/api/reports/${REPORT_ID}/withdraw`, {
     method: "POST", headers: await getAuth(),
   });
-  if (!r.ok) { alert("撤回失败: " + r.status); return; }
+  if (!r.ok) { alert(t('report.withdraw-fail') + ": " + r.status); return; }
   const body = await r.json();
-  if (body.was_approved) alert("已撤回（之前为已批准状态），经理将收到通知。");
+  if (body.was_approved) alert(t('report.withdraw-notify'));
   await loadReport();
 }
 
 // ── Remove line item ─────────────────────────────────────────
 async function removeLine(itemId, isDraft) {
-  if (!confirm("确认删除这条费用？")) return;
+  if (!confirm(t('report.confirm-delete'))) return;
   const r = await fetch(`/api/reports/${REPORT_ID}/lines/${itemId}`, {
     method: "DELETE", headers: await getAuth(),
   });
   if (!r.ok) {
-    let msg = "删除失败: " + r.status;
+    let msg = t('report.delete-fail') + ": " + r.status;
     try { const b = await r.json(); if (b.detail) msg = b.detail; } catch {}
     alert(msg);
     return;
@@ -407,10 +450,7 @@ function showDetail(itemId, isDraft) {
     html += `<img src="${item.receipt_url}" class="dp-receipt">`;
   }
 
-  const catOptions = [
-    {v:"meal",l:"餐饮"},{v:"transport",l:"交通"},{v:"accommodation",l:"住宿"},
-    {v:"entertainment",l:"招待"},{v:"other",l:"其他"}
-  ];
+  const catOptions = ["meal","transport","accommodation","entertainment","other"];
 
   const itemCurrency = item.currency || "CNY";
   const homeCurrency = reportData.home_currency || "CNY";
@@ -420,16 +460,16 @@ function showDetail(itemId, isDraft) {
     html += `<div id="dp-save-msg" style="display:none;font-size:.8rem;padding:.4rem .6rem;border-radius:6px;margin-bottom:.6rem"></div>`;
     html += `
       <div class="dp-field">
-        <label>商户名称 *</label>
+        <label>${t('report.dp-merchant')} *</label>
         <input id="dp-merchant" value="${item.merchant || ''}" class="dp-input" data-field="merchant">
       </div>
       <div class="dp-field" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
         <div>
-          <label>金额 *</label>
+          <label>${t('report.dp-amount')} *</label>
           <input id="dp-amount" type="number" step="0.01" value="${item.amount || ''}" class="dp-input" data-field="amount">
         </div>
         <div>
-          <label>货币</label>
+          <label>${t('report.dp-currency')}</label>
           <select id="dp-currency" class="dp-input" data-field="currency" onchange="onDetailCurrencyChange()">
             ${["CNY","AUD","USD","EUR","JPY","GBP"].map(c =>
               `<option value="${c}" ${(item.currency||'CNY')===c?'selected':''}>${c}</option>`
@@ -439,7 +479,7 @@ function showDetail(itemId, isDraft) {
       </div>
       ${showFx ? `
       <div id="fx-section" class="dp-field" style="background:#f0fdf9;padding:.6rem .8rem;border-radius:8px;margin-top:.3rem">
-        <label>汇率</label>
+        <label>${t('report.dp-fx-rate')}</label>
         <div style="display:flex;align-items:center;gap:.3rem;margin-top:.2rem">
           <span style="font-size:.85rem">1 ${itemCurrency} =</span>
           <input id="fx-rate-input" type="number" step="0.000001" class="dp-input"
@@ -448,89 +488,89 @@ function showDetail(itemId, isDraft) {
           <span style="font-size:.85rem">${homeCurrency}</span>
         </div>
         <div id="converted-preview" style="font-size:.82rem;color:#64748b;margin-top:.3rem">
-          折算金额: ≈ ${homeCurrency} ${item.converted_amount != null ? Number(item.converted_amount).toFixed(2) : '—'}
+          ${t('report.dp-converted')}: ≈ ${homeCurrency} ${item.converted_amount != null ? Number(item.converted_amount).toFixed(2) : '—'}
         </div>
       </div>
       ` : ''}
       <div class="dp-field" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
         <div>
-          <label>消费日期 *</label>
+          <label>${t('report.dp-date')} *</label>
           <input id="dp-date" type="date" value="${item.date || ''}" class="dp-input" data-field="date">
         </div>
         <div>
-          <label>费用类别 *</label>
+          <label>${t('report.dp-category')} *</label>
           <select id="dp-category" class="dp-input" data-field="category">
-            ${catOptions.map(c => `<option value="${c.v}" ${item.category===c.v?'selected':''}>${c.l}</option>`).join("")}
+            ${catOptions.map(c => `<option value="${c}" ${item.category===c?'selected':''}>${catLabel(c)}</option>`).join("")}
           </select>
         </div>
       </div>
       <div class="dp-field">
-        <label>税额</label>
+        <label>${t('report.dp-tax')}</label>
         <input id="dp-tax" type="number" step="0.01" value="${item.tax_amount != null ? item.tax_amount : ''}" class="dp-input" data-field="tax_amount">
       </div>
       <div class="dp-field" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
         <div>
-          <label>发票号码</label>
+          <label>${t('report.dp-inv-num')}</label>
           <input id="dp-inv-num" value="${item.invoice_number || ''}" class="dp-input" data-field="invoice_number">
         </div>
         <div>
-          <label>发票代码</label>
+          <label>${t('report.dp-inv-code')}</label>
           <input id="dp-inv-code" value="${item.invoice_code || ''}" class="dp-input" data-field="invoice_code">
         </div>
       </div>
       <div class="dp-field">
-        <label>项目代码</label>
+        <label>${t('report.dp-project')}</label>
         <input id="dp-project" value="${item.project_code || ''}" class="dp-input" data-field="project_code">
       </div>
       <div class="dp-field">
-        <label>备注说明</label>
+        <label>${t('report.dp-desc')}</label>
         <textarea id="dp-desc" class="dp-input" rows="2" data-field="description">${item.description || ''}</textarea>
       </div>
       <div style="display:flex;gap:.5rem;margin-top:.8rem">
-        <button class="btn-submit" style="font-size:.85rem;padding:.5rem 1rem" onclick="saveLineEdits('${itemId}')">保存修改</button>
-        <button class="btn-outline" style="font-size:.85rem;padding:.5rem 1rem" onclick="closeDetail()">取消</button>
+        <button class="btn-submit" style="font-size:.85rem;padding:.5rem 1rem" onclick="saveLineEdits('${itemId}')">${t('report.dp-save')}</button>
+        <button class="btn-outline" style="font-size:.85rem;padding:.5rem 1rem" onclick="closeDetail()">${t('report.dp-cancel')}</button>
       </div>
     `;
   } else {
     const fields = [
-      ["商户名称", item.merchant],
-      ["金额", item.amount != null ? `${item.currency || 'CNY'} ${Number(item.amount).toFixed(2)}` : "—"],
-      ["日期", item.date],
-      ["费用类别", CAT_LABELS[item.category] || item.category],
-      ["税额", item.tax_amount != null ? Number(item.tax_amount).toFixed(2) : "—"],
-      ["发票号码", item.invoice_number],
-      ["发票代码", item.invoice_code],
-      ["项目代码", item.project_code],
-      ["备注", item.description],
-      ["部门", item.department],
-      ["成本中心", item.cost_center],
-      ["科目", item.gl_account],
+      [t('report.dp-merchant'), item.merchant],
+      [t('report.dp-amount'), item.amount != null ? `${item.currency || 'CNY'} ${Number(item.amount).toFixed(2)}` : "—"],
+      [t('report.dp-date'), item.date],
+      [t('report.dp-category'), catLabel(item.category)],
+      [t('report.dp-tax'), item.tax_amount != null ? Number(item.tax_amount).toFixed(2) : "—"],
+      [t('report.dp-inv-num'), item.invoice_number],
+      [t('report.dp-inv-code'), item.invoice_code],
+      [t('report.dp-project'), item.project_code],
+      [t('report.dp-desc'), item.description],
+      [t('report.dp-department'), item.department],
+      [t('report.dp-cost-center'), item.cost_center],
+      [t('report.dp-gl-account'), item.gl_account],
     ];
     for (const [label, val] of fields) {
       if (val === undefined || val === null) continue;
       html += `<div class="dp-field"><label>${label}</label><div class="val">${val || "—"}</div></div>`;
     }
     if (showFx) {
-      html += `<div class="dp-field"><label>汇率</label><div class="val">1 ${itemCurrency} = ${item.exchange_rate || '—'} ${homeCurrency}</div></div>`;
-      html += `<div class="dp-field"><label>折算金额</label><div class="val">≈ ${homeCurrency} ${item.converted_amount != null ? Number(item.converted_amount).toFixed(2) : '—'}</div></div>`;
+      html += `<div class="dp-field"><label>${t('report.dp-fx-rate')}</label><div class="val">1 ${itemCurrency} = ${item.exchange_rate || '—'} ${homeCurrency}</div></div>`;
+      html += `<div class="dp-field"><label>${t('report.dp-converted')}</label><div class="val">≈ ${homeCurrency} ${item.converted_amount != null ? Number(item.converted_amount).toFixed(2) : '—'}</div></div>`;
     }
   }
 
   if (item.risk_score != null) {
-    html += `<div class="dp-field"><label>风险评分</label><div class="val">${Number(item.risk_score).toFixed(0)} / 100</div></div>`;
+    html += `<div class="dp-field"><label>${t('report.dp-risk-score')}</label><div class="val">${Number(item.risk_score).toFixed(0)} / 100</div></div>`;
   }
   if (item.tier) {
-    html += `<div class="dp-field"><label>风险等级</label><div class="val">${item.tier}</div></div>`;
+    html += `<div class="dp-field"><label>${t('report.dp-risk-tier')}</label><div class="val">${item.tier}</div></div>`;
   }
   if (item.audit_report) {
     const timeline = item.audit_report.timeline || [];
     if (timeline.length) {
-      html += `<div class="dp-field"><label>AI 审核记录</label>`;
-      const names = ['收据验证','额度审批','合规检查','凭证生成','支付处理'];
+      html += `<div class="dp-field"><label>${t('report.dp-audit-log')}</label>`;
+      const names = t('report.audit-steps').split(',');
       for (let i = 0; i < timeline.length; i++) {
-        const t = timeline[i];
-        const icon = t.skipped ? '⏭' : t.passed ? '✅' : '❌';
-        html += `<div style="font-size:.8rem;padding:.2rem 0">${icon} ${names[i] || 'Step '+(i+1)}: ${t.message || ''}</div>`;
+        const te = timeline[i];
+        const icon = te.skipped ? '⏭' : te.passed ? '✅' : '❌';
+        html += `<div style="font-size:.8rem;padding:.2rem 0">${icon} ${names[i] || 'Step '+(i+1)}: ${te.message || ''}</div>`;
       }
       html += `</div>`;
     }
@@ -580,12 +620,12 @@ async function saveLineEdits(itemId) {
     msgEl.style.display = "block";
     msgEl.style.background = "#fee2e2";
     msgEl.style.color = "#991b1b";
-    msgEl.textContent = "部分字段保存失败：" + errors.join("、");
+    msgEl.textContent = t('report.dp-save-fail') + errors.join(", ");
   } else {
     msgEl.style.display = "block";
     msgEl.style.background = "#dcfce7";
     msgEl.style.color = "#166534";
-    msgEl.textContent = "已保存";
+    msgEl.textContent = t('report.dp-saved');
     await loadReport();
     setTimeout(() => { if (msgEl) msgEl.style.display = "none"; }, 1500);
   }
@@ -605,13 +645,11 @@ function updateConvertedPreview() {
   const amount = amountInput ? parseFloat(amountInput.value) : null;
   const homeCurrency = reportData.home_currency || "CNY";
   if (!isNaN(rate) && amount != null && !isNaN(amount)) {
-    preview.textContent = `折算金额: ≈ ${homeCurrency} ${(amount * rate).toFixed(2)}`;
+    preview.textContent = `${t('report.dp-converted')}: ≈ ${homeCurrency} ${(amount * rate).toFixed(2)}`;
   }
 }
 
 function onDetailCurrencyChange() {
-  // When currency changes, we'd need to fetch a new rate - for now just clear the FX section
-  // The user will need to save and reopen to get the new rate
 }
 
 loadReport().then(() => {

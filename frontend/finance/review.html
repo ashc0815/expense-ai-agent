@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>财务复核 — ConcurShield</title>
+  <title data-i18n="review.title">财务复核 — ConcurShield</title>
   <link rel="stylesheet" href="/shared/styles.css">
   <link rel="stylesheet" href="/shared/ai-card.css">
   <script>
@@ -42,14 +42,14 @@
 <main class="page-wide">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem">
     <div>
-      <h1 style="font-size:1.25rem; font-weight:700; margin:0">财务复核队列</h1>
-      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem">
+      <h1 style="font-size:1.25rem; font-weight:700; margin:0" data-i18n="review.title">财务复核队列</h1>
+      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem" data-i18n="review.subtitle-unit">
         经理已批准、待财务审核入账（以报销单为单位）
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:.6rem">
       <div id="count-chip" class="status-badge status-manager_approved" style="font-size:.85rem; padding:.4rem .8rem"></div>
-      <button class="btn btn-outline btn-sm" id="bulk-lowrisk-btn" onclick="window._bulkApprove()">
+      <button class="btn btn-outline btn-sm" id="bulk-lowrisk-btn" onclick="window._bulkApprove()" data-i18n="review.bulk-label">
         批量通过低风险
       </button>
     </div>
@@ -59,19 +59,19 @@
   <div class="stats-strip" id="stats-strip" style="display:none">
     <div class="stat-card">
       <div class="stat-value" id="stat-amount">—</div>
-      <div class="stat-label">待审合计金额</div>
+      <div class="stat-label" data-i18n="stats.total-amount">待审合计金额</div>
     </div>
     <div class="stat-card">
       <div class="stat-value" id="stat-risk">—</div>
-      <div class="stat-label">平均风险评分</div>
+      <div class="stat-label" data-i18n="stats.avg-risk">平均风险评分</div>
     </div>
     <div class="stat-card">
       <div class="stat-value" id="stat-count">—</div>
-      <div class="stat-label">待审报销单</div>
+      <div class="stat-label" data-i18n="review.stat-pending">待审报销单</div>
     </div>
     <div class="stat-card" style="display:flex; flex-direction:column; justify-content:center">
       <div class="stat-tiers" id="stat-tiers"></div>
-      <div class="stat-label" style="margin-top:.35rem">风险分布</div>
+      <div class="stat-label" style="margin-top:.35rem" data-i18n="stats.tier-dist">风险分布</div>
     </div>
   </div>
 
@@ -80,7 +80,7 @@
       <div style="text-align:center; padding:2rem"><span class="spinner"></span></div>
     </aside>
     <section class="inbox-detail" id="inbox-detail">
-      <div style="text-align:center; padding:4rem; color:var(--gray-400)">
+      <div style="text-align:center; padding:4rem; color:var(--gray-400)" data-i18n="review.placeholder">
         请从左侧选择一张报销单
       </div>
     </section>
@@ -93,12 +93,12 @@
   <div style="background:white;border-radius:12px;padding:1.5rem;width:400px;max-width:90vw">
     <h3 id="modal-title" style="margin:0 0 .75rem"></h3>
     <div class="form-group" style="margin-bottom:1rem">
-      <label id="modal-label">意见</label>
-      <textarea id="modal-comment" rows="3" placeholder="可选"></textarea>
+      <label id="modal-label" data-i18n="review.modal-comment">意见</label>
+      <textarea id="modal-comment" rows="3"></textarea>
     </div>
     <div style="display:flex;gap:.5rem;justify-content:flex-end">
-      <button class="btn btn-outline btn-sm" onclick="window._closeModal()">取消</button>
-      <button class="btn btn-sm" id="modal-confirm-btn" onclick="window._confirmModal()">确认</button>
+      <button class="btn btn-outline btn-sm" onclick="window._closeModal()" data-i18n="review.modal-cancel">取消</button>
+      <button class="btn btn-sm" id="modal-confirm-btn" onclick="window._confirmModal()" data-i18n="review.modal-confirm">确认</button>
     </div>
   </div>
 </div>
@@ -120,11 +120,7 @@ function fmtMoney(currency, amount) {
   let _currentReport = null;
   let modalAction = null, modalReportId = null;
 
-  const CAT_LABEL = {
-    meal:'餐饮', transport:'交通', accommodation:'住宿',
-    entertainment:'招待', office_supplies:'办公用品', other:'其他',
-    '餐饮':'餐饮', '交通':'交通', '住宿':'住宿', '办公用品':'办公用品', '通讯':'通讯', '其他':'其他'
-  };
+  function catLabel(c) { return i18n && i18n.cat ? i18n.cat(c) : c; }
 
   async function authH() {
     if (window.auth && window.auth.getHeaders) return await window.auth.getHeaders();
@@ -135,13 +131,13 @@ function fmtMoney(currency, amount) {
     try {
       const data = await api.financeQueue();
       reports = data.items || [];
-      document.getElementById('count-chip').textContent = `${reports.length} 单待复核`;
+      document.getElementById('count-chip').textContent = `${reports.length} ${t('review.pending-suffix')}`;
       renderStats();
       renderList();
       if (reports.length && !selectedId) selectItem(reports[0].id);
     } catch (err) {
       document.getElementById('inbox-list').innerHTML =
-        `<div class="alert alert-error">加载失败: ${err.message}</div>`;
+        `<div class="alert alert-error">${t('review.load-fail')}${err.message}</div>`;
     }
   }
 
@@ -163,7 +159,7 @@ function fmtMoney(currency, amount) {
     riskEl.textContent = avgRisk != null ? `${avgRisk.toFixed(0)}/100` : '—';
     riskEl.className = 'stat-value' + (avgRisk != null && avgRisk >= 75 ? ' danger' : '');
 
-    document.getElementById('stat-count').textContent = `${reports.length} 单`;
+    document.getElementById('stat-count').textContent = `${reports.length} ${t('review.line-count')}`;
 
     const counts = {};
     reports.forEach(r => { if (r.worst_tier) counts[r.worst_tier] = (counts[r.worst_tier] || 0) + 1; });
@@ -175,10 +171,9 @@ function fmtMoney(currency, amount) {
   function renderList() {
     if (!reports.length) {
       document.getElementById('inbox-list').innerHTML =
-        `<div style="text-align:center; padding:3rem; color:var(--gray-400)">
-          所有报销单已审核完毕 ✓</div>`;
+        `<div style="text-align:center; padding:3rem; color:var(--gray-400)">${t('review.all-reviewed')}</div>`;
       document.getElementById('inbox-detail').innerHTML =
-        `<div style="text-align:center; padding:4rem; color:var(--gray-400)">无待审报销单</div>`;
+        `<div style="text-align:center; padding:4rem; color:var(--gray-400)">${t('review.no-pending')}</div>`;
       return;
     }
     document.getElementById('inbox-list').innerHTML = reports.map(r => {
@@ -190,7 +185,7 @@ function fmtMoney(currency, amount) {
             <div>
               <div style="font-weight:600; font-size:.92rem">${esc(r.title)}</div>
               <div style="font-size:.75rem; color:var(--gray-400); margin-top:.15rem">
-                ${esc(r.employee_name)} · ${r.line_count} 笔
+                ${esc(r.employee_name)} · ${r.line_count} ${t('review.line-count')}
               </div>
             </div>
             <div style="text-align:right">
@@ -225,17 +220,17 @@ function fmtMoney(currency, amount) {
               ${r.home_currency || "CNY"} ${total.toFixed(2)}
             </div>
             <div style="font-size:.78rem; color:var(--gray-400); margin-top:.25rem">
-              ${esc(r.employee_name)} · ${esc(r.department) || '—'} · ${r.line_count} 笔
+              ${esc(r.employee_name)} · ${esc(r.department) || '—'} · ${r.line_count} ${t('review.line-count')}
             </div>
           </div>
           <div style="display:flex;gap:.5rem">
             <button class="btn btn-outline btn-sm" style="border-color:#ef4444;color:#ef4444"
               onclick="window._openModal('reject','${r.id}')">
-              拒绝 <span class="kbd">R</span>
+              ${t('review.btn-reject')} <span class="kbd">R</span>
             </button>
             <button class="btn btn-success btn-sm"
               onclick="window._openModal('approve','${r.id}')">
-              通过 <span class="kbd" style="border-color:rgba(255,255,255,.3);
+              ${t('review.btn-approve')} <span class="kbd" style="border-color:rgba(255,255,255,.3);
                 color:rgba(255,255,255,.7);background:rgba(0,0,0,.15)">A</span>
             </button>
           </div>
@@ -245,7 +240,7 @@ function fmtMoney(currency, amount) {
         ${r.max_risk_score > 0 ? `
         <div class="risk-bar-wrap" style="margin-bottom:1.25rem">
           <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--gray-400);margin-bottom:.3rem">
-            <span>AI 风险评分</span>
+            <span>${t('review.risk-label')}</span>
             <span>${r.max_risk_score.toFixed(0)}/100 · ${r.worst_tier || ''}</span>
           </div>
           <div class="risk-bar-track">
@@ -257,18 +252,18 @@ function fmtMoney(currency, amount) {
         <!-- Line items table -->
         <div style="font-size:.8rem;font-weight:700;text-transform:uppercase;
           letter-spacing:.4px;color:var(--gray-400);margin-bottom:.5rem">
-          费用明细 <span style="font-weight:400;text-transform:none;letter-spacing:0">— 点击行查看详情</span>
+          ${t('review.line-items')} <span style="font-weight:400;text-transform:none;letter-spacing:0">${t('review.line-items-hint')}</span>
         </div>
         <table class="line-table">
           <thead>
-            <tr><th>日期</th><th>商户</th><th>类别</th><th>原币金额</th><th>折合(${r.home_currency || 'CNY'})</th><th>风险</th></tr>
+            <tr><th>${t('review.col-date')}</th><th>${t('review.col-merchant')}</th><th>${t('review.col-category')}</th><th>${t('review.col-orig')}</th><th>${t('review.col-converted')}(${r.home_currency || 'CNY'})</th><th>${t('review.col-risk')}</th></tr>
           </thead>
           <tbody>
             ${(r.lines || []).map((l, i) => `
               <tr style="cursor:pointer" onclick="window._showLine(${i})" id="line-row-${l.id}" class="line-row">
                 <td>${l.date || '—'}</td>
                 <td>${esc(l.merchant) || '—'}</td>
-                <td>${CAT_LABEL[l.category] || l.category || '—'}</td>
+                <td>${catLabel(l.category)}</td>
                 <td style="font-weight:600">${fmtMoney(l.currency, l.amount)}</td>
                 <td>${l.converted_amount != null ? fmtMoney(r.home_currency, l.converted_amount) : '—'}</td>
                 <td>${l.tier ? `<span class="status-badge tier-${l.tier}">${l.tier}</span>` : '—'}</td>
@@ -282,8 +277,8 @@ function fmtMoney(currency, amount) {
 
         <!-- Finance comment -->
         <div class="form-group" style="margin-top:1.25rem">
-          <label>财务意见</label>
-          <textarea id="f-comment" rows="2" placeholder="可选备注"></textarea>
+          <label>${t('review.finance-comment')}</label>
+          <textarea id="f-comment" rows="2" placeholder="${t('review.optional-note')}"></textarea>
         </div>
       </div>`;
 
@@ -320,10 +315,10 @@ function fmtMoney(currency, amount) {
 
     const risk = l.risk_score || 0;
     const timeline = l.audit_report?.timeline || [];
-    const skillNames = ["收据验证","额度审批","合规检查","凭证生成","支付处理"];
+    const skillNames = [t('review.skill.0'),t('review.skill.1'),t('review.skill.2'),t('review.skill.3'),t('review.skill.4')];
     const timelineHTML = timeline.length ? `
       <div style="margin-top:.75rem">
-        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:var(--gray-400);margin-bottom:.4rem">AI 审核流程</div>
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:var(--gray-400);margin-bottom:.4rem">${t('review.ai-flow')}</div>
         ${timeline.map((t, i) => {
           const icon = t.skipped ? '⏭' : t.passed ? '✅' : '❌';
           return `<div style="font-size:.78rem;padding:.2rem 0">${icon} ${skillNames[i] || 'Skill '+(i+1)} — ${t.message || ''}</div>`;
@@ -335,7 +330,7 @@ function fmtMoney(currency, amount) {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
         <div>
           <div style="font-size:1rem;font-weight:700">${esc(l.merchant) || '—'}</div>
-          <div style="font-size:.78rem;color:var(--gray-400)">${l.date} · ${CAT_LABEL[l.category] || l.category}</div>
+          <div style="font-size:.78rem;color:var(--gray-400)">${l.date} · ${catLabel(l.category)}</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:1.1rem;font-weight:800">${fmtMoney(l.currency, l.amount)}</div>
@@ -344,26 +339,26 @@ function fmtMoney(currency, amount) {
       </div>
 
       ${l.receipt_url ? `<div style="margin-bottom:.75rem;text-align:center">
-        <img src="${l.receipt_url}" alt="发票" style="max-width:100%;max-height:180px;border-radius:8px;border:1px solid var(--gray-100)"
+        <img src="${l.receipt_url}" alt="${t('review.receipt-alt')}" style="max-width:100%;max-height:180px;border-radius:8px;border:1px solid var(--gray-100)"
           onerror="this.style.display='none'">
       </div>` : ''}
 
-      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:var(--gray-400);margin-bottom:.3rem">字段明细（可编辑）</div>
-      ${fieldRow('商户', 'merchant', l.merchant)}
-      ${fieldRow('金额', 'amount', l.amount)}
-      ${fieldRow('币种', 'currency', l.currency)}
-      ${readonlyRow('汇率', l.exchange_rate)}
-      ${readonlyRow('折合金额', l.converted_amount != null ? fmtMoney(r.home_currency, l.converted_amount) : null)}
-      ${fieldRow('类别', 'category', l.category)}
-      ${fieldRow('发票号码', 'invoice_number', l.invoice_number)}
-      ${fieldRow('发票代码', 'invoice_code', l.invoice_code)}
-      ${fieldRow('销方税号', 'seller_tax_id', l.seller_tax_id)}
-      ${fieldRow('税额', 'tax_amount', l.tax_amount)}
-      ${fieldRow('项目代码', 'project_code', l.project_code)}
-      ${fieldRow('说明', 'description', l.description)}
-      ${fieldRow('部门', 'department', l.department)}
-      ${fieldRow('成本中心', 'cost_center', l.cost_center)}
-      ${fieldRow('科目', 'gl_account', l.gl_account)}
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:var(--gray-400);margin-bottom:.3rem">${t('review.detail-editable')}</div>
+      ${fieldRow(t('review.field-merchant'), 'merchant', l.merchant)}
+      ${fieldRow(t('review.field-amount'), 'amount', l.amount)}
+      ${fieldRow(t('review.field-currency'), 'currency', l.currency)}
+      ${readonlyRow(t('review.field-rate'), l.exchange_rate)}
+      ${readonlyRow(t('review.field-converted'), l.converted_amount != null ? fmtMoney(r.home_currency, l.converted_amount) : null)}
+      ${fieldRow(t('review.field-category'), 'category', l.category)}
+      ${fieldRow(t('review.field-inv-no'), 'invoice_number', l.invoice_number)}
+      ${fieldRow(t('review.field-inv-code'), 'invoice_code', l.invoice_code)}
+      ${fieldRow(t('review.field-seller-tax'), 'seller_tax_id', l.seller_tax_id)}
+      ${fieldRow(t('review.field-tax'), 'tax_amount', l.tax_amount)}
+      ${fieldRow(t('review.field-project'), 'project_code', l.project_code)}
+      ${fieldRow(t('review.field-desc'), 'description', l.description)}
+      ${fieldRow(t('review.field-dept'), 'department', l.department)}
+      ${fieldRow(t('review.field-cc-edit'), 'cost_center', l.cost_center)}
+      ${fieldRow(t('review.field-gl'), 'gl_account', l.gl_account)}
       ${timelineHTML}
     `;
     document.getElementById('line-detail').style.display = 'block';
@@ -386,7 +381,7 @@ function fmtMoney(currency, amount) {
       setTimeout(() => input.style.borderColor = 'var(--gray-200)', 1500);
     } catch (err) {
       input.style.borderColor = '#ef4444';
-      alert('保存失败: ' + err.message);
+      alert(t('review.save-fail') + err.message);
     }
   };
 
@@ -397,13 +392,13 @@ function fmtMoney(currency, amount) {
     const overlay = document.getElementById('modal-overlay');
     overlay.style.display = 'flex';
     document.getElementById('modal-title').textContent =
-      action === 'approve' ? '确认通过整张报销单' : '确认拒绝整张报销单';
+      action === 'approve' ? t('review.confirm-approve') : t('review.confirm-reject');
     const btn = document.getElementById('modal-confirm-btn');
     btn.className = action === 'approve' ? 'btn btn-success btn-sm' : 'btn btn-danger btn-sm';
-    btn.textContent = action === 'approve' ? '确认通过' : '确认拒绝';
+    btn.textContent = action === 'approve' ? t('review.confirm-approve-btn') : t('review.confirm-reject-btn');
     document.getElementById('modal-comment').value = '';
     document.getElementById('modal-comment').placeholder =
-      action === 'reject' ? '请填写拒绝原因' : '可选备注';
+      action === 'reject' ? t('review.reject-reason-ph') : t('review.optional-note');
   };
 
   window._closeModal = function() {
@@ -417,34 +412,34 @@ function fmtMoney(currency, amount) {
     try {
       if (modalAction === 'approve') {
         const result = await api.financeApprove(modalReportId, { comment });
-        alert('已通过，凭证号: ' + result.voucher_number);
+        alert(t('review.approved-alert') + result.voucher_number);
       } else {
-        if (!comment) { alert('请填写拒绝原因'); return; }
+        if (!comment) { alert(t('review.reject-reason-ph')); return; }
         await api.financeReject(modalReportId, comment);
-        alert('已拒绝');
+        alert(t('review.rejected-alert'));
       }
       selectedId = null;
       await loadList();
     } catch (err) {
-      alert('操作失败: ' + err.message);
+      alert(t('review.action-fail') + err.message);
     }
   };
 
   // ── Bulk approve ──
   window._bulkApprove = async function() {
     const lowRisk = reports.filter(r => !r.worst_tier || r.worst_tier === 'T1' || r.worst_tier === 'T2');
-    if (!lowRisk.length) { alert('没有低风险报销单'); return; }
+    if (!lowRisk.length) { alert(t('review.no-lowrisk')); return; }
     const totalAmt = lowRisk.reduce((s, r) => s + (r.total_converted != null ? r.total_converted : r.total_amount), 0);
-    if (!confirm(`批量通过 ${lowRisk.length} 张低风险报销单（合计 ¥${totalAmt.toFixed(2)}）？`)) return;
+    if (!confirm(t('review.bulk-confirm').replace('{n}', lowRisk.length).replace('{total}', totalAmt.toFixed(2)))) return;
     const btn = document.getElementById('bulk-lowrisk-btn');
-    btn.disabled = true; btn.textContent = '处理中…';
+    btn.disabled = true; btn.textContent = t('review.bulk-processing');
     try {
-      const result = await api.financeBulkApprove(lowRisk.map(r => r.id), '批量通过 - 低风险');
-      alert(`已通过 ${result.approved.length} 张，跳过 ${result.skipped.length} 张`);
+      const result = await api.financeBulkApprove(lowRisk.map(r => r.id), 'Bulk approve - low risk');
+      alert(t('review.bulk-ok').replace('{approved}', result.approved.length).replace('{skipped}', result.skipped.length));
       selectedId = null;
       await loadList();
-    } catch (err) { alert('批量通过失败: ' + err.message); }
-    finally { btn.disabled = false; btn.textContent = '批量通过低风险'; }
+    } catch (err) { alert(t('review.bulk-fail') + err.message); }
+    finally { btn.disabled = false; btn.textContent = t('review.bulk-label'); }
   };
 
   // ── Keyboard shortcuts ──

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>快速报销 — ExpenseFlow</title>
+  <title data-i18n="quick.title">快速报销</title>
   <link rel="stylesheet" href="/shared/styles.css">
   <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
   <style>
@@ -153,11 +153,11 @@
 <script src="/shared/nav.js"></script>
 
 <main class="quick-wrap">
-  <h1 style="font-size:1.3rem;margin:0 0 1rem">快速报销</h1>
-  <p class="muted">拍一张 / 拖一张发票上来，AI 帮你把字段填好，你只需要确认提交。</p>
+  <h1 style="font-size:1.3rem;margin:0 0 1rem" data-i18n="quick.title">快速报销</h1>
+  <p class="muted" data-i18n="quick.subtitle">拍一张 / 拖一张发票上来，AI 帮你把字段填好，你只需要确认提交。</p>
 
   <div id="existing-lines" style="display:none">
-    <h3 id="existing-title" style="font-size:1rem;margin:0 0 .5rem;color:#0f172a">已添加的发票</h3>
+    <h3 id="existing-title" style="font-size:1rem;margin:0 0 .5rem;color:#0f172a" data-i18n="quick.existing-title">已添加的发票</h3>
     <div id="existing-list"></div>
     <hr style="border:none;border-top:1px dashed #e2e8f0;margin:1rem 0">
   </div>
@@ -165,7 +165,7 @@
   <div id="upload-section">
     <div id="drop-zone" class="drop-zone">
       <div style="font-size:2.5rem">📄</div>
-      <div>点击或拖拽发票图 / PDF 到这里</div>
+      <div data-i18n="quick.drop-hint">点击或拖拽发票图 / PDF 到这里</div>
       <input id="file-input" type="file" accept="image/*,application/pdf" style="display:none">
     </div>
   </div>
@@ -175,22 +175,22 @@
   <div id="success-section" style="display:none"></div>
 
   <div class="faq-section" id="faq-section">
-    <div style="font-size:.8rem;font-weight:600;color:#64748b;margin-bottom:.4rem">常见问题</div>
+    <div style="font-size:.8rem;font-weight:600;color:#64748b;margin-bottom:.4rem" data-i18n="quick.faq-title">常见问题</div>
     <div class="faq-item" onclick="this.classList.toggle('open')">
-      <div class="faq-q">这笔费用该选什么分类？<span class="faq-arrow">▼</span></div>
-      <div class="faq-a">餐饮 = 工作餐、商务宴请；交通 = 打车、机票、火车票；住宿 = 酒店；招待 = 客户相关的餐饮或活动。如不确定，选"其他"并在备注中说明。</div>
+      <div class="faq-q"><span data-i18n="quick.faq1-q">这笔费用该选什么分类？</span><span class="faq-arrow">▼</span></div>
+      <div class="faq-a" data-i18n="quick.faq1-a">餐饮 = 工作餐、商务宴请；交通 = 打车、机票、火车票；住宿 = 酒店；招待 = 客户相关的餐饮或活动。如不确定，选"其他"并在备注中说明。</div>
     </div>
     <div class="faq-item" onclick="this.classList.toggle('open')">
-      <div class="faq-q">金额超标了怎么办？<span class="faq-arrow">▼</span></div>
-      <div class="faq-a">超出限额的报销会进入人工审核流程，由直属经理判断是否批准。合理的超支（如出差目的地物价较高）通常可以通过。</div>
+      <div class="faq-q"><span data-i18n="quick.faq2-q">金额超标了怎么办？</span><span class="faq-arrow">▼</span></div>
+      <div class="faq-a" data-i18n="quick.faq2-a">超出限额的报销会进入人工审核流程，由直属经理判断是否批准。合理的超支（如出差目的地物价较高）通常可以通过。</div>
     </div>
     <div class="faq-item" onclick="this.classList.toggle('open')">
-      <div class="faq-q">为什么提示"可能重复"？<span class="faq-arrow">▼</span></div>
-      <div class="faq-a">系统检测到相同发票号码已经存在。请确认这张发票是否已经在其他报销单中提交过，避免重复报销。</div>
+      <div class="faq-q"><span data-i18n="quick.faq3-q">为什么提示"可能重复"？</span><span class="faq-arrow">▼</span></div>
+      <div class="faq-a" data-i18n="quick.faq3-a">系统检测到相同发票号码已经存在。请确认这张发票是否已经在其他报销单中提交过，避免重复报销。</div>
     </div>
     <div class="faq-item" onclick="this.classList.toggle('open')">
-      <div class="faq-q">预算不够了还能报销吗？<span class="faq-arrow">▼</span></div>
-      <div class="faq-a">当部门预算接近上限时，系统会显示提示。超限的报销会被暂挂，需要财务管理员审批解锁后才能继续。</div>
+      <div class="faq-q"><span data-i18n="quick.faq4-q">预算不够了还能报销吗？</span><span class="faq-arrow">▼</span></div>
+      <div class="faq-a" data-i18n="quick.faq4-a">当部门预算接近上限时，系统会显示提示。超限的报销会被暂挂，需要财务管理员审批解锁后才能继续。</div>
     </div>
   </div>
 </main>
@@ -227,11 +227,11 @@ async function loadFxData() {
 loadFxData();
 
 const CATEGORIES = [
-  { value: "meal", label: "餐饮" },
-  { value: "transport", label: "交通" },
-  { value: "accommodation", label: "住宿" },
-  { value: "entertainment", label: "招待" },
-  { value: "other", label: "其他" },
+  { value: "meal", key: "cat.meal" },
+  { value: "transport", key: "cat.transport" },
+  { value: "accommodation", key: "cat.accommodation" },
+  { value: "entertainment", key: "cat.entertainment" },
+  { value: "other", key: "cat.other" },
 ];
 
 async function getAuth() {
@@ -250,13 +250,12 @@ async function loadExistingLines() {
   if (!lines.length) return;
 
   document.getElementById("existing-lines").style.display = "block";
-  document.getElementById("existing-title").textContent = `已添加的发票（${report.title}）`;
-  const CAT_LABELS = { meal:"餐饮", transport:"交通", accommodation:"住宿", entertainment:"招待", other:"其他" };
+  document.getElementById("existing-title").textContent = `${t('quick.existing-title')}（${report.title}）`;
   document.getElementById("existing-list").innerHTML = lines.map(l => {
     const isDraft = l._isDraft || l.status === "draft";
     const amt = l.amount != null ? `¥${Number(l.amount).toFixed(2)}` : "—";
-    const cat = l.category ? (CAT_LABELS[l.category] || l.category) : "";
-    const statusLabel = isDraft ? (l.merchant ? "待确认" : "扫描中") : "已保存";
+    const cat = l.category ? i18n.cat(l.category) : "";
+    const statusLabel = isDraft ? (l.merchant ? t('quick.line-to-confirm') : t('quick.line-scanning')) : t('quick.line-saved');
     const statusCls = isDraft ? "draft" : "in_report";
     return `<div class="existing-line" onclick="openLineDetail('${l.id}', ${isDraft})" style="cursor:pointer">
       <span class="el-date">${l.date || "—"}</span>
@@ -288,7 +287,7 @@ async function handleUpload(file) {
     ? `/api/quick/upload?report_id=${CURRENT_REPORT_ID}`
     : "/api/quick/upload";
   const r = await fetch(uploadUrl, { method: "POST", body: fd, headers: await getAuth() });
-  if (!r.ok) { alert("上传失败: " + r.status); return; }
+  if (!r.ok) { alert(t('quick.upload-fail') + r.status); return; }
   const body = await r.json();
 
   const drafts = body.drafts || [{ draft_id: body.draft_id, receipt_url: body.receipt_url }];
@@ -313,16 +312,16 @@ function showScanProgress(draftId, file) {
         : `<div style="text-align:center;padding:1rem;color:#64748b;font-size:2rem">📄 ${file.name}</div>`
       }
       <div class="scan-step active" id="step-ocr-${draftId}">
-        <span class="dot"></span> 正在识别发票内容...
+        <span class="dot"></span> ${t('quick.scan-ocr')}
       </div>
       <div class="scan-step" id="step-classify-${draftId}">
-        <span class="dot"></span> 分类费用类型
+        <span class="dot"></span> ${t('quick.scan-classify')}
       </div>
       <div class="scan-step" id="step-dedupe-${draftId}">
-        <span class="dot"></span> 查重发票号
+        <span class="dot"></span> ${t('quick.scan-dedupe')}
       </div>
       <div class="scan-step" id="step-budget-${draftId}">
-        <span class="dot"></span> 检查预算
+        <span class="dot"></span> ${t('quick.scan-budget')}
       </div>
     </div>
   `;
@@ -359,7 +358,7 @@ function streamPipeline(draftId, file) {
     } else if (ev.type === "ocr_failed") {
       markScanStep(draftId, "ocr", "done");
       const el = document.getElementById(`step-ocr-${draftId}`);
-      if (el) { el.style.color = "#dc2626"; el.innerHTML = `<span class="dot" style="background:#dc2626"></span> 识别失败：${ev.error || '未知错误'}`; }
+      if (el) { el.style.color = "#dc2626"; el.innerHTML = `<span class="dot" style="background:#dc2626"></span> ${t('quick.scan-ocr-fail')}${ev.error || 'unknown'}`; }
     } else if (ev.type === "classify_done") {
       markScanStep(draftId, "classify", "done");
       markScanStep(draftId, "dedupe", "active");
@@ -456,11 +455,11 @@ async function showForm(draftId) {
     el.innerHTML = `
       <div class="error-card" id="form-${draftId}">
         <div class="error-icon">❌</div>
-        <div class="error-title">发票识别失败</div>
-        <div class="error-sub">图片质量不足，无法自动识别字段</div>
+        <div class="error-title">${t('quick.error-title')}</div>
+        <div class="error-sub">${t('quick.error-sub')}</div>
         <div class="form-actions" style="justify-content:center">
-          <button class="btn-secondary" onclick="resetAndUploadNew()">重新拍照</button>
-          <button class="btn-save" onclick="forceManualFill('${draftId}')">手动填写</button>
+          <button class="btn-secondary" onclick="resetAndUploadNew()">${t('quick.btn-retake')}</button>
+          <button class="btn-save" onclick="forceManualFill('${draftId}')">${t('quick.btn-manual')}</button>
         </div>
       </div>
     `;
@@ -474,23 +473,23 @@ async function showForm(draftId) {
     if (s[key] === "ai" || s[key] === "ocr" || s[key] === "pipeline")
       return `<span class="ai-badge">AI</span>`;
     if (!f[key] && ["merchant","amount","date","category"].includes(key))
-      return `<span class="confirm-badge">需填写</span>`;
+      return `<span class="confirm-badge">${t('quick.need-fill')}</span>`;
     return "";
   }
 
   const catOptions = CATEGORIES.map(c =>
-    `<option value="${c.value}" ${f.category === c.value ? 'selected' : ''}>${c.label}</option>`
+    `<option value="${c.value}" ${f.category === c.value ? 'selected' : ''}>${t(c.key)}</option>`
   ).join("");
 
   el.innerHTML = `
     <div class="form-card" id="form-${draftId}">
-      <h3>确认发票信息 ${d.isDuplicate ? '<span style="color:#dc2626;font-size:.8rem">⚠ 可能重复</span>' : ''}</h3>
+      <h3>${t('quick.confirm-title')} ${d.isDuplicate ? `<span style="color:#dc2626;font-size:.8rem">${t('quick.maybe-dup')}</span>` : ''}</h3>
 
       ${layer === "1"
-        ? '<div class="layer-banner success">✅ 所有字段已自动识别，请确认后保存</div>'
+        ? `<div class="layer-banner success">${t('quick.layer1-banner')}</div>`
         : layer === "2"
-        ? '<div class="layer-banner warning">⚠️ 部分字段需要手动填写（标红处）</div>'
-        : '<div class="layer-banner orange">📝 识别效果不佳，请手动填写关键信息</div>'
+        ? `<div class="layer-banner warning">${t('quick.layer2-banner')}</div>`
+        : `<div class="layer-banner orange">${t('quick.layer3-banner')}</div>`
       }
 
       ${d.receiptUrl
@@ -500,62 +499,62 @@ async function showForm(draftId) {
           : ""
       }
 
-      ${d.isDuplicate ? '<div class="alert-dup">⚠ 该发票号可能已存在，请确认后再保存。</div>' : ''}
+      ${d.isDuplicate ? `<div class="alert-dup">${t('quick.dup-warn')}</div>` : ''}
 
       <div class="form-grid">
         <div class="form-group">
-          <label>商户名称 * ${badge("merchant")}</label>
+          <label>${t('quick.field-merchant')} ${badge("merchant")}</label>
           <input id="qf-merchant-${draftId}" value="${f.merchant || ''}"
-            class="${fieldClass("merchant")}" placeholder="如：海底捞" required>
+            class="${fieldClass("merchant")}" placeholder="${t('quick.ph-merchant')}" required>
         </div>
         <div class="form-group">
-          <label>金额 * ${badge("amount")}</label>
+          <label>${t('quick.field-amount')} ${badge("amount")}</label>
           <input id="qf-amount-${draftId}" type="number" step="0.01" min="0.01"
             value="${f.amount || ''}" class="${fieldClass("amount")}" placeholder="0.00" required
             oninput="updateQuickConverted('${draftId}')">
         </div>
         <div class="form-group">
-          <label>货币 ${badge("currency")}</label>
+          <label>${t('quick.field-currency')} ${badge("currency")}</label>
           <select id="qf-currency-${draftId}" class="${fieldClass("currency")}" onchange="onQuickCurrencyChange('${draftId}')">
-            ${[["CNY","人民币"],["AUD","澳元"],["USD","美元"],["EUR","欧元"],["JPY","日元"],["GBP","英镑"]].map(([c,l]) =>
-              `<option value="${c}" ${(f.currency||'CNY')===c?'selected':''}>${c} — ${l}</option>`
+            ${[["CNY","quick.currency-cny"],["AUD","quick.currency-aud"],["USD","quick.currency-usd"],["EUR","quick.currency-eur"],["JPY","quick.currency-jpy"],["GBP","quick.currency-gbp"]].map(([c,k]) =>
+              `<option value="${c}" ${(f.currency||'CNY')===c?'selected':''}>${c} — ${t(k)}</option>`
             ).join("")}
           </select>
         </div>
         <div class="form-group">
-          <label>费用类别 * ${badge("category")}</label>
+          <label>${t('quick.field-category')} ${badge("category")}</label>
           <select id="qf-category-${draftId}" class="${fieldClass("category")}" required>
-            <option value="">— 请选择 —</option>
+            <option value="">—</option>
             ${catOptions}
           </select>
         </div>
         <div class="form-group">
-          <label>消费日期 * ${badge("date")}</label>
+          <label>${t('quick.field-date')} ${badge("date")}</label>
           <input id="qf-date-${draftId}" type="date"
             value="${f.date || ''}" class="${fieldClass("date")}" required>
         </div>
         <div class="form-group">
-          <label>税额 ${badge("tax_amount")}</label>
+          <label>${t('quick.field-tax')} ${badge("tax_amount")}</label>
           <input id="qf-tax-${draftId}" type="number" step="0.01" min="0"
-            value="${f.tax_amount || ''}" class="${fieldClass("tax_amount")}" placeholder="可选">
+            value="${f.tax_amount || ''}" class="${fieldClass("tax_amount")}" placeholder="${t('quick.ph-invoice-code')}">
         </div>
         <div class="form-group">
-          <label>发票号码 ${badge("invoice_number")}</label>
+          <label>${t('quick.field-invoice-no')} ${badge("invoice_number")}</label>
           <input id="qf-invoice-number-${draftId}" value="${f.invoice_number || ''}"
-            class="${fieldClass("invoice_number")}" placeholder="可选 · 用于查重">
+            class="${fieldClass("invoice_number")}" placeholder="${t('quick.ph-invoice-no')}">
         </div>
         <div class="form-group">
-          <label>发票代码 ${badge("invoice_code")}</label>
+          <label>${t('quick.field-invoice-code')} ${badge("invoice_code")}</label>
           <input id="qf-invoice-code-${draftId}" value="${f.invoice_code || ''}"
-            class="${fieldClass("invoice_code")}" placeholder="可选">
+            class="${fieldClass("invoice_code")}" placeholder="${t('quick.ph-invoice-code')}">
         </div>
         <div class="form-group">
-          <label>项目代码</label>
-          <input id="qf-project-${draftId}" value="${f.project_code || ''}" placeholder="可选，如 PROJ-042">
+          <label>${t('quick.field-project')}</label>
+          <input id="qf-project-${draftId}" value="${f.project_code || ''}" placeholder="${t('quick.ph-project')}">
         </div>
         <div class="form-group full">
-          <label>备注说明</label>
-          <textarea id="qf-desc-${draftId}" rows="2" placeholder="可选：补充消费说明">${f.description || ''}</textarea>
+          <label>${t('quick.field-notes')}</label>
+          <textarea id="qf-desc-${draftId}" rows="2" placeholder="${t('quick.ph-notes')}">${f.description || ''}</textarea>
         </div>
       </div>
 
@@ -568,11 +567,11 @@ async function showForm(draftId) {
       </div>
 
       <div id="report-selector-${draftId}" style="margin-top:.8rem; padding:.8rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;">
-        <label style="font-size:.85rem; font-weight:600; color:#475569; display:block; margin-bottom:.4rem">保存到</label>
+        <label style="font-size:.85rem; font-weight:600; color:#475569; display:block; margin-bottom:.4rem">${t('quick.save-to')}</label>
         <select id="qf-report-${draftId}" style="width:100%; padding:.4rem .6rem; border:1px solid #d1d5db; border-radius:6px; font-size:.85rem;">
-          <option value="">新建报销单</option>
+          <option value="">${t('quick.new-report')}</option>
           ${openReports.filter(rpt => !CURRENT_REPORT_ID || rpt.id === CURRENT_REPORT_ID).length > 0 || !CURRENT_REPORT_ID
-            ? openReports.map(rpt => `<option value="${rpt.id}" ${CURRENT_REPORT_ID === rpt.id ? 'selected' : ''}>${rpt.title}（${rpt.line_count || 0} 笔）</option>`).join("")
+            ? openReports.map(rpt => `<option value="${rpt.id}" ${CURRENT_REPORT_ID === rpt.id ? 'selected' : ''}>${rpt.title}（${rpt.line_count || 0}${t('quick.lines-suffix')}）</option>`).join("")
             : ""
           }
         </select>
@@ -581,9 +580,9 @@ async function showForm(draftId) {
       <div id="form-alert-${draftId}"></div>
 
       <div class="form-actions">
-        <button class="btn-secondary" onclick="resetAndUploadNew()">重新上传</button>
+        <button class="btn-secondary" onclick="resetAndUploadNew()">${t('quick.btn-reupload')}</button>
         <button class="btn-save" id="save-btn-${draftId}" onclick="saveToReport('${draftId}')">
-          保存到报销单
+          ${t('quick.btn-save')}
         </button>
       </div>
     </div>
@@ -620,12 +619,12 @@ async function saveToReport(draftId) {
   }
 
   if (!fields.merchant || !fields.amount || !fields.date || !fields.category) {
-    alertEl.innerHTML = '<div class="alert-error">请填写所有必填字段（商户、金额、日期、类别）</div>';
+    alertEl.innerHTML = `<div class="alert-error">${t('quick.required-alert')}</div>`;
     return;
   }
 
   btn.disabled = true;
-  btn.textContent = "保存中...";
+  btn.textContent = t('quick.btn-saving');
 
   const authH = await getAuth();
   for (const [key, val] of Object.entries(fields)) {
@@ -646,17 +645,17 @@ async function saveToReport(draftId) {
     method: "POST", headers: authH,
   });
   if (!r.ok) {
-    let msg = "保存失败: " + r.status;
+    let msg = t('quick.save-fail') + r.status;
     try {
       const body = await r.json();
       if (r.status === 422 && body.detail) {
         msg = (body.detail.includes("已被报销过") || body.detail.startsWith("发票号"))
-          ? "重复发票，无法保存" : body.detail;
+          ? t('quick.dup-block') : body.detail;
       }
     } catch {}
     alertEl.innerHTML = `<div class="alert-error">${msg}</div>`;
     btn.disabled = false;
-    btn.textContent = "保存到报销单";
+    btn.textContent = t('quick.btn-save');
     return;
   }
   const body = await r.json();
@@ -676,10 +675,10 @@ function showSuccess(draftId, reportId) {
   el.innerHTML = `
     <div class="form-card" style="text-align:center; padding:2rem">
       <div style="font-size:2rem; margin-bottom:.5rem">✓</div>
-      <div style="font-weight:700; font-size:1.1rem; color:#16a34a; margin-bottom:.8rem">已保存到报销单</div>
+      <div style="font-weight:700; font-size:1.1rem; color:#16a34a; margin-bottom:.8rem">${t('quick.success-msg')}</div>
       <div class="form-actions" style="justify-content:center">
-        <button class="btn-continue" onclick="continueAdding('${reportId}')">继续添加</button>
-        <button class="btn-save" onclick="goToReport('${reportId}')">查看报销单 →</button>
+        <button class="btn-continue" onclick="continueAdding('${reportId}')">${t('quick.btn-continue')}</button>
+        <button class="btn-save" onclick="goToReport('${reportId}')">${t('quick.btn-view-report')}</button>
       </div>
     </div>
   `;

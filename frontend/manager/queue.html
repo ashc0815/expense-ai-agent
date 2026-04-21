@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>审批队列 — ExpenseFlow</title>
+  <title data-i18n="queue.title">审批队列 — ExpenseFlow</title>
   <link rel="stylesheet" href="/shared/styles.css">
   <link rel="stylesheet" href="/shared/ai-card.css">
   <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
@@ -37,7 +37,7 @@
 <div id="notif-banner" style="display:none; background:#fef3c7; border-bottom:1px solid #fbbf24; padding:.6rem 1rem; font-size:.85rem">
   <div style="max-width:1400px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:1rem">
     <div id="notif-body" style="color:#92400e"></div>
-    <button id="notif-dismiss" style="background:transparent; border:none; color:#92400e; cursor:pointer; font-size:.85rem; font-weight:600">全部标为已读</button>
+    <button id="notif-dismiss" style="background:transparent; border:none; color:#92400e; cursor:pointer; font-size:.85rem; font-weight:600" data-i18n="queue.notif-dismiss">全部标为已读</button>
   </div>
 </div>
 
@@ -52,9 +52,9 @@
     if (!items.length) return;
     const el = document.getElementById("notif-banner");
     const body = document.getElementById("notif-body");
-    body.innerHTML = `<strong>🔔 ${items.length} 条新通知</strong> · ` +
+    body.innerHTML = `<strong>🔔 ${t('queue.notif-count').replace('{n}', items.length)}</strong> · ` +
       items.slice(0, 3).map(n => `${n.title}`).join(" · ") +
-      (items.length > 3 ? ` · 还有 ${items.length - 3} 条…` : "");
+      (items.length > 3 ? ` · ${t('queue.notif-more').replace('{n}', items.length - 3)}` : "");
     el.style.display = "block";
     document.getElementById("notif-dismiss").onclick = async () => {
       for (const n of items) {
@@ -74,8 +74,8 @@
   <!-- ── LEFT: Report list ── -->
   <div class="inbox-list">
     <div class="inbox-list-header">
-      <div class="inbox-list-title">待审批报销单</div>
-      <div class="inbox-list-sub" id="count-label">加载中…</div>
+      <div class="inbox-list-title" data-i18n="queue.list-title">待审批报销单</div>
+      <div class="inbox-list-sub" id="count-label" data-i18n="queue.loading">加载中…</div>
     </div>
     <div class="inbox-items" id="inbox-items">
       <div style="padding:2rem; text-align:center; color:var(--gray-300)">
@@ -88,9 +88,9 @@
   <div class="inbox-detail" id="inbox-detail">
     <div class="inbox-empty">
       <div class="inbox-empty-icon">📋</div>
-      <div style="font-size:.9rem; font-weight:500">选择一张报销单查看详情</div>
+      <div style="font-size:.9rem; font-weight:500" data-i18n="queue.select-hint">选择一张报销单查看详情</div>
       <div style="font-size:.78rem">
-        <span class="kbd">A</span> 批准 &nbsp; <span class="kbd">T</span> 退回 &nbsp; <span class="kbd">R</span> 拒绝
+        <span class="kbd">A</span> <span data-i18n="queue.btn-approve">批准</span> &nbsp; <span class="kbd">T</span> <span data-i18n="queue.btn-return">退回</span> &nbsp; <span class="kbd">R</span> <span data-i18n="queue.btn-reject">拒绝</span>
       </div>
     </div>
   </div>
@@ -99,14 +99,14 @@
 <!-- Approve/Reject modal -->
 <div class="modal-overlay" id="modal">
   <div class="modal-box">
-    <div class="modal-title" id="modal-title">审批</div>
+    <div class="modal-title" id="modal-title"></div>
     <div class="form-group">
-      <label>审批意见（可选）</label>
-      <textarea id="modal-comment" rows="3" placeholder="填写审批意见…"></textarea>
+      <label data-i18n="queue.modal-comment">审批意见（可选）</label>
+      <textarea id="modal-comment" rows="3"></textarea>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="closeModal()">取消</button>
-      <button class="btn" id="modal-confirm" onclick="confirmModal()">确认</button>
+      <button class="btn btn-outline" onclick="closeModal()" data-i18n="queue.cancel">取消</button>
+      <button class="btn" id="modal-confirm" onclick="confirmModal()"></button>
     </div>
   </div>
 </div>
@@ -119,8 +119,7 @@
   let modalAction = null;
   let modalReportId = null;
 
-  const CAT_LABEL = { meal: "餐饮", transport: "交通", accommodation: "住宿",
-                       entertainment: "招待", other: "其他" };
+  function catLabel(c) { return i18n && i18n.cat ? i18n.cat(c) : c; }
   const fmtMoney = (c, a) => `${c || "CNY"} ${Number(a || 0).toFixed(2)}`;
 
   // ── Load list ────────────────────────────────────────────────
@@ -131,11 +130,11 @@
       const data = await r.json();
       reports = data.items;
       document.getElementById("count-label").textContent =
-        data.total + " 张待审批";
+        t('queue.count').replace('{n}', data.total);
       renderList();
     } catch (err) {
       document.getElementById("inbox-items").innerHTML =
-        `<div style="padding:1rem" class="alert alert-error">加载失败</div>`;
+        `<div style="padding:1rem" class="alert alert-error">${t('queue.load-fail')}</div>`;
     }
   };
 
@@ -143,7 +142,7 @@
     const el = document.getElementById("inbox-items");
     if (!reports.length) {
       el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--gray-300)">
-        暂无待审批报销单</div>`;
+        ${t('queue.empty')}</div>`;
       return;
     }
     el.innerHTML = reports.map(r => {
@@ -159,12 +158,12 @@
             <div class="inbox-item-amount">${r.home_currency || "CNY"} ${(r.total_converted != null ? r.total_converted : r.total_amount).toFixed(2)}</div>
           </div>
           <div class="inbox-item-sub">
-            <span>${r.employee_name} · ${r.line_count} 笔</span>
+            <span>${r.employee_name} · ${r.line_count} ${t('queue.line-count')}</span>
             <span style="display:flex;gap:.3rem;align-items:center">
               ${r.worst_tier ? `<span class="risk-pill"
                 style="background:${riskBg};color:${riskColor}">${r.worst_tier}</span>` : ""}
-              ${r.still_processing ? `<span class="processing-badge">AI 审核中</span>` :
-                `<span class="reviewed-badge">已审核</span>`}
+              ${r.still_processing ? `<span class="processing-badge">${t('queue.ai-reviewing')}</span>` :
+                `<span class="reviewed-badge">${t('queue.ai-reviewed')}</span>`}
             </span>
           </div>
         </div>`;
@@ -184,9 +183,9 @@
   function renderDetail(r) {
     const canApprove = !r.still_processing;
     const lineStatusBadge = (status) => {
-      if (status === "processing") return `<span class="processing-badge">AI 审核中</span>`;
-      if (status === "reviewed") return `<span class="reviewed-badge">已审核</span>`;
-      if (status === "review_failed") return `<span class="failed-badge">审核失败</span>`;
+      if (status === "processing") return `<span class="processing-badge">${t('queue.ai-reviewing')}</span>`;
+      if (status === "reviewed") return `<span class="reviewed-badge">${t('queue.ai-reviewed')}</span>`;
+      if (status === "review_failed") return `<span class="failed-badge">${t('queue.ai-failed')}</span>`;
       return `<span>${status}</span>`;
     };
 
@@ -195,25 +194,25 @@
         <div>
           <div class="detail-title">${r.title}</div>
           <div style="font-size:.78rem;color:var(--gray-400);margin-top:.15rem">
-            ${r.employee_name} · ${r.department || ""} · ${r.line_count} 笔 ·
-            提交于 ${new Date(r.submitted_at).toLocaleDateString()}
+            ${r.employee_name} · ${r.department || ""} · ${r.line_count} ${t('queue.line-count')} ·
+            ${t('queue.submitted-at')} ${new Date(r.submitted_at).toLocaleDateString()}
           </div>
         </div>
         <div class="detail-actions">
           <button class="btn btn-danger btn-sm" onclick="openModal('reject','${r.id}')"
             ${canApprove ? "" : "disabled"}>
-            拒绝 <span class="kbd" style="border-color:rgba(255,255,255,.3);
+            ${t('queue.btn-reject')} <span class="kbd" style="border-color:rgba(255,255,255,.3);
               color:rgba(255,255,255,.7);background:rgba(0,0,0,.15)">R</span>
           </button>
           <button class="btn btn-sm" style="background:#f97316;color:white;border:none"
             onclick="openModal('return','${r.id}')"
             ${canApprove ? "" : "disabled"}>
-            退回 <span class="kbd" style="border-color:rgba(255,255,255,.3);
+            ${t('queue.btn-return')} <span class="kbd" style="border-color:rgba(255,255,255,.3);
               color:rgba(255,255,255,.7);background:rgba(0,0,0,.15)">T</span>
           </button>
           <button class="btn btn-success btn-sm" onclick="openModal('approve','${r.id}')"
             ${canApprove ? "" : "disabled"}>
-            批准 <span class="kbd" style="border-color:rgba(255,255,255,.3);
+            ${t('queue.btn-approve')} <span class="kbd" style="border-color:rgba(255,255,255,.3);
               color:rgba(255,255,255,.7);background:rgba(0,0,0,.15)">A</span>
           </button>
         </div>
@@ -224,36 +223,36 @@
         <!-- Aggregate -->
         <div class="detail-row" style="margin-bottom:1.25rem">
           <div>
-            <div class="detail-field-label">报销总额</div>
+            <div class="detail-field-label">${t('queue.total-amount')}</div>
             <div style="font-size:1.5rem;font-weight:800;color:var(--gray-900);
               letter-spacing:-.5px">
               ${r.home_currency || "CNY"} ${(r.total_converted != null ? r.total_converted : r.total_amount).toFixed(2)}
             </div>
           </div>
           <div>
-            <div class="detail-field-label">最高风险评分</div>
+            <div class="detail-field-label">${t('queue.max-risk')}</div>
             ${r.max_risk_score > 0 ? `
               <div style="font-size:1.25rem;font-weight:700;color:var(--gray-900)">
                 ${r.max_risk_score.toFixed(0)}<span style="font-size:.8rem;color:var(--gray-400)">/100</span>
                 ${r.worst_tier ? `<span class="badge badge-${r.worst_tier}" style="margin-left:.4rem;
                   vertical-align:middle">${r.worst_tier}</span>` : ""}
               </div>` :
-              `<div style="color:var(--gray-300);font-size:.875rem">待 AI 审核</div>`}
+              `<div style="color:var(--gray-300);font-size:.875rem">${t('queue.pending-ai')}</div>`}
           </div>
         </div>
 
         ${r.still_processing ? `
           <div class="alert alert-warning" style="margin-bottom:1rem">
             <span style="font-size:1rem">⏳</span>
-            <div>部分发票 AI 审核中，审核完成后可批准/拒绝整张报销单。</div>
+            <div>${t('queue.still-processing')}</div>
           </div>` : ""}
 
         <!-- Line items table -->
         <div style="font-size:.8rem;font-weight:700;text-transform:uppercase;
-          letter-spacing:.4px;color:var(--gray-400);margin-bottom:.5rem">费用明细 <span style="font-weight:400;text-transform:none;letter-spacing:0">— 点击行查看详情</span></div>
+          letter-spacing:.4px;color:var(--gray-400);margin-bottom:.5rem">${t('queue.line-items')} <span style="font-weight:400;text-transform:none;letter-spacing:0">${t('queue.line-hint')}</span></div>
         <table class="line-table">
           <thead>
-            <tr><th>日期</th><th>商户</th><th>类别</th><th>金额</th><th>风险</th><th>状态</th></tr>
+            <tr><th>${t('queue.col-date')}</th><th>${t('queue.col-merchant')}</th><th>${t('queue.col-category')}</th><th>${t('queue.col-amount')}</th><th>${t('queue.col-risk')}</th><th>${t('queue.col-status')}</th></tr>
           </thead>
           <tbody>
             ${r.lines.map((l, i) => `
@@ -261,7 +260,7 @@
                   id="line-row-${l.id}" class="line-row">
                 <td>${l.date || "—"}</td>
                 <td>${l.merchant || "—"}</td>
-                <td>${CAT_LABEL[l.category] || l.category || "—"}</td>
+                <td>${catLabel(l.category)}</td>
                 <td style="font-weight:600">${fmtMoney(l.currency, l.amount)}</td>
                 <td>${l.tier ? `<span class="risk-pill" style="background:var(--${l.tier.toLowerCase()}-bg, #f1f5f9);
                   color:var(--${l.tier.toLowerCase()}, #475569)">${l.tier}</span>` : "—"}</td>
@@ -297,11 +296,14 @@
       el.style.background = el.id === "line-row-" + l.id ? "var(--gray-50)" : "");
 
     const FIELD_LABELS = {
-      merchant: "商户", amount: "金额", currency: "币种", category: "类别",
-      date: "日期", invoice_number: "发票号码", invoice_code: "发票代码",
-      seller_tax_id: "销方税号", buyer_tax_id: "购方税号",
-      tax_amount: "税额", project_code: "项目代码", description: "说明",
-      department: "部门", cost_center: "成本中心", gl_account: "科目",
+      merchant: t('queue.field-merchant'), amount: t('queue.field-amount'),
+      currency: t('queue.field-currency'), category: t('queue.field-category'),
+      date: t('queue.field-date'), invoice_number: t('queue.field-inv-no'),
+      invoice_code: t('queue.field-inv-code'), seller_tax_id: t('queue.field-seller-tax'),
+      buyer_tax_id: t('queue.field-buyer-tax'), tax_amount: t('queue.field-tax'),
+      project_code: t('queue.field-project'), description: t('queue.field-desc'),
+      department: t('queue.field-dept'), cost_center: t('queue.field-cc'),
+      gl_account: t('queue.field-gl'),
     };
 
     const editable = isFinance();
@@ -329,18 +331,18 @@
 
     // AI timeline
     const timeline = l.audit_report?.timeline || [];
-    const skillNames = ["收据验证","额度审批","合规检查","凭证生成","支付处理"];
+    const skillNames = [t('review.skill.0'),t('review.skill.1'),t('review.skill.2'),t('review.skill.3'),t('review.skill.4')];
     const timelineHTML = timeline.length ? `
       <div style="margin-top:1rem">
         <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;
-          letter-spacing:.3px;color:var(--gray-400);margin-bottom:.5rem">AI 审核流程</div>
+          letter-spacing:.3px;color:var(--gray-400);margin-bottom:.5rem">${t('queue.ai-flow')}</div>
         <div class="timeline">
           ${timeline.map((t, i) => {
             const cls = t.skipped ? "skip" : t.passed ? "pass" : "fail";
             return `<div class="timeline-item">
               <div class="timeline-dot ${cls}"></div>
               <div class="timeline-skill">${skillNames[i] || "Skill " + (i+1)}</div>
-              <div class="timeline-msg">${t.message || (t.skipped ? "已跳过" : "")}</div>
+              <div class="timeline-msg">${t.message || ""}</div>
             </div>`;
           }).join("")}
         </div>
@@ -351,7 +353,7 @@
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
         <div>
           <div style="font-size:1rem;font-weight:700;color:var(--gray-900)">${l.merchant || "—"}</div>
-          <div style="font-size:.78rem;color:var(--gray-400)">${l.date} · ${CAT_LABEL[l.category] || l.category}</div>
+          <div style="font-size:.78rem;color:var(--gray-400)">${l.date} · ${catLabel(l.category)}</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:1.2rem;font-weight:800;color:var(--gray-900)">${fmtMoney(l.currency, l.amount)}</div>
@@ -362,13 +364,13 @@
 
       ${l.receipt_url ? `
         <div style="margin-bottom:1rem;text-align:center">
-          <img src="${l.receipt_url}" alt="发票" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--gray-100)"
+          <img src="${l.receipt_url}" alt="receipt" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--gray-100)"
             onerror="this.style.display='none'">
         </div>` : ""}
 
       <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;
         letter-spacing:.3px;color:var(--gray-400);margin-bottom:.4rem">
-        ${editable ? "字段明细（可编辑）" : "字段明细"}
+        ${editable ? t('queue.detail-editable') : t('queue.detail-readonly')}
       </div>
       <div style="display:flex;flex-direction:column;gap:0">
         ${fieldRow("merchant", l.merchant)}
@@ -409,7 +411,7 @@
       setTimeout(() => input.style.borderColor = "var(--gray-200)", 1500);
     } catch (err) {
       input.style.borderColor = "#ef4444";
-      alert("保存失败: " + err.message);
+      alert(t('queue.save-fail') + err.message);
     }
   }
 
@@ -417,8 +419,8 @@
   window.openModal = function (action, id) {
     modalAction = action;
     modalReportId = id;
-    const titles = { approve: "批准整张报销单", reject: "拒绝整张报销单", return: "退回修改" };
-    const labels = { approve: "确认批准", reject: "确认拒绝", return: "确认退回" };
+    const titles = { approve: t('queue.modal-approve'), reject: t('queue.modal-reject'), return: t('queue.modal-return') };
+    const labels = { approve: t('queue.confirm-approve'), reject: t('queue.confirm-reject'), return: t('queue.confirm-return') };
     const classes = { approve: "btn btn-success", reject: "btn btn-danger", return: "btn" };
     document.getElementById("modal-title").textContent = titles[action] || action;
     const btn = document.getElementById("modal-confirm");
@@ -428,7 +430,7 @@
     else btn.style.cssText = "";
     document.getElementById("modal-comment").value = "";
     document.getElementById("modal-comment").placeholder =
-      action === "return" ? "请填写退回原因（必填）…" : "填写审批意见（可选）";
+      action === "return" ? t('queue.modal-return-ph') : t('queue.modal-approve-ph');
     document.getElementById("modal").classList.add("open");
   };
   window.closeModal = function () {
@@ -437,7 +439,7 @@
   window.confirmModal = async function () {
     const comment = document.getElementById("modal-comment").value;
     if (modalAction === "return" && !comment.trim()) {
-      alert("退回时必须填写原因");
+      alert(t('queue.return-required'));
       return;
     }
     const btn = document.getElementById("modal-confirm");
@@ -464,15 +466,15 @@
       }
       closeModal();
       await loadList();
-      const actionLabel = { approve: "批准", reject: "拒绝", return: "退回" };
+      const actionLabel = { approve: t('queue.done-approve'), reject: t('queue.done-reject'), return: t('queue.done-return') };
       document.getElementById("inbox-detail").innerHTML = `
         <div class="inbox-empty">
           <div class="inbox-empty-icon">✅</div>
-          <div style="font-size:.9rem;font-weight:500">已${actionLabel[modalAction]}</div>
+          <div style="font-size:.9rem;font-weight:500">${actionLabel[modalAction]}</div>
         </div>`;
       selectedId = null;
     } catch (err) {
-      alert("操作失败：" + err.message);
+      alert(t('queue.action-fail') + err.message);
     } finally {
       btn.disabled = false;
     }

@@ -135,7 +135,7 @@ _TOOL_DEFS: dict[str, dict] = {
     },
     "get_spend_summary": {
         "name": "get_spend_summary",
-        "description": "聚合当前员工在指定周期内的报销金额，按 category 分组返回总额和笔数。",
+        "description": "聚合当前员工在指定周期内的报销金额（统一折算为 CNY），按 category 分组。返回每笔的原始币种和金额以及 CNY 等值。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -567,28 +567,54 @@ async def tool_get_spend_summary(
         label = f"{today.year}-Q{(today.month - 1) // 3 + 1}"
     start_iso = start.isoformat()
 
+    emp = await get_employee(db, ctx.user_id)
+    home_cur = (emp.home_currency if emp and hasattr(emp, 'home_currency') and emp.home_currency else "CNY")
+    from backend.services.fx_service import get_rate, convert as fx_convert
+
     page = await list_submissions(db, employee_id=ctx.user_id, page=1, page_size=500)
-    in_range = [s for s in page["items"] if (s.date or "") >= start_iso]
+    in_range = [
+        s for s in page["items"]
+        if (s.date or "") >= start_iso
+        or (s.created_at and s.created_at.date() >= start)
+    ]
 
     by_cat: dict[str, dict] = {}
-    total = 0.0
+    total_home = 0.0
+    items_detail = []
     for s in in_range:
         cat = s.category or "other"
-        bucket = by_cat.setdefault(cat, {"category": cat, "amount": 0.0, "count": 0})
-        amt = float(s.amount)
-        bucket["amount"] += amt
+        bucket = by_cat.setdefault(cat, {"category": cat, "amount_home": 0.0, "count": 0})
+        orig_amt = float(s.amount)
+        currency = s.currency or home_cur
+        if s.exchange_rate is not None:
+            home_amt = round(orig_amt * float(s.exchange_rate), 2)
+        elif currency != home_cur:
+            home_amt = fx_convert(orig_amt, currency, home_cur)
+        else:
+            home_amt = orig_amt
+        bucket["amount_home"] += home_amt
         bucket["count"] += 1
-        total += amt
+        total_home += home_amt
+        items_detail.append({
+            "amount": orig_amt,
+            "currency": currency,
+            "amount_home": round(home_amt, 2),
+            "category": cat,
+            "merchant": s.merchant or "",
+            "date": s.date or "",
+        })
 
     return {
         "period": period,
         "period_label": label,
         "start_date": start_iso,
-        "total": round(total, 2),
+        "total_home": round(total_home, 2),
+        "home_currency": home_cur,
         "count": len(in_range),
+        "items": items_detail,
         "by_category": sorted(
-            [{**b, "amount": round(b["amount"], 2)} for b in by_cat.values()],
-            key=lambda x: x["amount"],
+            [{**b, "amount_home": round(b["amount_home"], 2)} for b in by_cat.values()],
+            key=lambda x: x["amount_home"],
             reverse=True,
         ),
     }
@@ -960,9 +986,24 @@ class MockLLM(BaseLLM):
         if s.get("error"):
             return f"查询失败：{s['error']}"
         label = s.get("period_label") or s.get("period") or ""
-        total = s.get("total", 0)
+        home_cur = s.get("home_currency", "CNY")
+        total_home = s.get("total_home", s.get("total_cny", s.get("total", 0)))
         count = s.get("count", 0)
-        lines = [f"📊 **{label}** 消费汇总：共 {count} 笔，合计 **¥{total:,.2f}**"]
+        lines = [f"📊 **{label}** 消费汇总：共 {count} 笔，合计 **≈ {home_cur} {total_home:,.2f}**"]
+        items = s.get("items") or []
+        if items:
+            lines.append("")
+            lines.append("明细：")
+            for it in items:
+                cur = it.get("currency", home_cur)
+                amt = it.get("amount", 0)
+                home_amt = it.get("amount_home", it.get("amount_cny", amt))
+                merchant = it.get("merchant", "")
+                dt = it.get("date", "")
+                if cur != home_cur:
+                    lines.append(f"• {dt} {merchant}：{cur} {amt:,.2f}（≈ {home_cur} {home_amt:,.2f}）")
+                else:
+                    lines.append(f"• {dt} {merchant}：{home_cur} {amt:,.2f}")
         by_cat = s.get("by_category") or []
         if by_cat:
             lines.append("")
@@ -970,8 +1011,9 @@ class MockLLM(BaseLLM):
             cat_label = {"meal": "餐饮", "transport": "交通", "accommodation": "住宿",
                          "entertainment": "招待", "other": "其他"}
             for b in by_cat:
-                lines.append(f"• {cat_label.get(b['category'], b['category'])}：¥{b['amount']:,.2f}（{b['count']} 笔）")
-        else:
+                amt_h = b.get("amount_home", b.get("amount_cny", b.get("amount", 0)))
+                lines.append(f"• {cat_label.get(b['category'], b['category'])}：≈ {home_cur} {amt_h:,.2f}（{b['count']} 笔）")
+        elif count == 0:
             lines.append("\n本期还没有报销记录。")
         return "\n".join(lines)
 

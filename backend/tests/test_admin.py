@@ -80,16 +80,16 @@ def test_get_policy():
     r = client.get("/api/admin/policy", headers=FIN_HEADERS)
     assert r.status_code == 200
     body = r.json()
-    assert "meal_limit_cny" in body
+    assert "category_limits" in body
     assert "max_amount_cny" in body
 
 
 def test_update_policy():
     r = client.put("/api/admin/policy",
                    headers=FIN_HEADERS,
-                   json={"meal_limit_cny": 250.0})
+                   json={"category_limits": {"meal": 250.0}})
     assert r.status_code == 200
-    assert r.json()["meal_limit_cny"] == 250.0
+    assert r.json()["category_limits"]["meal"] == 250.0
 
 
 def test_employee_cannot_access_admin():
