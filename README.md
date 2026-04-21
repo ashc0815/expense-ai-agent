@@ -1,3 +1,5 @@
+**[EN](README.md)** | **[中文](README_CN.md)**
+
 # ExpenseFlow
 
 AI-powered enterprise expense management platform — end-to-end automation from receipt submission to payment, with a built-in 5-Skill compliance pipeline, conversational Agent assistant, and Eval framework.

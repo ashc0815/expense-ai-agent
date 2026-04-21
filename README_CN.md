@@ -1,3 +1,5 @@
+**[EN](README.md)** | **[中文](README_CN.md)**
+
 # ExpenseFlow
 
 AI 驱动的企业报销管理平台 — 从发票提交到付款入账的全流程自动化，内置 5-Skill 合规审核管道、对话式 Agent 助手和 Eval 评估框架。
