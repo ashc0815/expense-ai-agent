@@ -1,6 +1,0 @@
-{"type":"server-started","port":54383,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:54383","screen_dir":"/Users/ashleychen/expense-ai-agent/.superpowers/brainstorm/17280-1776177031/content","state_dir":"/Users/ashleychen/expense-ai-agent/.superpowers/brainstorm/17280-1776177031/state"}
-{"type":"screen-added","file":"/Users/ashleychen/expense-ai-agent/.superpowers/brainstorm/17280-1776177031/content/entry-flow.html"}
-{"type":"screen-added","file":"/Users/ashleychen/expense-ai-agent/.superpowers/brainstorm/17280-1776177031/content/layer-transitions.html"}
-{"type":"screen-added","file":"/Users/ashleychen/expense-ai-agent/.superpowers/brainstorm/17280-1776177031/content/processing-model.html"}
-{"type":"screen-added","file":"/Users/ashleychen/expense-ai-agent/.superpowers/brainstorm/17280-1776177031/content/chat-drawer.html"}
-{"type":"server-stopped","reason":"idle timeout"}
