@@ -86,6 +86,7 @@ def _line_dict(s: Submission) -> dict:
         "tier": s.tier,
         "audit_report": s.audit_report,
         "approver_comment": s.approver_comment,
+        "finance_approver_comment": s.finance_approver_comment,
     }
 
 
@@ -694,6 +695,57 @@ async def return_report_for_revision(
         db, actor_id=ctx.user_id, action="report_returned",
         resource_type="report", resource_id=report_id,
         detail={"reason": body.reason, "line_count": len(subs)},
+    )
+    return await _report_payload(db, report)
+
+
+@router.post("/{report_id}/recall")
+async def recall_rejected_report(
+    report_id: str,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """员工把被拒绝的报销单召回，状态变为 needs_revision 以便编辑重提。
+
+    仅对 `rejected` 状态开放。不丢拒绝历史：
+      - 审计日志写入 `report_recalled`（含原拒绝原因）
+      - 原 approver/finance_approver 字段保留在 submission 上
+      - 将拒绝原因写入 revision_reason，前端可复用现有退回横幅
+    """
+    report = await get_report(db, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报销单不存在")
+    if report.employee_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="只能召回自己的报销单")
+    if report.status != "rejected":
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前状态 {report.status}，不可召回（仅支持 rejected）",
+        )
+
+    subs = await list_report_submissions(db, report_id)
+    # 优先 finance 拒绝评论，回退到 manager 拒绝评论
+    previous_reason = next(
+        (s.finance_approver_comment or s.approver_comment for s in subs
+         if (s.finance_approver_comment or s.approver_comment)),
+        None,
+    )
+
+    now = datetime.now(timezone.utc)
+    for s in subs:
+        if s.status == "rejected":
+            s.status = "needs_revision"
+            s.updated_at = now
+
+    report.status = "needs_revision"
+    report.revision_reason = previous_reason or "员工已召回，准备修改重提"
+    report.updated_at = now
+    await db.commit()
+
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="report_recalled",
+        resource_type="report", resource_id=report_id,
+        detail={"previous_reason": previous_reason, "line_count": len(subs)},
     )
     return await _report_payload(db, report)
 

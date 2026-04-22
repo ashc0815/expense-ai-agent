@@ -33,7 +33,25 @@
     .rp-status.manager_approved, .rp-status.finance_approved, .rp-status.approved
                           { background: #dcfce7; color: #166534; }
     .rp-status.rejected   { background: #fee2e2; color: #991b1b; }
+    .rp-status.needs_revision { background: #fef3c7; color: #92400e; }
     .rp-status.exported   { background: #e0e7ff; color: #3730a3; }
+
+    .rp-banner {
+      margin: 1rem 0 1.25rem; padding: .875rem 1rem;
+      border-radius: 8px; border-left: 4px solid;
+      font-size: .875rem; line-height: 1.55;
+    }
+    .rp-banner-title { font-weight: 600; margin-bottom: .15rem; }
+    .rp-banner-body  { color: #334155; }
+    .rp-banner-hint  { color: #64748b; font-size: .8125rem; margin-top: .25rem; }
+    .rp-banner-rejected {
+      background: #fef2f2; border-color: #ef4444;
+    }
+    .rp-banner-rejected .rp-banner-title { color: #991b1b; }
+    .rp-banner-revision {
+      background: #fffbeb; border-color: #f59e0b;
+    }
+    .rp-banner-revision .rp-banner-title { color: #92400e; }
 
     .rp-actions { display: flex; gap: .5rem; align-items: center; }
 
@@ -233,9 +251,17 @@ async function loadReport() {
 function render() {
   const rp = reportData;
   const isOpen = rp.status === "open";
-  const canRename = rp.status === "open" || rp.status === "needs_revision";
+  const isRejected = rp.status === "rejected";
+  const needsRevision = rp.status === "needs_revision";
+  const canRename = isOpen || needsRevision;
+  const canEditLines = isOpen || needsRevision;
   const isPending = ["pending","manager_approved","finance_approved","approved"].includes(rp.status);
   const lines = (rp.lines || []);
+  const rejectionReason = isRejected
+    ? (lines.find(l => l.finance_approver_comment)?.finance_approver_comment
+       || lines.find(l => l.approver_comment)?.approver_comment
+       || "")
+    : "";
   const drafts = (rp.pending_drafts || []).map(d => ({...d, _isDraft: true, status: "draft"}));
   const allItems = [...lines, ...drafts];
   const total = rp.total_amount || 0;
@@ -256,12 +282,30 @@ function render() {
       <div class="rp-actions">
         ${isPending ? `<button class="btn-withdraw" onclick="withdrawReport()">${t('report.withdraw-btn')}</button>` : ""}
         ${isOpen ? `<button class="btn-submit" id="submit-btn" onclick="submitReport()" ${allItems.length === 0 ? 'disabled' : ''}>${t('report.submit-btn')}</button>` : ""}
+        ${isRejected ? `<button class="btn-submit" onclick="recallReport()">${t('report.recall-btn')}</button>` : ""}
+        ${needsRevision ? `<button class="btn-submit" onclick="resubmitReport()" ${allItems.length === 0 ? 'disabled' : ''}>${t('report.resubmit-btn')}</button>` : ""}
       </div>
     </div>
 
+    ${isRejected ? `
+      <div class="rp-banner rp-banner-rejected">
+        <div class="rp-banner-title">${t('report.rejected-banner-title')}</div>
+        ${rejectionReason ? `<div class="rp-banner-body">${t('report.rejected-reason-prefix')}${rejectionReason}</div>` : ""}
+        <div class="rp-banner-hint">${t('report.rejected-banner-hint')}</div>
+      </div>
+    ` : ""}
+
+    ${needsRevision ? `
+      <div class="rp-banner rp-banner-revision">
+        <div class="rp-banner-title">${t('report.revision-banner-title')}</div>
+        ${rp.revision_reason ? `<div class="rp-banner-body">${t('report.revision-reason-prefix')}${rp.revision_reason}</div>` : ""}
+        <div class="rp-banner-hint">${t('report.revision-banner-hint')}</div>
+      </div>
+    ` : ""}
+
     <div class="toolbar">
       <div class="toolbar-left">${t('report.line-section')} (${allItems.length})</div>
-      ${isOpen ? `
+      ${canEditLines ? `
         <div class="add-menu">
           <button class="add-btn" onclick="toggleAddMenu()">${t('report.add-expense')}</button>
           <div class="add-dropdown" id="add-dropdown">
@@ -297,7 +341,7 @@ function render() {
             <th>${t('report.th-merchant')}</th>
             <th class="col-amount">${t('report.th-amount')}</th>
             <th class="col-status">${t('report.th-status')}</th>
-            ${isOpen || isPending ? '<th class="col-actions"></th>' : ''}
+            ${canEditLines || isPending ? '<th class="col-actions"></th>' : ''}
           </tr>
         </thead>
         <tbody>
@@ -319,7 +363,7 @@ function render() {
           <td>${item.merchant || "—"}${item.description ? ` <span style="color:#94a3b8;font-size:.75rem">· ${item.description}</span>` : ""}</td>
           <td class="col-amount">${currency} ${amt}</td>
           <td class="col-status"><span class="line-status ${status}">${statusLabel(status)}</span></td>
-          ${isOpen || isPending ? `<td class="col-actions"><button class="delete-btn" onclick="event.stopPropagation();removeLine('${item.id}', ${isDraft})" title="${t('report.confirm-delete')}">✕</button></td>` : ''}
+          ${canEditLines || isPending ? `<td class="col-actions"><button class="delete-btn" onclick="event.stopPropagation();removeLine('${item.id}', ${isDraft})" title="${t('report.confirm-delete')}">✕</button></td>` : ''}
         </tr>
       `;
     }
@@ -397,6 +441,36 @@ async function submitReport() {
   });
   if (!r.ok) {
     let msg = t('report.submit-fail') + ": " + r.status;
+    try { const b = await r.json(); if (b.detail) msg = b.detail; } catch {}
+    alert(msg);
+    return;
+  }
+  await loadReport();
+}
+
+// ── Recall a rejected report (reopen for edit & resubmit) ───
+async function recallReport() {
+  if (!confirm(t('report.confirm-recall'))) return;
+  const r = await fetch(`/api/reports/${REPORT_ID}/recall`, {
+    method: "POST", headers: await getAuth(),
+  });
+  if (!r.ok) {
+    let msg = t('report.recall-fail') + ": " + r.status;
+    try { const b = await r.json(); if (b.detail) msg = b.detail; } catch {}
+    alert(msg);
+    return;
+  }
+  await loadReport();
+}
+
+// ── Resubmit after revision ─────────────────────────────────
+async function resubmitReport() {
+  if (!confirm(t('report.confirm-resubmit'))) return;
+  const r = await fetch(`/api/reports/${REPORT_ID}/resubmit`, {
+    method: "POST", headers: await getAuth(),
+  });
+  if (!r.ok) {
+    let msg = t('report.resubmit-fail') + ": " + r.status;
     try { const b = await r.json(); if (b.detail) msg = b.detail; } catch {}
     alert(msg);
     return;

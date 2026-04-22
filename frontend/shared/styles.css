@@ -351,6 +351,22 @@ input:focus, select:focus, textarea:focus {
 }
 .inbox-empty-icon { font-size: 2.5rem; }
 
+.inbox-done {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: .4rem; padding: 0 1rem;
+}
+.inbox-done-row {
+  display: flex; align-items: center; gap: .625rem;
+}
+.inbox-done-icon { flex-shrink: 0; display: block; }
+.inbox-done-title {
+  font-size: 1.25rem; font-weight: 600; color: var(--gray-900, #0f172a);
+  line-height: 1;
+}
+.inbox-done-sub {
+  font-size: .875rem; color: var(--gray-500, #64748b);
+}
+
 /* ══════════════════════════════════════════
    DETAIL PANEL
 ══════════════════════════════════════════ */
