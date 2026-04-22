@@ -531,7 +531,7 @@
     'report.withdraw-fail':   { zh: '撤回失败',                  en: 'Withdraw failed'                          },
     'report.withdraw-notify': { zh: '已撤回（之前为已批准状态），经理将收到通知。',
                                 en: 'Withdrawn (was approved). The manager will be notified.' },
-    'report.recall-btn':      { zh: '召回并编辑',                en: 'Recall & Edit'                            },
+    'report.recall-btn':      { zh: '重新编辑',                en: 'Edit & Resubmit'                          },
     'report.resubmit-btn':    { zh: '重新提交',                  en: 'Resubmit'                                 },
     'report.confirm-recall':  { zh: '召回这张被拒绝的报销单？你可以修改后重新提交，原拒绝记录会保留在审计日志。',
                                 en: 'Recall this rejected report? You can edit and resubmit it — the rejection record stays in the audit log.' },
