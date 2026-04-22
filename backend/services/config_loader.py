@@ -23,7 +23,7 @@ _PROMPTS_PATH = _BASE / "eval_prompts.json"
 def load_config() -> dict[str, Any]:
     """Load full eval config. Returns empty dict if file missing."""
     if _CONFIG_PATH.exists():
-        return json.loads(_CONFIG_PATH.read_text())
+        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
     return {}
 
 
@@ -62,7 +62,7 @@ def load_prompt(key: str, version: Optional[str] = None) -> str:
     """
     if not _PROMPTS_PATH.exists():
         return ""
-    data = json.loads(_PROMPTS_PATH.read_text())
+    data = json.loads(_PROMPTS_PATH.read_text(encoding="utf-8"))
     prompt = data.get("prompts", {}).get(key)
     if not prompt:
         return ""

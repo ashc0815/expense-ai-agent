@@ -56,7 +56,7 @@ _CONFIG_PATH = Path(__file__).parent / "eval_config.json"
 def _load_eval_config() -> dict:
     """Load eval config from JSON file."""
     if _CONFIG_PATH.exists():
-        return json.loads(_CONFIG_PATH.read_text())
+        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
     return {}
 
 
@@ -129,7 +129,7 @@ def _load_dataset(filename: str) -> list[dict]:
     path = _DATASETS_DIR / filename
     if not path.exists():
         return []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or []
 
 
@@ -259,7 +259,7 @@ def teardown_module(_: Any) -> None:
     except (urllib.error.URLError, OSError):
         # Server not running — save to JSON file for later import
         out_path = Path(__file__).parent / "eval_last_run.json"
-        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         sys.stderr.write(
             f"  ⚠ Observatory API unreachable. Results saved to:\n"
             f"    {out_path}\n"
