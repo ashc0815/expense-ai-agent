@@ -879,7 +879,7 @@ async def patch_report_line(
     if ctx.role == "employee":
         if report.employee_id != ctx.user_id:
             raise HTTPException(status_code=403, detail="权限不足")
-        if report.status not in ("open", "pending"):
+        if report.status not in ("open", "pending", "needs_revision"):
             raise HTTPException(status_code=409, detail="报销单已审批，无法编辑")
     elif ctx.role not in ("manager", "finance_admin"):
         raise HTTPException(status_code=403, detail="权限不足")
@@ -928,7 +928,7 @@ async def delete_report_line(
     if ctx.role == "employee":
         if report.employee_id != ctx.user_id:
             raise HTTPException(status_code=403, detail="权限不足")
-        if report.status not in ("open", "pending"):
+        if report.status not in ("open", "pending", "needs_revision"):
             raise HTTPException(status_code=409, detail="报销单已审批，无法删除")
     elif ctx.role not in ("manager", "finance_admin"):
         raise HTTPException(status_code=403, detail="权限不足")
