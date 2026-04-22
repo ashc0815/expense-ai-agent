@@ -59,7 +59,7 @@ _EVAL_RESULTS: dict[str, bool] = {}
 
 # ── Load YAML cases ───────────────────────────────────────────────────────────
 _CASES_PATH = Path(__file__).parent / "eval_cases.yaml"
-with open(_CASES_PATH) as _f:
+with open(_CASES_PATH, encoding="utf-8") as _f:
     _CASES: list[dict] = yaml.safe_load(_f)
 
 

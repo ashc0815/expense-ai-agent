@@ -195,7 +195,7 @@ def _run_to_dict(r: EvalRun) -> dict:
 async def get_eval_config() -> dict:
     """Read current eval config (the 6 tunable factors)."""
     if _CONFIG_PATH.exists():
-        return json.loads(_CONFIG_PATH.read_text())
+        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
     return {}
 
 
@@ -204,9 +204,9 @@ async def update_eval_config(body: dict) -> dict:
     """Update eval config. Merges with existing config."""
     existing = {}
     if _CONFIG_PATH.exists():
-        existing = json.loads(_CONFIG_PATH.read_text())
+        existing = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
     existing.update(body)
-    _CONFIG_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+    _CONFIG_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
     return existing
 
 
@@ -327,12 +327,12 @@ async def diff_runs(run_id_a: str, run_id_b: str, db: AsyncSession = Depends(get
 
 def _load_prompts() -> dict:
     if _PROMPTS_PATH.exists():
-        return json.loads(_PROMPTS_PATH.read_text())
+        return json.loads(_PROMPTS_PATH.read_text(encoding="utf-8"))
     return {"prompts": {}}
 
 
 def _save_prompts(data: dict) -> None:
-    _PROMPTS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _PROMPTS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 @router.get("/prompts")
