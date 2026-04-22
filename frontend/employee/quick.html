@@ -253,7 +253,7 @@ async function loadExistingLines() {
   document.getElementById("existing-title").textContent = `${t('quick.existing-title')}（${report.title}）`;
   document.getElementById("existing-list").innerHTML = lines.map(l => {
     const isDraft = l._isDraft || l.status === "draft";
-    const amt = l.amount != null ? `¥${Number(l.amount).toFixed(2)}` : "—";
+    const amt = l.amount != null ? `${l.currency || "CNY"} ${Number(l.amount).toFixed(2)}` : "—";
     const cat = l.category ? i18n.cat(l.category) : "";
     const statusLabel = isDraft ? (l.merchant ? t('quick.line-to-confirm') : t('quick.line-scanning')) : t('quick.line-saved');
     const statusCls = isDraft ? "draft" : "in_report";
