@@ -467,10 +467,25 @@
       closeModal();
       await loadList();
       const actionLabel = { approve: t('queue.done-approve'), reject: t('queue.done-reject'), return: t('queue.done-return') };
+      const iconColor = { approve: "#10b981", reject: "#ef4444", return: "#f59e0b" }[modalAction];
+      const doneReport = reports.find(x => x.id === selectedId);
+      const sub = doneReport
+        ? `${doneReport.title} · ${doneReport.home_currency || "CNY"} ${(doneReport.total_converted != null ? doneReport.total_converted : doneReport.total_amount).toFixed(2)}`
+        : "";
       document.getElementById("inbox-detail").innerHTML = `
-        <div class="inbox-empty">
-          <div class="inbox-empty-icon">✅</div>
-          <div style="font-size:.9rem;font-weight:500">${actionLabel[modalAction]}</div>
+        <div class="inbox-done">
+          <div class="inbox-done-row">
+            <svg class="inbox-done-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+              <circle cx="12" cy="12" r="11" fill="${iconColor}"/>
+              ${modalAction === "approve"
+                ? '<path d="M7 12.5l3 3 7-7" stroke="white" stroke-width="2.25" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+                : modalAction === "reject"
+                  ? '<path d="M8 8l8 8M16 8l-8 8" stroke="white" stroke-width="2.25" stroke-linecap="round"/>'
+                  : '<path d="M14 8l-4 4 4 4" stroke="white" stroke-width="2.25" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'}
+            </svg>
+            <span class="inbox-done-title">${actionLabel[modalAction]}</span>
+          </div>
+          ${sub ? `<div class="inbox-done-sub">${sub}</div>` : ""}
         </div>`;
       selectedId = null;
     } catch (err) {
