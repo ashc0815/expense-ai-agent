@@ -692,9 +692,10 @@ async def delete_employee(db: AsyncSession, employee_id: str) -> bool:
 
 # ── CRUD — drafts ─────────────────────────────────────────────────
 
-async def create_draft(db: AsyncSession, employee_id: str) -> Draft:
+async def create_draft(db: AsyncSession, employee_id: str, report_id: Optional[str] = None) -> Draft:
     draft = Draft(
         employee_id=employee_id,
+        report_id=report_id,
         fields={},
         field_sources={},
         chat_history=[],
