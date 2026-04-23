@@ -755,16 +755,25 @@ function renderCompPromptEditor(compKey, key, prompt, selectedVersion) {
   }
   h += "</div>";
 
+  // IDs are namespaced by compKey+key because all 4 component tabs stay in
+  // the DOM at once (hidden via display:none). A shared id="prompt-content"
+  // across tabs means document.getElementById returns the wrong textarea and
+  // Save writes the wrong slot's content into the current key (data loss).
+  var editorId   = "prompt-content-" + compKey + "-" + key;
+  var notesId    = "prompt-notes-"   + compKey + "-" + key;
+  var feedbackId = "prompt-save-feedback-" + compKey + "-" + key;
+
   h += '<div class="prompt-editor">'
-    + '<textarea id="prompt-content">' + esc(ver.content || "") + "</textarea></div>";
+    + '<textarea id="' + editorId + '">' + esc(ver.content || "") + "</textarea></div>";
   h += '<div style="margin-top:.6rem">'
     + '<label style="font-size:.72rem; font-weight:600; color:var(--gray-500); display:block; margin-bottom:.2rem">NOTES</label>'
-    + '<input type="text" id="prompt-notes" value="' + esc(ver.notes || "") + '" style="width:100%; padding:.4rem .6rem; border:1px solid var(--gray-200); border-radius:6px; font-size:.78rem; box-sizing:border-box">'
+    + '<input type="text" id="' + notesId + '" value="' + esc(ver.notes || "") + '" style="width:100%; padding:.4rem .6rem; border:1px solid var(--gray-200); border-radius:6px; font-size:.78rem; box-sizing:border-box">'
     + "</div>";
-  h += '<div class="config-actions">'
+  h += '<div class="config-actions" style="align-items:center; flex-wrap:wrap; gap:.5rem">'
     + '<button class="btn-save btn-primary" onclick="saveCompPromptVer(\'' + compKey + "','" + key + "','" + selectedVersion + "')\">Save</button>"
     + '<button class="btn-save btn-secondary" onclick="saveAsCompNewVer(\'' + compKey + "','" + key + "')\">Save as New...</button>"
-    + '<span id="prompt-save-feedback" class="save-feedback"></span>'
+    + '<span style="font-size:.72rem; color:var(--gray-500)">Saving to: <code style="background:var(--gray-100); padding:.1rem .4rem; border-radius:4px; font-weight:600; color:var(--gray-900)">' + esc(key) + " · " + esc(selectedVersion) + "</code></span>"
+    + '<span id="' + feedbackId + '" class="save-feedback"></span>'
     + "</div>";
 
   editorEl.innerHTML = h;
@@ -777,18 +786,30 @@ async function switchCompPromptVer(compKey, key, ver) {
   renderCompPromptEditor(compKey, key, prompt, ver);
 }
 
+function _promptEditorEl(compKey, key) {
+  return document.getElementById("prompt-content-" + compKey + "-" + key);
+}
+function _promptNotesEl(compKey, key) {
+  return document.getElementById("prompt-notes-" + compKey + "-" + key);
+}
+
 async function saveCompPromptVer(compKey, key, ver) {
-  var content = document.getElementById("prompt-content").value;
-  var notes = document.getElementById("prompt-notes").value;
+  var editor = _promptEditorEl(compKey, key);
+  var notesInput = _promptNotesEl(compKey, key);
+  if (!editor) { alert("Editor not found for " + key + " — refresh the page"); return; }
+  var content = editor.value;
+  var notes = notesInput ? notesInput.value : "";
   try {
     var r = await fetch(API + "/api/eval/prompts/" + key + "/versions/" + ver, {
       method: "PUT", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({content: content, notes: notes}),
     });
     if (r.ok) {
-      var fb = document.getElementById("prompt-save-feedback");
-      fb.textContent = "Saved!";
-      setTimeout(function() { fb.textContent = ""; }, 2000);
+      var fb = document.getElementById("prompt-save-feedback-" + compKey + "-" + key);
+      if (fb) {
+        fb.textContent = "Saved!";
+        setTimeout(function() { fb.textContent = ""; }, 2000);
+      }
     }
   } catch (e) { alert("Failed: " + e.message); }
 }
@@ -796,7 +817,8 @@ async function saveCompPromptVer(compKey, key, ver) {
 function createCompNewVersion(compKey, key) {
   var name = window.prompt("New version name (e.g. v2):");
   if (!name) return;
-  var content = document.getElementById("prompt-content") ? document.getElementById("prompt-content").value : "";
+  var editor = _promptEditorEl(compKey, key);
+  var content = editor ? editor.value : "";
   fetch(API + "/api/eval/prompts/" + key + "/versions/" + name, {
     method: "PUT", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({content: content, notes: "Created from " + (currentPromptVersion || "scratch")}),
@@ -806,8 +828,11 @@ function createCompNewVersion(compKey, key) {
 function saveAsCompNewVer(compKey, key) {
   var name = window.prompt("Save as new version name:");
   if (!name) return;
-  var content = document.getElementById("prompt-content").value;
-  var notes = document.getElementById("prompt-notes").value;
+  var editor = _promptEditorEl(compKey, key);
+  var notesInput = _promptNotesEl(compKey, key);
+  if (!editor) { alert("Editor not found for " + key + " — refresh the page"); return; }
+  var content = editor.value;
+  var notes = notesInput ? notesInput.value : "";
   fetch(API + "/api/eval/prompts/" + key + "/versions/" + name, {
     method: "PUT", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({content: content, notes: notes}),
