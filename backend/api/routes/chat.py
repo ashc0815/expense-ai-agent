@@ -323,7 +323,7 @@ async def _gpt4o_ocr(receipt_url: str) -> Optional[dict]:
     except Exception as exc:  # noqa: BLE001
         err = f"{type(exc).__name__}: {exc}"
         await record_trace(
-            component="chat_agent_ocr", model=model, prompt=trace_prompt,
+            component="ocr", model=model, prompt=trace_prompt,
             response=None, latency_ms=timer.elapsed_ms or None, error=err,
         )
         return None
@@ -345,7 +345,7 @@ async def _gpt4o_ocr(receipt_url: str) -> Optional[dict]:
         return None
     finally:
         await record_trace(
-            component="chat_agent_ocr",
+            component="ocr",
             model=model,
             prompt=trace_prompt,
             response=raw,

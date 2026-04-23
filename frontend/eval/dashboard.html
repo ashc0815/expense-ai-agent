@@ -259,7 +259,7 @@
           <option value="fraud_llm_analyzer">Fraud LLM</option>
           <option value="ambiguity_detector">Ambiguity</option>
           <option value="ocr">OCR</option>
-          <option value="chat_agent">Chat Agent</option>
+          <option value="chat_employee_submit,chat_employee_qa,chat_manager_explain">Chat Agent</option>
         </select>
       </div>
       <div class="sidebar-filter">
@@ -1057,7 +1057,7 @@ async function loadTraces(page) {
   var sort = document.getElementById("sort-field").value;
   var order = document.getElementById("sort-order").value;
   var url = API + "/api/eval/traces?page=" + currentTracePage + "&page_size=15&sort=" + sort + "&order=" + order;
-  if (comp) url += "&component=" + comp;
+  if (comp) url += "&component=" + encodeURIComponent(comp);
   if (err) url += "&has_error=" + err;
   try {
     var r = await fetch(url);
