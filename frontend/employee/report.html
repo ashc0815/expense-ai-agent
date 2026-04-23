@@ -529,6 +529,7 @@ function showDetail(itemId, isDraft) {
   const item = items.find(i => i.id === itemId);
   if (!item) return;
   currentDetailItemId = itemId;
+  if (typeof currentEditLineId !== 'undefined') currentEditLineId = itemId;
 
   const isOpen = reportData.status === "open";
   // Only `open` (still drafting) and `needs_revision` (manager sent back) are editable.
@@ -726,6 +727,7 @@ async function saveLineEdits(itemId) {
 function closeDetail() {
   document.getElementById("detail-overlay").classList.remove("open");
   document.getElementById("detail-panel").classList.remove("open");
+  if (typeof currentEditLineId !== 'undefined') currentEditLineId = null;
 }
 
 function updateConvertedPreview() {
@@ -750,6 +752,24 @@ loadReport().then(() => {
   if (lineId) showDetail(lineId, isDraft);
 });
 </script>
+<script>
+let currentEditLineId = null;
+
+window.aiPageContext = function() {
+  if (!REPORT_ID || !reportData) return { page: "report" };
+  var lines = (reportData.lines || []).map(function(l) {
+    return { id: l.id, merchant: l.merchant, amount: l.amount, currency: l.currency, category: l.category, date: l.date };
+  });
+  return { page: "report", report_id: REPORT_ID, lines: lines };
+};
+
+window.addEventListener("ai-assistant-event", function(e) {
+  if (e.detail.type === "tool_result" && e.detail.result && e.detail.result.ok) {
+    loadReport();
+  }
+});
+</script>
+
 <script src="/shared/ai-assistant.js"></script>
 </body>
 </html>

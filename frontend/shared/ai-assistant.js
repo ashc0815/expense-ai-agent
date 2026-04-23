@@ -2,7 +2,7 @@
  * AI 报销助手 — 可嵌入任何员工页面的侧边栏聊天组件。
  *
  * 用法：在页面底部加 <script src="/shared/ai-assistant.js"></script>
- * 自动注入 FAB 按钮 + 侧边栏 drawer，使用 /api/chat/qa/message (employee_qa agent)。
+ * 自动注入 FAB 按钮 + 侧边栏 drawer，使用 /api/chat/unified/message (unified employee agent)。
  */
 (function () {
   "use strict";
@@ -152,10 +152,18 @@
     try {
       const headers = await getHeaders();
       headers["Content-Type"] = "application/json";
-      const resp = await fetch("/api/chat/qa/message", {
+
+      const pageContext = (typeof window.aiPageContext === 'function')
+        ? window.aiPageContext()
+        : { page: "unknown" };
+
+      const url = "/api/chat/unified/message";
+      const body = { messages: chatHistory.slice(-10), page_context: pageContext };
+
+      const resp = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({ messages: chatHistory.slice(-10) }),
+        body: JSON.stringify(body),
       });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
 
@@ -175,6 +183,7 @@
           if (!line.startsWith("data: ")) continue;
           try {
             const ev = JSON.parse(line.slice(6));
+            window.dispatchEvent(new CustomEvent("ai-assistant-event", { detail: ev }));
             if (ev.type === "assistant_text") {
               fullText += ev.text;
               aDiv.textContent = fullText;

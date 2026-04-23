@@ -650,6 +650,8 @@
     'quick.currency-eur':     { zh: '欧元',           en: 'EUR'                                    },
     'quick.currency-jpy':     { zh: '日元',           en: 'JPY'                                    },
     'quick.currency-gbp':     { zh: '英镑',           en: 'GBP'                                    },
+    'quick.chat-placeholder': { zh: '告诉 AI 修改字段，例如：把金额改成 380', en: 'Ask AI to edit fields, e.g. "change amount to 380"' },
+    'quick.chat-send':        { zh: '发送',           en: 'Send'                                   },
 
     // ── My Reports page (extended) ──────────────────────────────────────────────
     'myreports.title':          { zh: '我的报销单',       en: 'My Expense Reports'                },

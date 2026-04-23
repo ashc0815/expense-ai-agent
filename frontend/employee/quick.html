@@ -131,6 +131,41 @@
     .error-card .error-icon { font-size: 2.5rem; margin-bottom: .5rem; }
     .error-card .error-title { font-weight: 700; color: #991b1b; font-size: 1rem; margin-bottom: .3rem; }
     .error-card .error-sub { color: #b91c1c; font-size: .85rem; margin-bottom: 1rem; }
+    /* chat input inside form */
+    .form-chat {
+      margin-top: 1rem; border-top: 1px solid #e2e8f0; padding-top: .8rem;
+    }
+    .form-chat-messages {
+      max-height: 120px; overflow-y: auto; display: flex; flex-direction: column;
+      gap: .4rem; margin-bottom: .5rem;
+    }
+    .form-chat-msg {
+      font-size: .82rem; line-height: 1.4; padding: .4rem .6rem;
+      border-radius: 8px; max-width: 90%; word-break: break-word;
+    }
+    .form-chat-msg.user {
+      align-self: flex-end; background: #18b48e; color: white;
+      border-bottom-right-radius: 3px;
+    }
+    .form-chat-msg.assistant {
+      align-self: flex-start; background: #f1f5f9; color: #0f172a;
+      border-bottom-left-radius: 3px;
+    }
+    .form-chat-row {
+      display: flex; gap: .4rem;
+    }
+    .form-chat-row input {
+      flex: 1; border: 1px solid #e2e8f0; border-radius: 8px;
+      padding: .45rem .6rem; font-size: .85rem; outline: none;
+    }
+    .form-chat-row input:focus { border-color: #18b48e; }
+    .form-chat-row button {
+      background: #18b48e; color: white; border: none; border-radius: 8px;
+      padding: .45rem .8rem; font-size: .85rem; font-weight: 600; cursor: pointer;
+      white-space: nowrap;
+    }
+    .form-chat-row button:disabled { background: #cbd5e1; cursor: not-allowed; }
+
     .faq-section { margin-top: 1.5rem; }
     .faq-item { border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: .4rem; overflow: hidden; }
     .faq-q {
@@ -577,6 +612,15 @@ async function showForm(draftId) {
         </select>
       </div>
 
+      <div class="form-chat" id="chat-area-${draftId}">
+        <div class="form-chat-messages" id="chat-msgs-${draftId}"></div>
+        <div class="form-chat-row">
+          <input id="chat-input-${draftId}" placeholder="${t('quick.chat-placeholder') || '告诉 AI 修改字段，例如：把金额改成 380'}"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMsg('${draftId}');}">
+          <button id="chat-send-${draftId}" onclick="sendChatMsg('${draftId}')">${t('quick.chat-send') || '发送'}</button>
+        </div>
+      </div>
+
       <div id="form-alert-${draftId}"></div>
 
       <div class="form-actions">
@@ -708,6 +752,118 @@ function openLineDetail(lineId, isDraft) {
   window.location.href = `/employee/report.html?report_id=${CURRENT_REPORT_ID}&line=${lineId}&draft=${isDraft}`;
 }
 
+</script>
+
+<script>
+// ── Chat-to-Agent for field modification ──────────────────
+async function sendChatMsg(draftId) {
+  const input = document.getElementById(`chat-input-${draftId}`);
+  const sendBtn = document.getElementById(`chat-send-${draftId}`);
+  const msgsEl = document.getElementById(`chat-msgs-${draftId}`);
+  const text = input.value.trim();
+  if (!text) return;
+
+  msgsEl.innerHTML += `<div class="form-chat-msg user">${escHtml(text)}</div>`;
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+  input.value = "";
+  sendBtn.disabled = true;
+
+  try {
+    const authH = await getAuth();
+    const resp = await fetch(`/api/chat/drafts/${draftId}/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authH },
+      body: JSON.stringify({ message: text }),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let assistantText = "";
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (ev.type === "assistant_text") {
+          assistantText += ev.text;
+        } else if (ev.type === "draft_updated") {
+          applyDraftUpdate(draftId, ev.fields || {}, ev.field_sources || {});
+        }
+      }
+    }
+
+    if (assistantText) {
+      msgsEl.innerHTML += `<div class="form-chat-msg assistant">${escHtml(assistantText)}</div>`;
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+    }
+  } catch (err) {
+    msgsEl.innerHTML += `<div class="form-chat-msg assistant" style="color:#dc2626">请求失败: ${escHtml(err.message)}</div>`;
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+function applyDraftUpdate(draftId, fields, sources) {
+  const fieldMap = {
+    merchant: `qf-merchant-${draftId}`,
+    amount: `qf-amount-${draftId}`,
+    date: `qf-date-${draftId}`,
+    category: `qf-category-${draftId}`,
+    tax_amount: `qf-tax-${draftId}`,
+    invoice_number: `qf-invoice-number-${draftId}`,
+    invoice_code: `qf-invoice-code-${draftId}`,
+    project_code: `qf-project-${draftId}`,
+    description: `qf-desc-${draftId}`,
+    currency: `qf-currency-${draftId}`,
+  };
+  for (const [key, val] of Object.entries(fields)) {
+    const el = document.getElementById(fieldMap[key]);
+    if (!el) continue;
+    el.value = val;
+    el.classList.add("ai-filled");
+    el.classList.remove("needs-confirm");
+  }
+  if (draftData[draftId]) {
+    Object.assign(draftData[draftId].fields, fields);
+    Object.assign(draftData[draftId].sources, sources);
+  }
+}
+
+function escHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── AI Assistant config: route sidebar to employee_submit agent ──
+let activeDraftId = null;
+
+const _origShowForm = showForm;
+showForm = async function(draftId) {
+  activeDraftId = draftId;
+  await _origShowForm(draftId);
+};
+
+window.aiPageContext = function() {
+  return activeDraftId ? { page: "quick", draft_id: activeDraftId } : { page: "quick" };
+};
+
+window.addEventListener("ai-assistant-event", function(e) {
+  if (e.detail.type === "draft_updated" && activeDraftId) {
+    applyDraftUpdate(activeDraftId, e.detail.fields || {}, e.detail.field_sources || {});
+  }
+});
 </script>
 
 <script src="/shared/ai-assistant.js"></script>
