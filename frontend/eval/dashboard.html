@@ -119,6 +119,29 @@
     .btn-secondary:hover { background: var(--gray-200); }
     .save-feedback { font-size: .78rem; color: #16a34a; margin-left: .5rem; line-height: 2; }
 
+    /* ── Human-labeled eval: confusion matrix & subfield grid ── */
+    .heval-summary { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: .8rem; }
+    .heval-stat { padding: .6rem .9rem; background: var(--gray-100); border-radius: 8px; min-width: 110px; }
+    .heval-stat-label { font-size: .7rem; color: var(--gray-500); text-transform: uppercase; letter-spacing: .03em; }
+    .heval-stat-value { font-size: 1.3rem; font-weight: 700; color: var(--gray-900); margin-top: .15rem; }
+    .heval-stat.danger .heval-stat-value { color: #dc2626; }
+    .heval-stat.good .heval-stat-value    { color: #16a34a; }
+    .heval-matrix { border-collapse: collapse; margin: .4rem 0 1rem; font-size: .82rem; }
+    .heval-matrix th, .heval-matrix td { border: 1px solid var(--gray-200); padding: .45rem .7rem; text-align: center; }
+    .heval-matrix th { background: var(--gray-100); font-weight: 600; color: var(--gray-700); }
+    .heval-matrix td.diag { background: #f0fdf4; font-weight: 600; color: #166534; }
+    .heval-matrix td.hot  { background: #fef2f2; font-weight: 600; color: #991b1b; }
+    .heval-matrix td.zero { color: var(--gray-500); }
+    .heval-row { border-bottom: 1px solid var(--gray-200); padding: .55rem 0; cursor: pointer; }
+    .heval-row:hover { background: var(--gray-100); }
+    .heval-row.fail { border-left: 3px solid #dc2626; padding-left: .5rem; }
+    .heval-row.pass { border-left: 3px solid #16a34a; padding-left: .5rem; }
+    .heval-subfield-cell { display: inline-block; padding: .1rem .4rem; border-radius: 4px; font-size: .7rem; margin-right: .2rem; font-family: var(--mono); }
+    .heval-subfield-cell.pass { background: #dcfce7; color: #166534; }
+    .heval-subfield-cell.fail { background: #fee2e2; color: #991b1b; }
+    .heval-detail { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 6px; padding: .7rem; margin: .4rem 0 .8rem; font-size: .78rem; }
+    .heval-detail pre { background: var(--gray-100); padding: .5rem; border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: .72rem; margin: .3rem 0; }
+
     /* ── Metadata pills ──────────────────────────── */
     .meta-pills { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0; }
     .meta-pill {
@@ -655,14 +678,24 @@ async function loadComponentView(compKey) {
     + '<div class="comp-section-title"><span class="icon">&#9654;</span> Eval Cases (Latest Run)</div>'
     + '<div class="empty-state">Loading...</div></div>';
 
+  // Human-labeled eval section (only for fraud + ambiguity, where we actually compute it)
+  if (compKey === "fraud" || compKey === "ambiguity") {
+    html += '<div id="comp-' + compKey + '-human" class="comp-section">'
+      + '<div class="comp-section-title"><span class="icon">&#9873;</span> Human-Labeled Eval</div>'
+      + '<div class="empty-state">Loading...</div></div>';
+  }
+
   container.innerHTML = html;
 
   // Load data in parallel
-  await Promise.all([
+  var tasks = [
     loadComponentPrompts(compKey),
     loadComponentConfig(compKey),
     loadComponentCases(compKey),
-  ]);
+  ];
+  if (compKey === "fraud") tasks.push(loadHumanFraud());
+  if (compKey === "ambiguity") tasks.push(loadHumanAmbiguity());
+  await Promise.all(tasks);
 }
 
 /* ── Component: Prompts ──────────────────────── */
@@ -1047,6 +1080,210 @@ async function loadComponentCases(compKey) {
     target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9654;</span> Eval Cases (Latest Run)</div>'
       + '<div class="empty-state">Failed to load cases.</div>';
   }
+}
+
+/* ── Human-Labeled Eval: Fraud subfield accuracy ─────────────── */
+async function loadHumanFraud() {
+  var target = document.getElementById("comp-fraud-human");
+  if (!target) return;
+  var title = '<div class="comp-section-title"><span class="icon">&#9873;</span> Human-Labeled Eval</div>';
+  try {
+    var r = await fetch(API + "/api/eval/human/fraud");
+    var data = await r.json();
+    if (data.empty) {
+      target.innerHTML = title
+        + '<div class="empty-state">' + esc(data.message || "No human-labeled run yet.") + "<br>"
+        + '<code style="font-size:.75rem">pytest backend/tests/test_human_eval.py -v</code></div>';
+      return;
+    }
+    target.innerHTML = title + renderHumanFraud(data);
+  } catch (e) {
+    target.innerHTML = title + '<div class="empty-state">Failed to load human-fraud eval.</div>';
+  }
+}
+
+function renderHumanFraud(data) {
+  var h = "";
+  // Summary pills
+  h += '<div class="heval-summary">';
+  h += heval_stat("Cases",             data.total_cases || 0);
+  h += heval_stat("Subfield Checks",   data.total_subfield_checks || 0);
+  h += heval_stat("Passed",            data.passed_subfield_checks || 0, "good");
+  var accPct = Math.round((data.overall_accuracy || 0) * 100);
+  h += heval_stat("Overall Accuracy", accPct + "%", accPct >= 80 ? "good" : (accPct < 50 ? "danger" : ""));
+  h += heval_stat("Mode",              esc(data.mode || "--"));
+  h += "</div>";
+
+  // Per-subfield accuracy table
+  h += '<div style="margin:.8rem 0 .4rem; font-weight:600; font-size:.82rem; color:var(--gray-700)">Per-subfield accuracy</div>';
+  h += '<table class="heval-matrix"><thead><tr><th>Subfield</th><th>Passed</th><th>Total</th><th>Accuracy</th></tr></thead><tbody>';
+  var sfAcc = data.per_subfield_accuracy || {};
+  Object.keys(sfAcc).forEach(function(sf) {
+    var row = sfAcc[sf];
+    var pct = Math.round((row.accuracy || 0) * 100);
+    var cls = pct >= 80 ? "diag" : (pct < 50 ? "hot" : "");
+    h += '<tr><td style="text-align:left; font-family:var(--mono); font-size:.75rem">' + sf + "</td>"
+      + "<td>" + row.passed + "</td>"
+      + "<td>" + row.total + "</td>"
+      + '<td class="' + cls + '">' + pct + "%</td></tr>";
+  });
+  h += "</tbody></table>";
+
+  // Case list with drill-down
+  h += '<div style="margin:.8rem 0 .4rem; font-weight:600; font-size:.82rem; color:var(--gray-700)">'
+    + 'Cases (click to expand)</div>';
+  h += '<div class="heval-cases">';
+  (data.results || []).forEach(function(c, i) {
+    var cls = c.all_passed ? "pass" : "fail";
+    var badge = c.subfield_passed + "/" + c.subfield_total;
+    h += '<div class="heval-row ' + cls + '" onclick="toggleHevalDetail(\'fraud\',' + i + ')">';
+    h += '<div><strong>' + esc(c.case_id) + "</strong> · <span style=\"color:var(--gray-500)\">" + esc(c.description || "") + "</span>"
+      + '<span style="float:right"><span class="heval-subfield-cell ' + (c.all_passed ? "pass" : "fail") + '">' + badge + "</span></span></div>";
+    // Per-subfield chips
+    h += '<div style="margin-top:.3rem">';
+    Object.keys(c.grades || {}).forEach(function(sf) {
+      var g = c.grades[sf];
+      h += '<span class="heval-subfield-cell ' + (g.passed ? "pass" : "fail") + '" title="AI=' + esc(String(g.ai)) + ' Human=' + esc(String(g.human)) + '">' + sf + "</span>";
+    });
+    h += "</div>";
+    // Detail (hidden by default)
+    h += '<div id="heval-fraud-detail-' + i + '" style="display:none">';
+    h += renderHumanFraudDetail(c);
+    h += "</div>";
+    h += "</div>";
+  });
+  h += "</div>";
+  return h;
+}
+
+function renderHumanFraudDetail(c) {
+  var h = '<div class="heval-detail">';
+  h += '<div style="margin-bottom:.3rem"><strong>Labeler note:</strong> ' + esc(c.labeler_note || "(none)") + "</div>";
+  // Per-subfield diff table
+  h += '<table class="heval-matrix" style="margin:.3rem 0"><thead><tr>'
+    + "<th>Subfield</th><th>AI</th><th>Human</th><th>Result</th></tr></thead><tbody>";
+  Object.keys(c.grades || {}).forEach(function(sf) {
+    var g = c.grades[sf];
+    h += "<tr>"
+      + '<td style="text-align:left; font-family:var(--mono); font-size:.72rem">' + sf + "</td>"
+      + "<td>" + esc(String(g.ai)) + "</td>"
+      + "<td>" + esc(String(g.human)) + "</td>"
+      + '<td class="' + (g.passed ? "diag" : "hot") + '">' + (g.passed ? "✓" : "✗") + "</td></tr>";
+  });
+  h += "</tbody></table>";
+  h += '<div><strong>Input:</strong></div><pre>' + esc(JSON.stringify(c.input, null, 2)) + "</pre>";
+  h += '<div><strong>AI Output:</strong></div><pre>' + esc(JSON.stringify(c.ai_output, null, 2)) + "</pre>";
+  h += "</div>";
+  return h;
+}
+
+function toggleHevalDetail(kind, idx) {
+  var el = document.getElementById("heval-" + kind + "-detail-" + idx);
+  if (el) el.style.display = el.style.display === "none" ? "" : "none";
+}
+
+/* ── Human-Labeled Eval: Ambiguity confusion matrix ──────────── */
+async function loadHumanAmbiguity() {
+  var target = document.getElementById("comp-ambiguity-human");
+  if (!target) return;
+  var title = '<div class="comp-section-title"><span class="icon">&#9873;</span> Human-Labeled Eval</div>';
+  try {
+    var r = await fetch(API + "/api/eval/human/ambiguity");
+    var data = await r.json();
+    if (data.empty) {
+      target.innerHTML = title
+        + '<div class="empty-state">' + esc(data.message || "No human-labeled run yet.") + "<br>"
+        + '<code style="font-size:.75rem">pytest backend/tests/test_human_eval.py -v</code></div>';
+      return;
+    }
+    target.innerHTML = title + renderHumanAmbiguity(data);
+  } catch (e) {
+    target.innerHTML = title + '<div class="empty-state">Failed to load human-ambiguity eval.</div>';
+  }
+}
+
+function renderHumanAmbiguity(data) {
+  var h = "";
+  var crit = data.critical_cells || {};
+  var fn = crit.gold_reject_pred_pass || 0;   // risk slipped through
+  var fp = crit.gold_pass_pred_reject || 0;   // legit user blocked
+
+  h += '<div class="heval-summary">';
+  h += heval_stat("Cases",    data.total_cases || 0);
+  h += heval_stat("Correct",  data.correct || 0, "good");
+  var accPct = Math.round((data.accuracy || 0) * 100);
+  h += heval_stat("Accuracy", accPct + "%", accPct >= 80 ? "good" : (accPct < 50 ? "danger" : ""));
+  h += heval_stat("Risk Missed (FN)",   fn, fn > 0 ? "danger" : "good");
+  h += heval_stat("User Blocked (FP)",  fp, fp > 0 ? "danger" : "good");
+  h += "</div>";
+
+  // 3x3 matrix
+  var classes = ["auto_pass", "human_review", "suggest_reject"];
+  var m = data.confusion_matrix || {};
+  h += '<div style="margin:.4rem 0; font-weight:600; font-size:.82rem; color:var(--gray-700)">Confusion matrix (rows = human gold, columns = AI prediction)</div>';
+  h += '<table class="heval-matrix"><thead><tr><th></th>';
+  classes.forEach(function(c) { h += "<th>AI: " + c + "</th>"; });
+  h += "</tr></thead><tbody>";
+  classes.forEach(function(gold) {
+    h += "<tr><th style=\"text-align:right\">Gold: " + gold + "</th>";
+    classes.forEach(function(pred) {
+      var n = (m[gold] && m[gold][pred]) || 0;
+      var cls = "";
+      if (gold === pred) cls = "diag";
+      else if ((gold === "suggest_reject" && pred === "auto_pass") ||
+               (gold === "auto_pass" && pred === "suggest_reject")) cls = "hot";
+      else if (n === 0) cls = "zero";
+      h += '<td class="' + cls + '">' + n + "</td>";
+    });
+    h += "</tr>";
+  });
+  h += "</tbody></table>";
+
+  // Per-class precision / recall
+  var pc = data.per_class || {};
+  h += '<div style="margin:.6rem 0 .3rem; font-weight:600; font-size:.82rem; color:var(--gray-700)">Per-class precision / recall</div>';
+  h += '<table class="heval-matrix"><thead><tr><th>Class</th><th>TP</th><th>FP</th><th>FN</th><th>Precision</th><th>Recall</th></tr></thead><tbody>';
+  classes.forEach(function(c) {
+    var row = pc[c] || {};
+    h += '<tr><td style="text-align:left; font-family:var(--mono); font-size:.75rem">' + c + "</td>"
+      + "<td>" + (row.tp || 0) + "</td>"
+      + "<td>" + (row.fp || 0) + "</td>"
+      + "<td>" + (row.fn || 0) + "</td>"
+      + "<td>" + Math.round((row.precision || 0) * 100) + "%</td>"
+      + "<td>" + Math.round((row.recall || 0) * 100) + "%</td></tr>";
+  });
+  h += "</tbody></table>";
+
+  // Case list
+  h += '<div style="margin:.8rem 0 .4rem; font-weight:600; font-size:.82rem; color:var(--gray-700)">Cases (click to expand)</div>';
+  (data.results || []).forEach(function(c, i) {
+    var cls = c.passed ? "pass" : "fail";
+    var badge = c.passed ? "✓" : "✗";
+    h += '<div class="heval-row ' + cls + '" onclick="toggleHevalDetail(\'ambig\',' + i + ')">';
+    h += '<div><strong>' + esc(c.case_id) + "</strong> · <span style=\"color:var(--gray-500)\">" + esc(c.description || "") + "</span>"
+      + '<span style="float:right">'
+      + '<span class="heval-subfield-cell ' + cls + '">gold=' + esc(c.human_gold) + "</span>"
+      + '<span class="heval-subfield-cell ' + cls + '">ai=' + esc(c.ai_output.recommendation) + "</span>"
+      + "</span></div>";
+    h += '<div id="heval-ambig-detail-' + i + '" style="display:none">';
+    h += '<div class="heval-detail">';
+    h += '<div style="margin-bottom:.3rem"><strong>Labeler note:</strong> ' + esc(c.labeler_note || "(none)") + "</div>";
+    h += '<div><strong>Input:</strong></div><pre>' + esc(JSON.stringify(c.input, null, 2)) + "</pre>";
+    h += '<div><strong>AI Output:</strong> score=' + (c.ai_output.score || 0)
+      + ', triggered=[' + (c.ai_output.triggered_factors || []).join(", ") + "]</div>";
+    h += '<div style="margin-top:.3rem"><strong>Explanation:</strong> ' + esc(c.ai_output.explanation || "") + "</div>";
+    h += "</div></div>";
+    h += "</div>";
+  });
+  return h;
+}
+
+function heval_stat(label, value, flavor) {
+  var cls = "heval-stat";
+  if (flavor) cls += " " + flavor;
+  return '<div class="' + cls + '">'
+    + '<div class="heval-stat-label">' + label + "</div>"
+    + '<div class="heval-stat-value">' + value + "</div></div>";
 }
 
 /* ── Traces ──────────────────────────────────── */

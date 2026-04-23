@@ -31,6 +31,8 @@ router = APIRouter()
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_config.json"
 _PROMPTS_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_prompts.json"
+_HUMAN_FRAUD_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_human_fraud_latest.json"
+_HUMAN_AMBIG_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_human_ambiguity_latest.json"
 
 
 # ── Eval Runs ────────────────────────────────────────────────────────
@@ -416,6 +418,37 @@ async def set_active_version(prompt_key: str, body: dict) -> dict:
     prompt["active_version"] = version
     _save_prompts(data)
     return {"key": prompt_key, "active_version": version}
+
+
+# ── Human-Labeled Evals (fraud subfield matrix + ambiguity confusion) ──
+
+@router.get("/human/fraud")
+async def get_human_fraud_eval() -> dict:
+    """Return the latest fraud analyzer human-labeled eval results.
+
+    File is written by pytest backend/tests/test_human_eval.py::test_fraud_human_eval.
+    Returns {empty: true} if the file does not exist yet (before first run).
+    """
+    if not _HUMAN_FRAUD_PATH.exists():
+        return {"empty": True, "message": "No fraud human-eval run yet. Run: pytest backend/tests/test_human_eval.py"}
+    try:
+        return json.loads(_HUMAN_FRAUD_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"empty": True, "error": str(exc)}
+
+
+@router.get("/human/ambiguity")
+async def get_human_ambiguity_eval() -> dict:
+    """Return the latest ambiguity detector human-labeled eval results.
+
+    File is written by pytest backend/tests/test_human_eval.py::test_ambiguity_human_eval.
+    """
+    if not _HUMAN_AMBIG_PATH.exists():
+        return {"empty": True, "message": "No ambiguity human-eval run yet. Run: pytest backend/tests/test_human_eval.py"}
+    try:
+        return json.loads(_HUMAN_AMBIG_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"empty": True, "error": str(exc)}
 
 
 # ── Serializers ───────────────────────────────────────────────────────
