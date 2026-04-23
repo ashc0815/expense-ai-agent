@@ -879,8 +879,11 @@ async def patch_report_line(
     if ctx.role == "employee":
         if report.employee_id != ctx.user_id:
             raise HTTPException(status_code=403, detail="权限不足")
-        if report.status not in ("open", "pending", "needs_revision"):
-            raise HTTPException(status_code=409, detail="报销单已审批，无法编辑")
+        # `pending` is a locked state — employee must withdraw the report back
+        # to `open` (or wait for manager to reject into `needs_revision`)
+        # before any line edits are allowed.
+        if report.status not in ("open", "needs_revision"):
+            raise HTTPException(status_code=409, detail="报销单已提交或已审批，无法编辑（请先撤回）")
     elif ctx.role not in ("manager", "finance_admin"):
         raise HTTPException(status_code=403, detail="权限不足")
 
@@ -920,7 +923,11 @@ async def delete_report_line(
     ctx: UserContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """Employee can delete a line item from their own open/pending report."""
+    """Employee can delete a line item from their own open or needs_revision report.
+
+    `pending` (submitted, awaiting manager approval) is locked — the employee
+    must withdraw the report back to `open` before deletions are allowed.
+    """
     from backend.db.store import get_submission
     report = await get_report(db, report_id)
     if not report:
@@ -928,8 +935,8 @@ async def delete_report_line(
     if ctx.role == "employee":
         if report.employee_id != ctx.user_id:
             raise HTTPException(status_code=403, detail="权限不足")
-        if report.status not in ("open", "pending", "needs_revision"):
-            raise HTTPException(status_code=409, detail="报销单已审批，无法删除")
+        if report.status not in ("open", "needs_revision"):
+            raise HTTPException(status_code=409, detail="报销单已提交或已审批，无法删除（请先撤回）")
     elif ctx.role not in ("manager", "finance_admin"):
         raise HTTPException(status_code=403, detail="权限不足")
 
