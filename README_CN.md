@@ -9,6 +9,24 @@ AI 驱动的企业报销管理平台 — 从发票提交到付款入账的全流
 
 ---
 
+## 目录
+
+- [这个项目做了什么](#这个项目做了什么)
+- [架构总览](#架构总览)
+- [5-Skill 合规审核管道](#5-skill-合规审核管道)
+- [对话式 Agent](#对话式-agent)
+- [核心设计决策](#核心设计决策)
+- [审批与预算流程](#审批与预算流程)
+- [角色权限（RBAC）](#角色权限rbac)
+- [Eval 评估平台](#eval-评估平台)
+- [API 总览](#api-总览)
+- [我们故意不做的 5 件事](#我们故意不做的-5-件事)
+- [目录结构](#目录结构)
+- [快速启动](#快速启动)
+- [技术栈](#技术栈)
+
+---
+
 ## 这个项目做了什么
 
 ExpenseFlow 模拟了一套完整的企业报销系统：员工上传发票 -> AI 自动审核（OCR、规则引擎、模糊检测）-> 经理审批（附 AI 决策解释）-> 财务复核 -> 凭证生成 -> 付款执行。
@@ -119,7 +137,8 @@ TOOL_REGISTRY = {
                         "check_duplicate_invoice", "get_my_recent_submissions",
                         "update_draft_field", "check_budget_status"],   # 有写权限
     "employee_qa":     ["get_my_recent_submissions", "get_report_detail",
-                        "get_spend_summary", "get_budget_summary"],     # 全只读
+                        "get_spend_summary", "get_budget_summary",
+                        "get_policy_rules"],                             # 全只读
     "manager_explain": ["get_submission_for_review",
                         "get_employee_submission_history"],              # 全只读
 }
@@ -360,7 +379,27 @@ curl -X POST http://localhost:8000/api/eval/trigger \
 
 ## API 总览
 
-**报销单**
+**报销单（Reports — 员工把多条行项目打包成一张报销单整体提交）**
+
+| 方法 | 路径 | 角色 | 说明 |
+|------|------|------|------|
+| `POST` | `/api/reports` | employee | 新建报销单 |
+| `GET` | `/api/reports` | employee | 我的报销单列表 |
+| `GET` | `/api/reports/{id}` | all | 报销单详情（员工只能看自己的） |
+| `POST` | `/api/reports/{id}/submit` | employee | 提交报销单进入审批 |
+| `POST` | `/api/reports/{id}/withdraw` | employee | 撤回已提交/已批准的报销单 |
+| `POST` | `/api/reports/{id}/resubmit` | employee | 重新提交 `needs_revision` 的报销单 |
+| `POST` | `/api/reports/{id}/approve` | manager | 经理批准 |
+| `POST` | `/api/reports/{id}/reject` | manager | 经理拒绝 |
+| `POST` | `/api/reports/{id}/return` | manager | 退回修改（`needs_revision`） |
+| `POST` | `/api/reports/{id}/finance-approve` | finance_admin | 财务批准 |
+| `POST` | `/api/reports/{id}/finance-reject` | finance_admin | 财务拒绝 |
+| `PATCH` | `/api/reports/{id}/title` | employee | 重命名报销单 |
+| `PATCH` | `/api/reports/{id}/lines/{sid}` | employee | 编辑某条行项目 |
+| `DELETE` | `/api/reports/{id}/lines/{sid}` | employee | 删除某条行项目 |
+| `DELETE` | `/api/reports/{id}` | employee | 删除空报销单（仅限 open + 0 条目） |
+
+**行项目 Submissions**
 
 | 方法 | 路径 | 角色 | 说明 |
 |------|------|------|------|
@@ -483,32 +522,33 @@ requirements.txt                   # Python 依赖
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# 2. 启动服务（默认 MockLLM 模式，全本地，无需 API Key）
-uvicorn backend.main:app --reload --port 8000
-
-# 3. 访问
-# 员工端:   http://localhost:8000/employee/quick.html
-# 经理端:   http://localhost:8000/manager/queue.html
-# 财务端:   http://localhost:8000/finance/review.html
-# 管理端:   http://localhost:8000/admin/dashboard.html
-# Eval:    http://localhost:8000/eval/dashboard.html
-# API 文档: http://localhost:8000/docs
-```
-
-### 5 分钟 Demo 演练
-
-```bash
-# 可选：先植入演示数据
+# 2. （可选）植入演示数据
 python scripts/seed_demo_data.py
+
+# 3. 启动服务（默认 MockLLM 模式，全本地，无需 API Key）
+uvicorn backend.main:app --reload --port 8000
 ```
 
-| 步骤 | URL 参数 | 操作 |
-|------|---------|------|
-| 1. 员工提交 | `?as=employee` | 打开 quick.html，上传任意图片，AI 识别后确认提交 |
-| 2. AI 审核 | -- | 自动（1-3 秒），my-reports 页轮询直到 status=reviewed |
-| 3. 经理审批 | `?as=manager` | queue.html 点开报销单，看 AI 解释卡，点通过 |
-| 4. 财务审批 | `?as=finance_admin` | review.html，通过后生成凭证号 |
-| 5. 导出 | `?as=finance_admin` | export.html 批量导出 CSV |
+**访问入口**（mock 模式下可通过导航栏下拉框或 URL 参数 `?as=<role>` 切换角色）：
+
+| 角色 | 链接 |
+|------|------|
+| 员工 | `http://localhost:8000/employee/quick.html` |
+| 经理 | `http://localhost:8000/manager/queue.html` |
+| 财务 | `http://localhost:8000/finance/review.html` |
+| 管理员 | `http://localhost:8000/admin/dashboard.html` |
+| Eval Observatory | `http://localhost:8000/eval/dashboard.html` |
+| OpenAPI 文档 | `http://localhost:8000/docs` |
+
+**5 分钟端到端演练：**
+
+| 步骤 | 角色 | 操作 |
+|------|------|------|
+| 1 | employee | `quick.html` → 上传任意发票 → AI 识别字段 → 确认提交 |
+| 2 | — | AI 后台审核（1–3 秒）；`my-reports.html` 轮询到 `status=reviewed` |
+| 3 | manager | `queue.html` → 点开报销单 → 查看 AI 解释卡 → 点通过 |
+| 4 | finance_admin | `review.html` → 通过后生成凭证号 |
+| 5 | finance_admin | `export.html` → 批量导出 CSV |
 
 ---
 
@@ -518,9 +558,11 @@ python scripts/seed_demo_data.py
 |------|--------|------|
 | `AUTH_MODE` | `mock` | `mock`（开发）/ `clerk`（生产）|
 | `DATABASE_URL` | SQLite 本地文件 | 生产用 `postgresql+asyncpg://...` |
+| `EVAL_DATABASE_URL` | SQLite `concurshield_eval.db` | 与业务库物理隔离，存 LLM traces 和 eval runs，trace 增长不影响主库性能 |
 | `STORAGE_BACKEND` | `local` | `local` / `r2`（Cloudflare R2）|
 | `ANTHROPIC_API_KEY` | -- | 可选：AmbiguityDetector 深度分析（score >50 时触发） |
 | `OPENAI_API_KEY` | -- | 可选：对话 Agent 使用 GPT-4o |
+| `OPENAI_MODEL` | `gpt-4o` | 配置 `OPENAI_API_KEY` 时可覆盖默认模型 |
 | `AGENT_USE_REAL_LLM` | -- | 设为 `1` + 提供 API Key -> 切换 RealLLM |
 
 ### MockLLM vs RealLLM
