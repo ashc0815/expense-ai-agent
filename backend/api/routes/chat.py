@@ -43,6 +43,7 @@ from backend.db.store import (
     update_draft_field as store_update_draft_field,
     update_draft_receipt,
 )
+from backend.services.config_loader import load_prompt
 from backend.storage import get_storage
 
 router = APIRouter()
@@ -1201,7 +1202,13 @@ class RealLLM(BaseLLM):
         tools: list[dict],
         agent_role: str = "employee_submit",
     ) -> LLMResponse:
-        system = _SYSTEM_PROMPTS.get(agent_role, _SYSTEM_PROMPTS["employee_submit"])
+        # Prefer the dashboard-edited prompt (eval_prompts.json), fall back to
+        # the hardcoded default if the JSON entry is missing or empty. Loaded
+        # per-request so dashboard edits flow in without a server restart.
+        system = (
+            load_prompt(f"chat_{agent_role}")
+            or _SYSTEM_PROMPTS.get(agent_role, _SYSTEM_PROMPTS["employee_submit"])
+        )
         oai_messages = self._to_oai_messages(messages, system)
         oai_tools = self._to_oai_tools(tools)
 
