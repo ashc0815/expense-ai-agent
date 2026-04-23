@@ -281,6 +281,7 @@ function render() {
       </div>
       <div class="rp-actions">
         ${isPending ? `<button class="btn-withdraw" onclick="withdrawReport()">${t('report.withdraw-btn')}</button>` : ""}
+        ${isOpen && allItems.length === 0 ? `<button class="btn-withdraw" onclick="deleteReport()">${t('report.delete-btn')}</button>` : ""}
         ${isOpen ? `<button class="btn-submit" id="submit-btn" onclick="submitReport()" ${allItems.length === 0 ? 'disabled' : ''}>${t('report.submit-btn')}</button>` : ""}
         ${isRejected ? `<button class="btn-submit" onclick="recallReport()">${t('report.recall-btn')}</button>` : ""}
         ${needsRevision ? `<button class="btn-submit" onclick="resubmitReport()" ${allItems.length === 0 ? 'disabled' : ''}>${t('report.resubmit-btn')}</button>` : ""}
@@ -488,6 +489,21 @@ async function withdrawReport() {
   const body = await r.json();
   if (body.was_approved) alert(t('report.withdraw-notify'));
   await loadReport();
+}
+
+// ── Delete empty report ──────────────────────────────────────
+async function deleteReport() {
+  if (!confirm(t('report.confirm-delete-report'))) return;
+  const r = await fetch(`/api/reports/${REPORT_ID}`, {
+    method: "DELETE", headers: await getAuth(),
+  });
+  if (!r.ok) {
+    let msg = t('report.delete-report-fail') + ": " + r.status;
+    try { const b = await r.json(); if (b.detail) msg = b.detail; } catch {}
+    alert(msg);
+    return;
+  }
+  window.location.href = "/employee/my-reports.html";
 }
 
 // ── Remove line item ─────────────────────────────────────────
