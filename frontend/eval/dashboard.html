@@ -134,6 +134,30 @@
     .cfg-hist-pill .acc-down { color: #dc2626; margin-left: .2rem; }
     .cfg-history-empty { font-size: .65rem; color: var(--gray-500); font-style: italic; }
 
+    /* Advanced config toggle */
+    .cfg-advanced-toggle {
+      margin: .8rem 0 .4rem; padding: .4rem .6rem; background: var(--gray-100);
+      border: 1px dashed var(--gray-200); border-radius: 6px;
+      cursor: pointer; font-size: .75rem; color: var(--gray-700); user-select: none;
+    }
+    .cfg-advanced-toggle:hover { border-color: var(--brand); color: var(--gray-900); }
+    .cfg-advanced-toggle .chev { display: inline-block; transition: transform .15s ease; margin-right: .3rem; }
+    .cfg-advanced-toggle.expanded .chev { transform: rotate(90deg); }
+    .cfg-advanced-body { display: none; margin-top: .4rem; }
+    .cfg-advanced-body.expanded { display: block; }
+
+    /* Temperature lock warning */
+    .cfg-lock-warn {
+      display: block; margin-top: .25rem; font-size: .68rem; color: #b45309;
+      background: #fef3c7; border: 1px solid #fde68a; padding: .25rem .4rem; border-radius: 4px;
+    }
+    .cfg-lock-btn {
+      margin-left: .4rem; padding: .1rem .45rem; font-size: .65rem; border-radius: 4px;
+      background: transparent; border: 1px solid #d97706; color: #b45309; cursor: pointer;
+    }
+    .cfg-lock-btn:hover { background: #fef3c7; }
+    input.cfg-locked { background: var(--gray-100); color: var(--gray-500); cursor: not-allowed; }
+
     /* ── Human-labeled eval: confusion matrix & subfield grid ── */
     .heval-summary { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: .8rem; }
     .heval-stat { padding: .6rem .9rem; background: var(--gray-100); border-radius: 8px; min-width: 110px; }
@@ -417,8 +441,10 @@ const COMP_DEFS = {
       "fraud_llm_trigger_threshold",
       "threshold_proximity_pct",
       "rush_amount_multiplier",
-      "vendor_frequency_threshold",
       "round_amount_pct",
+    ],
+    configKeysAdvanced: [
+      "vendor_frequency_threshold",
       "seasonal_spike_multiplier",
     ],
     casePrefix: ["fraud_llm"],
@@ -980,11 +1006,38 @@ function loadCfgHistValue(compKey, key, value) {
 }
 
 /* ── Component: Config ───────────────────────── */
+// Render a single threshold field (input + history pills). Factored so the
+// common and advanced groups share one implementation.
+function renderCfgField(compKey, key, value, history) {
+  return '<div class="config-field">'
+    + "<label>" + esc(key) + "</label>"
+    + '<input type="text" id="comp-cfg-' + compKey + "-" + key + '" value="' + value + '" data-key="' + esc(key) + '">'
+    + renderCfgHistory(compKey, key, history)
+    + "</div>";
+}
+
+function toggleCfgAdvanced(compKey) {
+  var btn = document.getElementById("cfg-adv-toggle-" + compKey);
+  var body = document.getElementById("cfg-adv-body-" + compKey);
+  if (!btn || !body) return;
+  var isOpen = body.classList.toggle("expanded");
+  btn.classList.toggle("expanded", isOpen);
+  btn.querySelector(".chev").textContent = isOpen ? "▾" : "▸";
+}
+
+function toggleTempLock(compKey) {
+  var input = document.getElementById("comp-cfg-" + compKey + "-temperature");
+  var btn = document.getElementById("comp-cfg-" + compKey + "-temp-lock-btn");
+  if (!input || !btn) return;
+  var locked = input.classList.toggle("cfg-locked");
+  input.readOnly = locked;
+  btn.textContent = locked ? "Unlock" : "Lock";
+}
+
 async function loadComponentConfig(compKey) {
   var def = COMP_DEFS[compKey];
   var target = document.getElementById("comp-" + compKey + "-config");
   try {
-    // Fetch current config AND recent runs in parallel for history pills
     var [cfgRes, runsRes] = await Promise.all([
       fetch(API + "/api/eval/config"),
       fetch(API + "/api/eval/runs?page=1&page_size=30"),
@@ -993,61 +1046,87 @@ async function loadComponentConfig(compKey) {
     var runsData = await runsRes.json();
     var runs = runsData.items || [];
     var thresholds = cfg.config_thresholds || {};
-    var relevant = {};
 
-    // Pick relevant keys
-    def.configKeys.forEach(function(k) {
-      if (k in thresholds) relevant[k] = thresholds[k];
-      if (k in cfg) relevant[k] = cfg[k];
-    });
-
-    // Extra nested config (e.g. ambiguity_weights)
-    if (def.configExtra && cfg[def.configExtra]) {
-      var extra = cfg[def.configExtra];
-      Object.keys(extra).forEach(function(k) { relevant[k] = extra[k]; });
+    // Resolve a key's current value from config_thresholds, top-level, or
+    // an optional nested bag (e.g. ambiguity_weights).
+    function resolveValue(k) {
+      if (def.configExtra && cfg[def.configExtra] && k in cfg[def.configExtra]) return cfg[def.configExtra][k];
+      if (k in thresholds) return thresholds[k];
+      if (k in cfg) return cfg[k];
+      return undefined;
     }
 
-    var keys = Object.keys(relevant);
-    if (keys.length === 0) {
+    // Gather: common-list keys + any nested-bag keys (e.g. ambiguity weights).
+    var commonKeys = (def.configKeys || []).slice();
+    if (def.configExtra && cfg[def.configExtra]) {
+      Object.keys(cfg[def.configExtra]).forEach(function(k) {
+        if (commonKeys.indexOf(k) === -1) commonKeys.push(k);
+      });
+    }
+    var advancedKeys = (def.configKeysAdvanced || []).slice();
+
+    if (commonKeys.length === 0 && advancedKeys.length === 0) {
       target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>'
         + '<div class="empty-state">No tunable thresholds for this component.</div>';
       return;
     }
 
     var h = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>';
-    h += '<div class="config-grid">';
-    keys.forEach(function(k) {
-      var val = relevant[k];
-      var history = buildConfigHistory(runs, k, val);
-      h += '<div class="config-field">'
-        + "<label>" + esc(k) + "</label>"
-        + '<input type="text" id="comp-cfg-' + compKey + "-" + k + '" value="' + val + '" data-key="' + esc(k) + '">'
-        + renderCfgHistory(compKey, k, history)
+
+    // Common group
+    if (commonKeys.length) {
+      h += '<div class="config-grid">';
+      commonKeys.forEach(function(k) {
+        var val = resolveValue(k);
+        if (val === undefined) return;
+        h += renderCfgField(compKey, k, val, buildConfigHistory(runs, k, val));
+      });
+      h += "</div>";
+    }
+
+    // Advanced group (collapsed by default — rarely tuned, but kept visible for debugging)
+    if (advancedKeys.length) {
+      h += '<div class="cfg-advanced-toggle" id="cfg-adv-toggle-' + compKey + '" onclick="toggleCfgAdvanced(\'' + compKey + "')\">"
+        + '<span class="chev">▸</span>Advanced (' + advancedKeys.length + ') — rarely tuned, click to reveal'
         + "</div>";
-    });
-    h += "</div>";
+      h += '<div class="cfg-advanced-body" id="cfg-adv-body-' + compKey + '"><div class="config-grid">';
+      advancedKeys.forEach(function(k) {
+        var val = resolveValue(k);
+        if (val === undefined) return;
+        h += renderCfgField(compKey, k, val, buildConfigHistory(runs, k, val));
+      });
+      h += "</div></div>";
+    }
+
     h += '<div class="config-actions">'
       + '<button class="btn-save btn-primary" onclick="saveComponentConfig(\'' + compKey + "')\">Save Config</button>"
       + '<span id="comp-cfg-feedback-' + compKey + '" class="save-feedback"></span>'
       + "</div>";
 
-    // Also show model + sampling if relevant (fraud/ambiguity use LLM)
+    // LLM Parameters — fraud/ambiguity only. Temperature ships read-only with
+    // a reproducibility warning because non-zero temperature invalidates
+    // every subsequent eval comparison.
     if (compKey === "fraud" || compKey === "ambiguity") {
-      var modelHist  = buildConfigHistory(runs, "model", cfg.model);
-      var tempHist   = buildConfigHistory(runs, "temperature", cfg.temperature || 0);
-      var tokHist    = buildConfigHistory(runs, "max_tokens", cfg.max_tokens || 1024);
+      var modelHist = buildConfigHistory(runs, "model", cfg.model);
+      var tempHist  = buildConfigHistory(runs, "temperature", cfg.temperature || 0);
+      var tokHist   = buildConfigHistory(runs, "max_tokens", cfg.max_tokens || 1024);
       h += '<div style="margin-top:1rem"><div class="config-section-title">LLM Parameters</div>'
         + '<div class="config-grid">'
-        + '<div class="config-field"><label>Model</label><input type="text" id="comp-cfg-' + compKey + '-model" value="' + esc(cfg.model || "") + '">'
+        + '<div class="config-field"><label>Model</label>'
+        + '<input type="text" id="comp-cfg-' + compKey + '-model" value="' + esc(cfg.model || "") + '">'
         + renderCfgHistory(compKey, "model", modelHist) + "</div>"
-        + '<div class="config-field"><label>Temperature</label><input type="number" id="comp-cfg-' + compKey + '-temperature" step="0.1" value="' + (cfg.temperature || 0) + '">'
+        + '<div class="config-field"><label>Temperature'
+        + '<button type="button" class="cfg-lock-btn" id="comp-cfg-' + compKey + '-temp-lock-btn" onclick="toggleTempLock(\'' + compKey + "')\">Unlock</button>"
+        + "</label>"
+        + '<input type="number" class="cfg-locked" readonly id="comp-cfg-' + compKey + '-temperature" step="0.1" value="' + (cfg.temperature || 0) + '">'
+        + '<span class="cfg-lock-warn">⚠ Keep at 0 for reproducible eval — non-zero temperature makes each run give different answers, breaking all comparisons.</span>'
         + renderCfgHistory(compKey, "temperature", tempHist) + "</div>"
-        + '<div class="config-field"><label>Max Tokens</label><input type="number" id="comp-cfg-' + compKey + '-max_tokens" step="128" value="' + (cfg.max_tokens || 1024) + '">'
+        + '<div class="config-field"><label>Max Tokens</label>'
+        + '<input type="number" id="comp-cfg-' + compKey + '-max_tokens" step="128" value="' + (cfg.max_tokens || 1024) + '">'
         + renderCfgHistory(compKey, "max_tokens", tokHist) + "</div>"
         + "</div></div>";
     }
 
-    // `h` already begins with the Config Thresholds title — don't prepend it again.
     target.innerHTML = h;
   } catch (e) {
     target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>'
@@ -1063,8 +1142,9 @@ async function saveComponentConfig(compKey) {
     var cfg = await r.json();
     var thresholds = cfg.config_thresholds || {};
 
-    // Update relevant threshold fields
-    def.configKeys.forEach(function(k) {
+    // Update relevant threshold fields (common + advanced keys share the same save path)
+    var allKeys = (def.configKeys || []).concat(def.configKeysAdvanced || []);
+    allKeys.forEach(function(k) {
       var input = document.getElementById("comp-cfg-" + compKey + "-" + k);
       if (input) {
         var v = input.value;
