@@ -1047,7 +1047,8 @@ async function loadComponentConfig(compKey) {
         + "</div></div>";
     }
 
-    target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>' + h;
+    // `h` already begins with the Config Thresholds title — don't prepend it again.
+    target.innerHTML = h;
   } catch (e) {
     target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>'
       + '<div class="empty-state">Failed to load config.</div>';
