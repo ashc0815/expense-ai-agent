@@ -256,9 +256,11 @@ async def _gpt4o_ocr(receipt_url: str) -> Optional[dict]:
     """GPT-4o Vision 识别发票图片，返回字段 dict 或 None（失败时回退 mock）。
 
     receipt_url 形如 /uploads/YYYY-MM/uuid_name.jpg（LocalStorage 格式）。
+    Records an LLM trace on every attempt (success or failure).
     """
     import base64
     from openai import AsyncOpenAI
+    from backend.services.trace import record_trace, TraceTimer
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -280,35 +282,53 @@ async def _gpt4o_ocr(receipt_url: str) -> Optional[dict]:
         b64 = base64.b64encode(fh.read()).decode()
 
     client = AsyncOpenAI(api_key=api_key)
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    user_text = (
+        "Identify this receipt or invoice (any language/format) and extract fields as JSON. "
+        "Set unrecognizable fields to null:\n"
+        '{"merchant":"store or seller name","amount":total number,"date":"YYYY-MM-DD",'
+        '"currency":"3-letter code e.g. USD/CNY/AUD","tax_amount":tax number,'
+        '"invoice_number":"receipt or invoice number",'
+        '"invoice_code":"invoice code (Chinese fapiao only, else null)",'
+        '"seller_tax_id":"seller tax ID if present",'
+        '"description":"items or services purchased",'
+        '"category":"one of: 餐饮, 交通, 住宿, 办公用品, 通讯, 其他"}\n'
+        "Return ONLY the JSON object, no explanation."
+    )
+    trace_prompt = [
+        {"role": "user", "content": f"{user_text}\n<image: {receipt_url} mime={mime}>"},
+    ]
+
+    raw = ""
+    parsed: Optional[dict] = None
+    err: Optional[str] = None
+    usage: Optional[dict] = None
+    timer = TraceTimer()
     try:
-        resp = await client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-            max_tokens=800,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url",
-                     "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                    {"type": "text", "text": (
-                        "Identify this receipt or invoice (any language/format) and extract fields as JSON. "
-                        "Set unrecognizable fields to null:\n"
-                        '{"merchant":"store or seller name","amount":total number,"date":"YYYY-MM-DD",'
-                        '"currency":"3-letter code e.g. USD/CNY/AUD","tax_amount":tax number,'
-                        '"invoice_number":"receipt or invoice number",'
-                        '"invoice_code":"invoice code (Chinese fapiao only, else null)",'
-                        '"seller_tax_id":"seller tax ID if present",'
-                        '"description":"items or services purchased",'
-                        '"category":"one of: 餐饮, 交通, 住宿, 办公用品, 通讯, 其他"}\n'
-                        "Return ONLY the JSON object, no explanation."
-                    )},
-                ],
-            }],
+        with timer:
+            resp = await client.chat.completions.create(
+                model=model,
+                max_tokens=800,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                        {"type": "text", "text": user_text},
+                    ],
+                }],
+            )
+        raw = resp.choices[0].message.content or ""
+        if getattr(resp, "usage", None):
+            usage = {"input": resp.usage.prompt_tokens, "output": resp.usage.completion_tokens}
+    except Exception as exc:  # noqa: BLE001
+        err = f"{type(exc).__name__}: {exc}"
+        await record_trace(
+            component="chat_agent_ocr", model=model, prompt=trace_prompt,
+            response=None, latency_ms=timer.elapsed_ms or None, error=err,
         )
-    except Exception:  # noqa: BLE001
         return None
 
-    content = resp.choices[0].message.content or ""
-    # 去掉可能的 markdown 代码块
+    content = raw
     if "```" in content:
         for part in content.split("```"):
             part = part.strip().lstrip("json").strip()
@@ -316,12 +336,24 @@ async def _gpt4o_ocr(receipt_url: str) -> Optional[dict]:
                 content = part
                 break
     try:
-        result = json.loads(content)
-        result["_mock"] = False
-        result["_source"] = "gpt-4o-vision"
-        return result
-    except (json.JSONDecodeError, ValueError):
+        parsed = json.loads(content)
+        parsed["_mock"] = False
+        parsed["_source"] = "gpt-4o-vision"
+        return parsed
+    except (json.JSONDecodeError, ValueError) as exc:
+        err = f"JSON parse: {exc}"
         return None
+    finally:
+        await record_trace(
+            component="chat_agent_ocr",
+            model=model,
+            prompt=trace_prompt,
+            response=raw,
+            parsed_output=parsed,
+            latency_ms=timer.elapsed_ms or None,
+            token_usage=usage,
+            error=err,
+        )
 
 
 async def tool_extract_receipt_fields(
@@ -1202,6 +1234,8 @@ class RealLLM(BaseLLM):
         tools: list[dict],
         agent_role: str = "employee_submit",
     ) -> LLMResponse:
+        from backend.services.trace import record_trace, TraceTimer
+
         # Prefer the dashboard-edited prompt (eval_prompts.json), fall back to
         # the hardcoded default if the JSON entry is missing or empty. Loaded
         # per-request so dashboard edits flow in without a server restart.
@@ -1221,21 +1255,43 @@ class RealLLM(BaseLLM):
             kwargs["tools"] = oai_tools
             kwargs["tool_choice"] = "auto"
 
-        response = await self._client.chat.completions.create(**kwargs)
-        choice = response.choices[0]
-        msg = choice.message
-
-        text = msg.content or ""
+        text = ""
         tool_calls: list[dict] = []
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                try:
-                    inp = json.loads(tc.function.arguments)
-                except (json.JSONDecodeError, ValueError):
-                    inp = {}
-                tool_calls.append({"id": tc.id, "name": tc.function.name, "input": inp})
+        stop_reason = "end_turn"
+        usage: Optional[dict] = None
+        err: Optional[str] = None
+        timer = TraceTimer()
+        try:
+            with timer:
+                response = await self._client.chat.completions.create(**kwargs)
+            choice = response.choices[0]
+            msg = choice.message
+            text = msg.content or ""
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    try:
+                        inp = json.loads(tc.function.arguments)
+                    except (json.JSONDecodeError, ValueError):
+                        inp = {}
+                    tool_calls.append({"id": tc.id, "name": tc.function.name, "input": inp})
+            stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"
+            if getattr(response, "usage", None):
+                usage = {"input": response.usage.prompt_tokens, "output": response.usage.completion_tokens}
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            await record_trace(
+                component=f"chat_{agent_role}",
+                model=self._model,
+                prompt=oai_messages,
+                response=text or None,
+                parsed_output={"tool_calls": tool_calls, "stop_reason": stop_reason} if not err else None,
+                latency_ms=timer.elapsed_ms or None,
+                token_usage=usage,
+                error=err,
+            )
 
-        stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"
         return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason)
 
     # ── Format translators ─────────────────────────────────────────

@@ -66,27 +66,56 @@ async def _ocr_via_investigator(image_bytes: bytes, content_type: str, filename:
 async def _ocr_via_openai(image_bytes: bytes, content_type: str) -> dict:
     """GPT-4o Vision OCR 兜底（需 OPENAI_API_KEY）。"""
     from openai import AsyncOpenAI
+    from backend.services.trace import record_trace, TraceTimer
 
     image_b64 = base64.standard_b64encode(image_bytes).decode()
     client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    resp = await client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-        max_tokens=1024,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{content_type};base64,{image_b64}"},
-                },
-                {"type": "text", "text": (load_prompt("ocr_system") or _FALLBACK_OCR_PROMPT) + "\n\nExtract receipt data as JSON."},
-            ],
-        }],
-    )
-    text = resp.choices[0].message.content or ""
-    cleaned = re.sub(r"^```[a-z]*\n?", "", text, flags=re.MULTILINE)
-    cleaned = re.sub(r"```$", "", cleaned, flags=re.MULTILINE).strip()
-    return json.loads(cleaned)
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    system_prompt = (load_prompt("ocr_system") or _FALLBACK_OCR_PROMPT) + "\n\nExtract receipt data as JSON."
+    trace_prompt = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"<image:{content_type}>"},  # omit bytes from trace — too large
+    ]
+
+    raw_text = ""
+    parsed: Optional[dict] = None
+    err: Optional[str] = None
+    usage: Optional[dict] = None
+    timer = TraceTimer()
+    try:
+        with timer:
+            resp = await client.chat.completions.create(
+                model=model,
+                max_tokens=1024,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{image_b64}"}},
+                        {"type": "text", "text": system_prompt},
+                    ],
+                }],
+            )
+        raw_text = resp.choices[0].message.content or ""
+        if getattr(resp, "usage", None):
+            usage = {"input": resp.usage.prompt_tokens, "output": resp.usage.completion_tokens}
+        cleaned = re.sub(r"^```[a-z]*\n?", "", raw_text, flags=re.MULTILINE)
+        cleaned = re.sub(r"```$", "", cleaned, flags=re.MULTILINE).strip()
+        parsed = json.loads(cleaned)
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        await record_trace(
+            component="ocr",
+            model=model,
+            prompt=trace_prompt,
+            response=raw_text,
+            parsed_output=parsed,
+            latency_ms=timer.elapsed_ms or None,
+            token_usage=usage,
+            error=err,
+        )
+    return parsed
 
 
 # ── POST /api/ocr/extract ─────────────────────────────────────────
