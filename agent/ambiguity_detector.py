@@ -48,6 +48,33 @@ _FALLBACK_WEIGHTS = {
 
 _FALLBACK_LLM_TRIGGER_THRESHOLD = 50
 
+# Fallback template — used only when eval_prompts.json has no ambiguity_llm entry.
+# The dashboard-editable version lives in backend/tests/eval_prompts.json under
+# key `ambiguity_llm`. Uses {placeholder} syntax substituted via str.replace
+# (not str.format, to avoid conflicts with the literal {...} JSON example).
+_FALLBACK_AMBIGUITY_TEMPLATE = """你是企业财务合规审计专家。以下费用明细触发了模糊判定。
+
+员工信息：{employee_name}（等级：{employee_level}，部门：{department}）
+费用明细：
+  - 类型: {expense_type}
+  - 金额: ¥{amount}
+  - 城市: {city} → {normalized_city}
+  - 日期: {date}
+  - 描述: {description}
+  - 参会人: {attendees}
+适用限额：{limit_display}（城市等级：{city_tier}，员工等级：{employee_level}）
+规则引擎结果：{rule_summary}
+模糊触发因素：{triggered_factors}（{explanation}）
+
+请分析：
+1. 合规风险等级：高/中/低
+2. 具体风险点
+3. 建议：通过 / 退回补充材料 / 拒绝
+4. 退回时需补充的材料清单
+
+严格按以下JSON格式返回，不要包含其他文本：
+{"risk_level": "高/中/低", "risk_points": ["风险点1"], "recommendation": "approve/review/reject", "reasoning": "分析说明", "required_materials": ["材料1"]}"""
+
 
 def _load_weights() -> dict[str, float]:
     """Load ambiguity weights from eval_config.json, fallback to hardcoded."""
@@ -239,7 +266,18 @@ class AmbiguityDetector:
         triggered_factors: list[str],
         explanation: str,
     ) -> str:
-        """构建发送给 LLM 的合规审计 prompt。"""
+        """构建发送给 LLM 的合规审计 prompt。
+
+        Template comes from eval_prompts.json (key `ambiguity_llm`) so the
+        Eval Dashboard can edit it without a code change. Falls back to
+        _FALLBACK_AMBIGUITY_TEMPLATE when the JSON entry is missing.
+        """
+        try:
+            from backend.services.config_loader import load_prompt
+            template = load_prompt("ambiguity_llm") or _FALLBACK_AMBIGUITY_TEMPLATE
+        except Exception:
+            template = _FALLBACK_AMBIGUITY_TEMPLATE
+
         normalizer = self._engine.city_normalizer
         normalized_city = normalizer.normalize(line_item.city)
         city_tier = normalizer.get_tier(line_item.city)
@@ -253,28 +291,27 @@ class AmbiguityDetector:
             for r in rule_results
         ) if rule_results else "无前序规则结果"
 
-        return f"""你是企业财务合规审计专家。以下费用明细触发了模糊判定。
-
-员工信息：{employee.name}（等级：{employee.level.value}，部门：{employee.department}）
-费用明细：
-  - 类型: {line_item.expense_type}
-  - 金额: ¥{line_item.amount}
-  - 城市: {line_item.city} → {normalized_city}
-  - 日期: {line_item.date}
-  - 描述: {line_item.description}
-  - 参会人: {', '.join(line_item.attendees) if line_item.attendees else '未提供'}
-适用限额：{limit_display}（城市等级：{city_tier}，员工等级：{employee.level.value}）
-规则引擎结果：{rule_summary}
-模糊触发因素：{', '.join(triggered_factors)}（{explanation}）
-
-请分析：
-1. 合规风险等级：高/中/低
-2. 具体风险点
-3. 建议：通过 / 退回补充材料 / 拒绝
-4. 退回时需补充的材料清单
-
-严格按以下JSON格式返回，不要包含其他文本：
-{{"risk_level": "高/中/低", "risk_points": ["风险点1", "风险点2"], "recommendation": "approve/review/reject", "reasoning": "分析说明", "required_materials": ["材料1", "材料2"]}}"""
+        substitutions = {
+            "{employee_name}":     employee.name,
+            "{employee_level}":    employee.level.value,
+            "{department}":        employee.department,
+            "{expense_type}":      line_item.expense_type,
+            "{amount}":            str(line_item.amount),
+            "{city}":              line_item.city,
+            "{normalized_city}":   normalized_city,
+            "{date}":              str(line_item.date),
+            "{description}":       line_item.description or "",
+            "{attendees}":         ", ".join(line_item.attendees) if line_item.attendees else "未提供",
+            "{limit_display}":     limit_display,
+            "{city_tier}":         str(city_tier),
+            "{rule_summary}":      rule_summary,
+            "{triggered_factors}": ", ".join(triggered_factors),
+            "{explanation}":       explanation,
+        }
+        out = template
+        for key, val in substitutions.items():
+            out = out.replace(key, val)
+        return out
 
     def _call_minimax(self, prompt: str, api_key: str) -> Optional[LLMReviewResult]:
         """通过 OpenAI 兼容 SDK 调用 MiniMax M2。
