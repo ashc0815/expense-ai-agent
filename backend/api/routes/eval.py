@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.db.store import EvalRun, LLMTrace, get_db
+from backend.db.store import EvalRun, LLMTrace, get_eval_db
 
 router = APIRouter()
 
@@ -39,7 +39,7 @@ _PROMPTS_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_prompts.js
 async def list_eval_runs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_eval_db),
 ) -> dict:
     q = select(EvalRun).order_by(desc(EvalRun.started_at))
     total = (await db.execute(select(func.count()).select_from(EvalRun))).scalar_one()
@@ -53,7 +53,7 @@ async def list_eval_runs(
 
 
 @router.get("/runs/{run_id}")
-async def get_eval_run(run_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+async def get_eval_run(run_id: str, db: AsyncSession = Depends(get_eval_db)) -> dict:
     result = await db.execute(select(EvalRun).where(EvalRun.id == run_id))
     run = result.scalar_one_or_none()
     if not run:
@@ -62,7 +62,7 @@ async def get_eval_run(run_id: str, db: AsyncSession = Depends(get_db)) -> dict:
 
 
 @router.post("/runs")
-async def create_eval_run(body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+async def create_eval_run(body: dict, db: AsyncSession = Depends(get_eval_db)) -> dict:
     """Record an eval run (called by the harness after completion)."""
     import uuid
     run = EvalRun(
@@ -94,7 +94,7 @@ async def list_traces(
     order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_eval_db),
 ) -> dict:
     q = select(LLMTrace)
 
@@ -122,7 +122,7 @@ async def list_traces(
 
 
 @router.get("/traces/{trace_id}")
-async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+async def get_trace(trace_id: str, db: AsyncSession = Depends(get_eval_db)) -> dict:
     result = await db.execute(select(LLMTrace).where(LLMTrace.id == trace_id))
     trace = result.scalar_one_or_none()
     if not trace:
@@ -133,7 +133,7 @@ async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)) -> dict:
 # ── Stats ─────────────────────────────────────────────────────────────
 
 @router.get("/stats")
-async def eval_stats(db: AsyncSession = Depends(get_db)) -> dict:
+async def eval_stats(db: AsyncSession = Depends(get_eval_db)) -> dict:
     """Aggregate stats: recent pass rates + component breakdown of traces."""
     # Recent 10 eval runs for trend
     runs = (await db.execute(
@@ -282,7 +282,7 @@ async def trigger_status() -> dict:
 # ── Run Diff ─────────────────────────────────────────────────────────
 
 @router.get("/runs/{run_id_a}/diff/{run_id_b}")
-async def diff_runs(run_id_a: str, run_id_b: str, db: AsyncSession = Depends(get_db)) -> dict:
+async def diff_runs(run_id_a: str, run_id_b: str, db: AsyncSession = Depends(get_eval_db)) -> dict:
     """Compare metadata and results between two eval runs."""
     ra = (await db.execute(select(EvalRun).where(EvalRun.id == run_id_a))).scalar_one_or_none()
     rb = (await db.execute(select(EvalRun).where(EvalRun.id == run_id_b))).scalar_one_or_none()

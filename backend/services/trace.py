@@ -53,9 +53,9 @@ async def record_trace(
         prompt_data = prompt
 
     try:
-        from backend.db.store import AsyncSessionLocal, LLMTrace
+        from backend.db.store import EvalAsyncSessionLocal, LLMTrace
 
-        async with AsyncSessionLocal() as session:
+        async with EvalAsyncSessionLocal() as session:
             trace = LLMTrace(
                 id=trace_id,
                 component=component,
