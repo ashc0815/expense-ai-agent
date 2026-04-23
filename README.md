@@ -4,6 +4,30 @@
 
 AI-powered enterprise expense management platform — end-to-end automation from receipt submission to payment, with a built-in 5-Skill compliance pipeline, conversational Agent assistant, and Eval framework.
 
+> Core design principles: distinguish Workflow from Agent, audience-layered presentation, tool whitelist as prompt-injection defense.
+> Reference: [Anthropic *Building Effective Agents*](https://www.anthropic.com/research/building-effective-agents) (2024).
+
+---
+
+## Table of Contents
+
+- [What This Project Does](#what-this-project-does)
+- [System Architecture](#system-architecture)
+- [5-Skill Compliance Pipeline](#5-skill-compliance-pipeline)
+- [Conversational Agent](#conversational-agent)
+- [Design Decisions](#design-decisions)
+- [Approval & Budget Workflow](#approval--budget-workflow)
+- [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
+- [Eval Platform](#eval-platform)
+- [API Overview](#api-overview)
+- [5 Things We Deliberately Don't Do](#5-things-we-deliberately-dont-do)
+- [Project Structure](#project-structure)
+- [Quick Start](#quick-start)
+- [Running Tests](#running-tests)
+- [Tech Stack](#tech-stack)
+
+---
+
 ## What This Project Does
 
 ExpenseFlow simulates a complete enterprise reimbursement system: employee uploads receipt → AI auto-review (OCR, rules engine, ambiguity detection) → manager approval (with AI decision explanation) → finance review → voucher generation → payment execution.
@@ -13,6 +37,8 @@ ExpenseFlow simulates a complete enterprise reimbursement system: employee uploa
 1. **5-Skill Compliance Pipeline** — Receipt validation, approval chain, compliance check (with AmbiguityDetector 5-factor scoring), voucher generation, payment execution — all configuration-driven
 2. **Conversational Agent** — Employees complete reimbursements via natural language (OCR → category suggestion → dedup check → budget check); managers get AI explanation cards for approval decisions
 3. **Eval Framework** — YAML-defined test cases covering Agent routing, risk tiering, RBAC permissions, and tool whitelist security
+
+---
 
 ## System Architecture
 
@@ -51,6 +77,8 @@ Employee submits receipt
   +-----------+                      +-----------------+
 ```
 
+---
+
 ## 5-Skill Compliance Pipeline
 
 After each expense submission, the backend asynchronously executes 5 Skills, all orchestrated by `workflow.yaml`:
@@ -81,6 +109,8 @@ Score → Decision: `<30` auto-pass / `30-70` human review / `>70` suggest rejec
 
 When score >50, calls Claude API for deep semantic analysis (falls back to rule-based scoring if no API key configured).
 
+---
+
 ## Conversational Agent
 
 Three Agent roles, each with independent tool whitelists (preventing prompt injection):
@@ -92,6 +122,8 @@ Three Agent roles, each with independent tool whitelists (preventing prompt inje
 | **manager_explain** | Manager approval assistance | View pending expenses, employee history → output risk assessment + approval recommendation |
 
 **LLM Abstraction:** Defaults to MockLLM (deterministic state machine, no API Key needed, ideal for demo and testing). Set `OPENAI_API_KEY` + `AGENT_USE_REAL_LLM=1` to switch to GPT-4o.
+
+---
 
 ## Design Decisions
 
@@ -120,7 +152,8 @@ TOOL_REGISTRY = {
                         "check_duplicate_invoice", "get_my_recent_submissions",
                         "update_draft_field", "check_budget_status"],   # has write access
     "employee_qa":     ["get_my_recent_submissions", "get_report_detail",
-                        "get_spend_summary", "get_budget_summary"],     # read-only
+                        "get_spend_summary", "get_budget_summary",
+                        "get_policy_rules"],                             # read-only
     "manager_explain": ["get_submission_for_review",
                         "get_employee_submission_history"],              # read-only
 }
@@ -153,6 +186,8 @@ The AI explanation card presents information in two layers:
 
 Activate dev mode: add `?dev=1` to the URL, or click the toolbar button in the navbar.
 
+---
+
 ## Approval & Budget Workflow
 
 ### State Machine
@@ -179,6 +214,8 @@ Each cost center has quarterly budgets, checked in real-time on submission:
 | T3 | review  | 50-75 | Needs manual check — high amount or vague description |
 | T4 | reject  | >75 | High risk — abnormal amount / missing documentation |
 
+---
+
 ## Role-Based Access Control (RBAC)
 
 | Role | Capabilities |
@@ -187,6 +224,8 @@ Each cost center has quarterly budgets, checked in real-time on submission:
 | **manager** | Approve team expenses, view AI explanation cards |
 | **finance_admin** | Finance approval, unlock budget blocks, export vouchers, bulk operations |
 | **admin** | Employee management, policy configuration, audit logs, budget settings |
+
+---
 
 ## Eval Platform
 
@@ -346,7 +385,29 @@ curl -X POST http://localhost:8000/api/eval/trigger -H 'Content-Type: applicatio
 
 Results are automatically posted to the Observatory API if the server is running; otherwise saved to `backend/tests/eval_last_run.json` for later import.
 
+---
+
 ## API Overview
+
+**Reports** (expense report — employees bundle line items into a report and submit as a unit)
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/reports` | employee | Create a new report |
+| `GET` | `/api/reports` | employee | List my reports |
+| `GET` | `/api/reports/{id}` | all | Report detail (employees see own only) |
+| `POST` | `/api/reports/{id}/submit` | employee | Submit report for approval |
+| `POST` | `/api/reports/{id}/withdraw` | employee | Withdraw a submitted/approved report |
+| `POST` | `/api/reports/{id}/resubmit` | employee | Resubmit a `needs_revision` report |
+| `POST` | `/api/reports/{id}/approve` | manager | Manager approves the report |
+| `POST` | `/api/reports/{id}/reject` | manager | Manager rejects |
+| `POST` | `/api/reports/{id}/return` | manager | Return for revision (`needs_revision`) |
+| `POST` | `/api/reports/{id}/finance-approve` | finance_admin | Finance approval |
+| `POST` | `/api/reports/{id}/finance-reject` | finance_admin | Finance rejection |
+| `PATCH` | `/api/reports/{id}/title` | employee | Rename report |
+| `PATCH` | `/api/reports/{id}/lines/{sid}` | employee | Edit a line item |
+| `DELETE` | `/api/reports/{id}/lines/{sid}` | employee | Delete a line item |
+| `DELETE` | `/api/reports/{id}` | employee | Delete an empty open report |
 
 **Submissions**
 
@@ -391,6 +452,8 @@ Results are automatically posted to the Observatory API if the server is running
 | `GET` | `/api/admin/stats` | admin | Summary statistics |
 | `GET` | `/api/users/me` | all | Current user info |
 
+---
+
 ## 5 Things We Deliberately Don't Do
 
 | # | What We Don't Do | Why |
@@ -400,6 +463,8 @@ Results are automatically posted to the Observatory API if the server is running
 | 3 | **Add a chat drawer to the approval page** | Managers review ~30 items/day; +30 sec/item = +15 min/day — they'll just turn off AI |
 | 4 | **Let AI auto-submit expenses** | Legal liability is on the employee; Submit must be human-confirmed (SAP Concur Joule 2026 made the same decision) |
 | 5 | **Adopt an Agent SDK from day one** | MVP native tool calling is sufficient; SDK value is in subagents/memory, which this project doesn't need yet |
+
+---
 
 ## Project Structure
 
@@ -469,38 +534,41 @@ docker-compose.yml                 # Docker Compose orchestration
 requirements.txt                   # Python dependencies
 ```
 
+---
+
 ## Quick Start
 
 ```bash
-# Install dependencies
+# 1. Install dependencies
 pip install -r requirements.txt
 
-# Start backend (dev mode)
-uvicorn backend.main:app --reload --port 8000
-
-# Access points
-# Employee:  http://localhost:8000/employee/quick.html
-# Manager:   http://localhost:8000/manager/queue.html
-# Finance:   http://localhost:8000/finance/review.html
-# Admin:     http://localhost:8000/admin/dashboard.html
-# Eval:      http://localhost:8000/eval/dashboard.html
-# API Docs:  http://localhost:8000/docs
-```
-
-### 5-Minute Demo Walkthrough
-
-```bash
-# Optional: seed demo data first
+# 2. (Optional) seed demo data
 python scripts/seed_demo_data.py
+
+# 3. Start backend in dev mode
+uvicorn backend.main:app --reload --port 8000
 ```
 
-| Step | URL Parameter | Action |
-|------|--------------|--------|
-| 1. Employee submits | `?as=employee` | Open quick.html, upload any image, AI recognizes and confirm submit |
-| 2. AI review | -- | Automatic (1-3 sec), my-reports page polls until status=reviewed |
-| 3. Manager approves | `?as=manager` | queue.html, open expense, view AI explanation card, click approve |
-| 4. Finance approves | `?as=finance_admin` | review.html, approve to generate voucher number |
-| 5. Export | `?as=finance_admin` | export.html, bulk export CSV |
+**Access points** (role is switched via the navbar dropdown or `?as=<role>` URL param in mock auth mode):
+
+| Who | URL |
+|-----|-----|
+| Employee | `http://localhost:8000/employee/quick.html` |
+| Manager | `http://localhost:8000/manager/queue.html` |
+| Finance | `http://localhost:8000/finance/review.html` |
+| Admin | `http://localhost:8000/admin/dashboard.html` |
+| Eval Observatory | `http://localhost:8000/eval/dashboard.html` |
+| OpenAPI Docs | `http://localhost:8000/docs` |
+
+**5-minute end-to-end demo:**
+
+| Step | Role | Action |
+|------|------|--------|
+| 1 | employee | `quick.html` → upload any receipt → AI recognizes fields → confirm submit |
+| 2 | — | AI review runs in background (1–3 s); `my-reports.html` polls until `status=reviewed` |
+| 3 | manager | `queue.html` → open submission → view AI explanation card → approve |
+| 4 | finance_admin | `review.html` → approve → voucher number generated |
+| 5 | finance_admin | `export.html` → bulk export CSV |
 
 ### Environment Variables
 
@@ -508,9 +576,11 @@ python scripts/seed_demo_data.py
 |----------|---------|-------------|
 | `AUTH_MODE` | `mock` | `mock` (dev) / `clerk` (production) |
 | `DATABASE_URL` | SQLite local file | Production: `postgresql+asyncpg://...` |
+| `EVAL_DATABASE_URL` | SQLite `concurshield_eval.db` | Physically isolated from business DB — stores LLM traces + eval runs so trace volume doesn't affect main DB performance |
 | `STORAGE_BACKEND` | `local` | `local` / `r2` (Cloudflare R2) |
 | `ANTHROPIC_API_KEY` | -- | Optional: AmbiguityDetector deep analysis (triggered when score >50) |
 | `OPENAI_API_KEY` | -- | Optional: Chat Agent uses GPT-4o |
+| `OPENAI_MODEL` | `gpt-4o` | Override the model when `OPENAI_API_KEY` is set |
 | `AGENT_USE_REAL_LLM` | -- | Set to `1` + provide API Key → switch to RealLLM |
 
 ### MockLLM vs RealLLM
@@ -519,6 +589,8 @@ python scripts/seed_demo_data.py
 |------|-----------|----------|
 | **MockLLM** (default) | No API Key needed | Deterministic state machine: happy path runs linearly, keyword routing, deterministic eval |
 | **RealLLM (GPT-4o)** | `OPENAI_API_KEY` + `AGENT_USE_REAL_LLM=1` | GPT-4o real reasoning, unlocks "user edits fields" Agent behavior |
+
+---
 
 ## Running Tests
 
@@ -532,6 +604,8 @@ python -m pytest backend/tests/test_agent_eval.py -v
 # Full flow tests (7 scenarios)
 python -m pytest tests/test_full_flow.py -v
 ```
+
+---
 
 ## Tech Stack
 
