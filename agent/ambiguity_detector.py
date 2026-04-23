@@ -327,22 +327,43 @@ class AmbiguityDetector:
             logger.warning("openai 包未安装，无法调用 MiniMax。请运行: pip install openai")
             return None
 
+        from backend.services.trace import record_trace_sync, TraceTimer
+
         base_url = os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
         model = os.environ.get("MINIMAX_MODEL", "MiniMax-M2")
+        messages = [{"role": "user", "content": prompt}]
 
+        raw_text = ""
+        usage: Optional[dict] = None
+        err: Optional[str] = None
+        timer = TraceTimer()
         try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=1024,
-            )
+            with timer:
+                client = OpenAI(api_key=api_key, base_url=base_url)
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=1024,
+                )
             raw_text = (resp.choices[0].message.content or "").strip()
+            if getattr(resp, "usage", None):
+                usage = {"input": resp.usage.prompt_tokens, "output": resp.usage.completion_tokens}
             logger.info(f"MiniMax 返回: {len(raw_text)} 字符")
             return self._parse_llm_response(raw_text, source="minimax")
         except Exception as e:
+            err = f"{type(e).__name__}: {e}"
             logger.error(f"MiniMax API 调用失败: {e}")
             return None
+        finally:
+            record_trace_sync(
+                component="ambiguity_detector",
+                model=f"minimax/{model}",
+                prompt=messages,
+                response=raw_text or None,
+                latency_ms=timer.elapsed_ms or None,
+                token_usage=usage,
+                error=err,
+            )
 
     def _call_claude(self, prompt: str, api_key: str) -> Optional[LLMReviewResult]:
         """通过 Anthropic SDK 调用 Claude。"""
@@ -352,18 +373,42 @@ class AmbiguityDetector:
             logger.warning("anthropic 包未安装，无法调用 Claude。请运行: pip install anthropic")
             return None
 
+        from backend.services.trace import record_trace_sync, TraceTimer
+
+        model = "claude-sonnet-4-20250514"
+        messages = [{"role": "user", "content": prompt}]
+
+        raw_text = ""
+        usage: Optional[dict] = None
+        err: Optional[str] = None
+        timer = TraceTimer()
         try:
-            client = anthropic.Anthropic(api_key=api_key)
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            with timer:
+                client = anthropic.Anthropic(api_key=api_key)
+                message = client.messages.create(
+                    model=model,
+                    max_tokens=1024,
+                    messages=messages,
+                )
             raw_text = message.content[0].text.strip()
+            u = getattr(message, "usage", None)
+            if u is not None:
+                usage = {"input": u.input_tokens, "output": u.output_tokens}
             return self._parse_llm_response(raw_text, source="claude")
         except Exception as e:
+            err = f"{type(e).__name__}: {e}"
             logger.error(f"Claude API 调用失败: {e}")
             return None
+        finally:
+            record_trace_sync(
+                component="ambiguity_detector",
+                model=model,
+                prompt=messages,
+                response=raw_text or None,
+                latency_ms=timer.elapsed_ms or None,
+                token_usage=usage,
+                error=err,
+            )
 
     def _parse_llm_response(self, raw_text: str, source: str = "claude") -> LLMReviewResult:
         """解析 LLM 返回的 JSON（通用于 MiniMax / Claude / 其他 OpenAI 兼容接口）。"""
