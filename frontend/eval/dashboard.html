@@ -1064,14 +1064,16 @@ async function loadComponentConfig(compKey) {
       });
     }
     var advancedKeys = (def.configKeysAdvanced || []).slice();
-
-    if (commonKeys.length === 0 && advancedKeys.length === 0) {
-      target.innerHTML = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>'
-        + '<div class="empty-state">No tunable thresholds for this component.</div>';
-      return;
-    }
+    var hasThresholds = commonKeys.length > 0 || advancedKeys.length > 0;
 
     var h = '<div class="comp-section-title"><span class="icon">&#9881;</span> Config Thresholds</div>';
+
+    if (!hasThresholds) {
+      // Still render the LLM Parameters panel below — OCR and Chat Agent have
+      // no per-component thresholds but do call OpenAI and want the same
+      // model/temperature/max_tokens visibility.
+      h += '<div class="empty-state">No component-specific thresholds. LLM parameters below are shared with other components.</div>';
+    }
 
     // Common group
     if (commonKeys.length) {
@@ -1099,14 +1101,16 @@ async function loadComponentConfig(compKey) {
     }
 
     h += '<div class="config-actions">'
-      + '<button class="btn-save btn-primary" onclick="saveComponentConfig(\'' + compKey + "')\">Save Config</button>"
+      + '<button class="btn-save btn-primary" onclick="saveComponentConfig(\'' + compKey + "')\">Save " + (hasThresholds ? "Config" : "LLM Params") + "</button>"
       + '<span id="comp-cfg-feedback-' + compKey + '" class="save-feedback"></span>'
       + "</div>";
 
-    // LLM Parameters — fraud/ambiguity only. Temperature ships read-only with
+    // LLM Parameters — all four components call OpenAI and pick up the same
+    // runtime model/max_tokens from OPENAI_MODEL env + eval_config.json, so
+    // show the panel on every component tab. Temperature ships read-only with
     // a reproducibility warning because non-zero temperature invalidates
     // every subsequent eval comparison.
-    if (compKey === "fraud" || compKey === "ambiguity") {
+    {
       var modelHist = buildConfigHistory(runs, "model", cfg.model);
       var tempHist  = buildConfigHistory(runs, "temperature", cfg.temperature || 0);
       var tokHist   = buildConfigHistory(runs, "max_tokens", cfg.max_tokens || 1024);
