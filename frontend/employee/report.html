@@ -341,7 +341,7 @@ function render() {
             <th>${t('report.th-merchant')}</th>
             <th class="col-amount">${t('report.th-amount')}</th>
             <th class="col-status">${t('report.th-status')}</th>
-            ${canEditLines || isPending ? '<th class="col-actions"></th>' : ''}
+            ${canEditLines ? '<th class="col-actions"></th>' : ''}
           </tr>
         </thead>
         <tbody>
@@ -363,7 +363,7 @@ function render() {
           <td>${item.merchant || "—"}${item.description ? ` <span style="color:#94a3b8;font-size:.75rem">· ${item.description}</span>` : ""}</td>
           <td class="col-amount">${currency} ${amt}</td>
           <td class="col-status"><span class="line-status ${status}">${statusLabel(status)}</span></td>
-          ${canEditLines || isPending ? `<td class="col-actions"><button class="delete-btn" onclick="event.stopPropagation();removeLine('${item.id}', ${isDraft})" title="${t('report.confirm-delete')}">✕</button></td>` : ''}
+          ${canEditLines ? `<td class="col-actions"><button class="delete-btn" onclick="event.stopPropagation();removeLine('${item.id}', ${isDraft})" title="${t('report.confirm-delete')}">✕</button></td>` : ''}
         </tr>
       `;
     }
@@ -515,7 +515,9 @@ function showDetail(itemId, isDraft) {
   currentDetailItemId = itemId;
 
   const isOpen = reportData.status === "open";
-  const canEdit = isOpen || reportData.status === "pending" || reportData.status === "needs_revision";
+  // Only `open` (still drafting) and `needs_revision` (manager sent back) are editable.
+  // `pending` means submitted-for-approval — must withdraw back to `open` before edits.
+  const canEdit = isOpen || reportData.status === "needs_revision";
   const editable = canEdit && !isDraft;
   const body = document.getElementById("detail-body");
   let html = "";

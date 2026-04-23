@@ -138,23 +138,54 @@ def _build_user_prompt(
     return "\n".join(lines)
 
 
-async def _call_llm(system: str, user: str) -> str:
-    """Call LLM via OpenAI SDK, using params from eval_config.json."""
+async def _call_llm(system: str, user: str, submission_id: Optional[str] = None) -> str:
+    """Call LLM via OpenAI SDK, using params from eval_config.json.
+
+    Records an LLM trace (component=fraud_llm_analyzer) for every call,
+    success or failure.
+    """
     from openai import AsyncOpenAI
     from backend.services.config_loader import load_llm_params
+    from backend.services.trace import record_trace, TraceTimer
 
     params = load_llm_params()
     client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    resp = await client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", params["model"]),
-        max_tokens=params["max_tokens"],
-        temperature=params["temperature"],
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    return resp.choices[0].message.content or ""
+    model = os.getenv("OPENAI_MODEL", params["model"])
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    raw = ""
+    err: Optional[str] = None
+    usage: Optional[dict] = None
+    timer = TraceTimer()
+    try:
+        with timer:
+            resp = await client.chat.completions.create(
+                model=model,
+                max_tokens=params["max_tokens"],
+                temperature=params["temperature"],
+                messages=messages,
+            )
+        raw = resp.choices[0].message.content or ""
+        if getattr(resp, "usage", None):
+            usage = {"input": resp.usage.prompt_tokens, "output": resp.usage.completion_tokens}
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        await record_trace(
+            component="fraud_llm_analyzer",
+            submission_id=submission_id,
+            model=model,
+            prompt=messages,
+            response=raw or None,
+            latency_ms=timer.elapsed_ms or None,
+            token_usage=usage,
+            error=err,
+        )
+    return raw
 
 
 def _parse_response(raw: str) -> dict:
@@ -192,7 +223,7 @@ async def analyze_submission(
     user_prompt = _build_user_prompt(submission, recent_descriptions, receipt_location)
 
     try:
-        raw = await _call_llm(_get_system_prompt(), user_prompt)
+        raw = await _call_llm(_get_system_prompt(), user_prompt, submission_id=submission.id)
         return _parse_response(raw)
     except Exception:
         logger.warning("LLM fraud analysis failed, using neutral fallback", exc_info=True)

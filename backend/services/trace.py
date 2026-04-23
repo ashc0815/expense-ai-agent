@@ -91,3 +91,25 @@ class TraceTimer:
 
     def __exit__(self, *_: Any) -> None:
         self.elapsed_ms = int((time.monotonic() - self._start) * 1000)
+
+
+def record_trace_sync(**kwargs: Any) -> None:
+    """Fire-and-forget trace recording from synchronous code.
+
+    Use from sync contexts (CLI scripts, the ambiguity detector) that still
+    want to write traces. Best-effort: any failure (no event loop, DB down,
+    etc.) is swallowed so trace writing never breaks the caller.
+
+    Implementation: if called while an asyncio loop is running, schedule the
+    coroutine without awaiting; otherwise spin a short-lived loop via
+    asyncio.run.
+    """
+    import asyncio
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.ensure_future(record_trace(**kwargs), loop=loop)
+        except RuntimeError:
+            asyncio.run(record_trace(**kwargs))
+    except Exception:
+        logger.debug("record_trace_sync swallowed error", exc_info=True)

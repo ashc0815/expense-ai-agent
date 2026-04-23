@@ -1,7 +1,7 @@
 {
   "prompt_version": "v1",
   "prompt_notes": "Initial fraud analyzer + ambiguity detector prompts",
-  "model": "gpt-4o-2025-03-01",
+  "model": "gpt-4o-mini",
   "temperature": 0.0,
   "top_p": 1.0,
   "max_tokens": 1024,
@@ -31,6 +31,7 @@
     "city_mismatch": 0.15
   },
   "ambiguity_llm_trigger_threshold": 50,
+  "fraud_llm_trigger_threshold": 50,
   "parsing_version": "v1",
   "parsing_notes": "JSON extraction with regex fallback",
   "dataset_version": "auto"
