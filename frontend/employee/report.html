@@ -515,7 +515,7 @@ function showDetail(itemId, isDraft) {
   currentDetailItemId = itemId;
 
   const isOpen = reportData.status === "open";
-  const canEdit = isOpen || reportData.status === "pending";
+  const canEdit = isOpen || reportData.status === "pending" || reportData.status === "needs_revision";
   const editable = canEdit && !isDraft;
   const body = document.getElementById("detail-body");
   let html = "";
@@ -732,5 +732,6 @@ loadReport().then(() => {
   if (lineId) showDetail(lineId, isDraft);
 });
 </script>
+<script src="/shared/ai-assistant.js"></script>
 </body>
 </html>

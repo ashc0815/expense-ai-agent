@@ -39,6 +39,7 @@ def _wrap_pdf_bytes(data: bytes, filename: str) -> UploadFile:
 @router.post("/upload", status_code=201)
 async def quick_upload(
     file: UploadFile = File(...),
+    report_id: Optional[str] = None,
     ctx: UserContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     storage=Depends(get_storage),
@@ -57,7 +58,7 @@ async def quick_upload(
             drafts: list[dict] = []
             for idx, page_bytes in enumerate(pages, start=1):
                 page_name = f"{stem}-p{idx}.pdf"
-                draft = await create_draft(db, ctx.user_id)
+                draft = await create_draft(db, ctx.user_id, report_id=report_id)
                 draft.entry = "quick"
                 await db.commit()
 
@@ -69,14 +70,14 @@ async def quick_upload(
 
         # single-page PDF or split failure → fall through to single-upload path
         single = _wrap_pdf_bytes(content, original_name if original_name.lower().endswith(".pdf") else f"{original_name}.pdf")
-        draft = await create_draft(db, ctx.user_id)
+        draft = await create_draft(db, ctx.user_id, report_id=report_id)
         draft.entry = "quick"
         await db.commit()
         receipt_url = await storage.save(single, single.filename or "receipt.pdf")
         await update_draft_receipt(db, draft.id, receipt_url)
         return {"draft_id": draft.id, "receipt_url": receipt_url}
 
-    draft = await create_draft(db, ctx.user_id)
+    draft = await create_draft(db, ctx.user_id, report_id=report_id)
     draft.entry = "quick"
     await db.commit()
 

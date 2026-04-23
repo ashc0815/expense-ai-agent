@@ -23,23 +23,44 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
-from backend.config import DATABASE_URL
+from backend.config import DATABASE_URL, EVAL_DATABASE_URL
 
 # ── 引擎 & Session ────────────────────────────────────────────────
+#
+# 两套引擎：主业务库（concurshield.db）+ Eval 库（concurshield_eval.db）。
+# Eval 相关表（llm_traces / eval_runs）物理隔离，避免 Eval 数据量增长
+# 影响主库性能，也便于独立备份 / 清理。
+# Prompt / config 文件仍然共享（eval_prompts.json、eval_config.json），
+# 这样 Dashboard 上改的 prompt 能即时作用于主系统的 Agent。
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
+eval_engine = create_async_engine(EVAL_DATABASE_URL, echo=False)
+EvalAsyncSessionLocal = async_sessionmaker(eval_engine, expire_on_commit=False)
+
 
 async def get_db() -> AsyncSession:
-    """FastAPI 依赖：yield 一个 session，请求结束后自动关闭。"""
+    """FastAPI 依赖：yield 一个主库 session，请求结束后自动关闭。"""
     async with AsyncSessionLocal() as session:
+        yield session
+
+
+async def get_eval_db() -> AsyncSession:
+    """FastAPI 依赖：yield 一个 Eval 库 session。"""
+    async with EvalAsyncSessionLocal() as session:
         yield session
 
 
 # ── ORM 模型 ──────────────────────────────────────────────────────
 
 class Base(DeclarativeBase):
+    """主业务库的 Declarative Base（submissions / reports / drafts / ...）。"""
+    pass
+
+
+class EvalBase(DeclarativeBase):
+    """Eval 库的 Declarative Base（llm_traces / eval_runs）。"""
     pass
 
 
@@ -248,8 +269,11 @@ class Report(Base):
                             onupdate=lambda: datetime.now(timezone.utc))
 
 
-class LLMTrace(Base):
-    """LLM 调用追踪 — 记录每次 LLM 调用的完整上下文，用于 eval 和 debug。"""
+class LLMTrace(EvalBase):
+    """LLM 调用追踪 — 记录每次 LLM 调用的完整上下文，用于 eval 和 debug。
+
+    物理存放在 Eval 专用库 concurshield_eval.db（通过 EVAL_DATABASE_URL 配置）。
+    """
     __tablename__ = "llm_traces"
 
     id              = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -265,8 +289,11 @@ class LLMTrace(Base):
     created_at      = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
-class EvalRun(Base):
-    """Eval 运行记录 — 每次 eval 执行的汇总结果。"""
+class EvalRun(EvalBase):
+    """Eval 运行记录 — 每次 eval 执行的汇总结果。
+
+    物理存放在 Eval 专用库 concurshield_eval.db（通过 EVAL_DATABASE_URL 配置）。
+    """
     __tablename__ = "eval_runs"
 
     id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -345,9 +372,15 @@ def _rolling_months(n: int) -> list[tuple[str, str]]:
 # ── 初始化 ────────────────────────────────────────────────────────
 
 async def init_db() -> None:
-    """建表（幂等）。在 main.py startup 事件里调用。"""
+    """建表（幂等）。在 main.py startup 事件里调用。
+
+    分别在主业务引擎和 Eval 引擎上运行 create_all。Eval 库只包含
+    LLMTrace / EvalRun，但 create_all 对已有表是无操作，完全幂等。
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    async with eval_engine.begin() as conn:
+        await conn.run_sync(EvalBase.metadata.create_all)
     # 种植演示数据（幂等）
     async with AsyncSessionLocal() as db:
         await seed_budget_demo(db)
@@ -692,9 +725,10 @@ async def delete_employee(db: AsyncSession, employee_id: str) -> bool:
 
 # ── CRUD — drafts ─────────────────────────────────────────────────
 
-async def create_draft(db: AsyncSession, employee_id: str) -> Draft:
+async def create_draft(db: AsyncSession, employee_id: str, report_id: Optional[str] = None) -> Draft:
     draft = Draft(
         employee_id=employee_id,
+        report_id=report_id,
         fields={},
         field_sources={},
         chat_history=[],
