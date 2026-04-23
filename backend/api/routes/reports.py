@@ -964,3 +964,39 @@ async def delete_report_line(
         return {"ok": True, "deleted_id": submission_id}
 
     raise HTTPException(status_code=404, detail="行项目不存在")
+
+
+@router.delete("/{report_id}", status_code=200)
+async def delete_report(
+    report_id: str,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an empty open report.
+
+    Only the owning employee may delete, and only when the report is in
+    `open` status with zero line items and zero drafts. Submitted, approved,
+    or withdrawn reports retain audit history and cannot be deleted.
+    """
+    report = await get_report(db, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报销单不存在")
+    if report.employee_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="权限不足")
+    if report.status != "open":
+        raise HTTPException(status_code=409, detail="仅开放中的报销单可删除")
+
+    subs = await list_report_submissions(db, report_id)
+    drafts = await list_report_drafts(db, report_id)
+    if subs or drafts:
+        raise HTTPException(status_code=409, detail="请先清空报销单中的所有条目")
+
+    title = report.title
+    await db.delete(report)
+    await db.commit()
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="report_deleted",
+        resource_type="report", resource_id=report_id,
+        detail={"title": title},
+    )
+    return {"ok": True, "deleted_id": report_id}

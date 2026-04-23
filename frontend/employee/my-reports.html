@@ -155,6 +155,9 @@ function renderCard(r) {
   const actions = [];
   if (isOpen) {
     actions.push(`<a href="${detailUrl}" class="btn-ghost" onclick="event.stopPropagation()">${t('myreports.btn-detail')}</a>`);
+    if (lineCount === 0) {
+      actions.push(`<button class="btn-danger" onclick="event.stopPropagation();deleteReport('${r.id}')">${t('myreports.btn-delete')}</button>`);
+    }
     actions.push(`<button class="btn-primary" onclick="event.stopPropagation();submitReport('${r.id}')" ${lines.length ? '' : 'disabled'}>${t('myreports.btn-submit')}</button>`);
   }
   if (isPendingOrApproved) {
@@ -209,6 +212,23 @@ async function submitReport(reportId) {
   });
   if (!r.ok) {
     let msg = t('myreports.submit-fail') + r.status;
+    try {
+      const body = await r.json();
+      if (body.detail) msg = body.detail;
+    } catch {}
+    alert(msg);
+    return;
+  }
+  await load();
+}
+
+async function deleteReport(reportId) {
+  if (!confirm(t('myreports.delete-confirm'))) return;
+  const r = await fetch(`/api/reports/${reportId}`, {
+    method: "DELETE", headers: await authH(),
+  });
+  if (!r.ok) {
+    let msg = t('myreports.delete-fail') + r.status;
     try {
       const body = await r.json();
       if (body.detail) msg = body.detail;
