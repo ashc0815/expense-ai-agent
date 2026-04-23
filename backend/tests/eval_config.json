@@ -31,6 +31,7 @@
     "city_mismatch": 0.15
   },
   "ambiguity_llm_trigger_threshold": 50,
+  "fraud_llm_trigger_threshold": 50,
   "parsing_version": "v1",
   "parsing_notes": "JSON extraction with regex fallback",
   "dataset_version": "auto"

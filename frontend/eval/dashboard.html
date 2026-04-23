@@ -119,6 +119,21 @@
     .btn-secondary:hover { background: var(--gray-200); }
     .save-feedback { font-size: .78rem; color: #16a34a; margin-left: .5rem; line-height: 2; }
 
+    /* ── Config change impact: history pills under each threshold input ── */
+    .config-field { position: relative; }
+    .cfg-history { margin-top: .25rem; display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; min-height: 1.2rem; }
+    .cfg-history-label { font-size: .65rem; color: var(--gray-500); text-transform: uppercase; letter-spacing: .03em; margin-right: .2rem; }
+    .cfg-hist-pill {
+      font-size: .7rem; padding: .1rem .5rem; border-radius: 10px;
+      background: var(--gray-100); color: var(--gray-700); border: 1px solid var(--gray-200);
+      cursor: pointer; font-family: var(--mono); white-space: nowrap;
+    }
+    .cfg-hist-pill:hover { border-color: var(--brand); color: var(--gray-900); }
+    .cfg-hist-pill.current { background: #dcfce7; color: #166534; border-color: #86efac; font-weight: 600; }
+    .cfg-hist-pill .acc-up   { color: #16a34a; margin-left: .2rem; }
+    .cfg-hist-pill .acc-down { color: #dc2626; margin-left: .2rem; }
+    .cfg-history-empty { font-size: .65rem; color: var(--gray-500); font-style: italic; }
+
     /* ── Human-labeled eval: confusion matrix & subfield grid ── */
     .heval-summary { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: .8rem; }
     .heval-stat { padding: .6rem .9rem; background: var(--gray-100); border-radius: 8px; min-width: 110px; }
@@ -396,7 +411,16 @@ const COMP_DEFS = {
     icon: "&#9888;",
     subtitle: "Rules 11-14 | GPT-4o | Template/Contradiction/PersonAmount/Vagueness",
     promptKeys: ["fraud_system", "fraud_user_template"],
-    configKeys: ["template_score_threshold", "vagueness_threshold"],
+    configKeys: [
+      "template_score_threshold",
+      "vagueness_threshold",
+      "fraud_llm_trigger_threshold",
+      "threshold_proximity_pct",
+      "rush_amount_multiplier",
+      "vendor_frequency_threshold",
+      "round_amount_pct",
+      "seasonal_spike_multiplier",
+    ],
     casePrefix: ["fraud_llm"],
     evalCmd: "pytest backend/tests/test_eval_harness.py -k 'llm' -v",
   },
@@ -883,13 +907,91 @@ async function setCompActiveVer(compKey, key, ver) {
   } catch (e) { alert("Failed: " + e.message); }
 }
 
+/* ── Config change impact: read per-key value history from recent eval runs ── */
+function _extractCfgValue(runMeta, key) {
+  // Look in config_thresholds, ambiguity_weights, and top-level (for model/temperature/etc.)
+  if (!runMeta) return undefined;
+  var ct = runMeta.config_thresholds || runMeta.config || {};
+  if (key in ct) return ct[key];
+  var aw = runMeta.ambiguity_weights || {};
+  if (key in aw) return aw[key];
+  if (key in runMeta) return runMeta[key];
+  return undefined;
+}
+
+function buildConfigHistory(runs, key, currentValue) {
+  // Collapse to [{value, runs:[{run_id, pass_rate, started_at}], avg_acc}]
+  // Newest run first so the latest (real data) leads.
+  var byValue = {};
+  runs.forEach(function(r) {
+    var v = _extractCfgValue(r.metadata, key);
+    if (v === undefined || v === null) return;
+    var k = String(v);
+    if (!byValue[k]) byValue[k] = {value: v, runs: []};
+    byValue[k].runs.push({run_id: r.id, pass_rate: r.pass_rate, started_at: r.started_at});
+  });
+  var entries = Object.keys(byValue).map(function(k) {
+    var e = byValue[k];
+    var rates = e.runs.filter(function(x) { return x.pass_rate != null; }).map(function(x) { return x.pass_rate; });
+    e.avg_acc = rates.length ? (rates.reduce(function(a,b){return a+b;},0) / rates.length) : null;
+    e.run_count = e.runs.length;
+    e.is_current = String(currentValue) === k;
+    return e;
+  });
+  // Sort: current first, then by recency of most recent run
+  entries.sort(function(a, b) {
+    if (a.is_current !== b.is_current) return a.is_current ? -1 : 1;
+    var aLatest = a.runs[0] && a.runs[0].started_at;
+    var bLatest = b.runs[0] && b.runs[0].started_at;
+    return (bLatest || "").localeCompare(aLatest || "");
+  });
+  return entries;
+}
+
+function renderCfgHistory(compKey, key, entries) {
+  if (!entries || entries.length === 0) {
+    return '<div class="cfg-history"><span class="cfg-history-empty">No history yet — run eval after changing to build impact trend.</span></div>';
+  }
+  var h = '<div class="cfg-history"><span class="cfg-history-label">History:</span>';
+  entries.slice(0, 6).forEach(function(e) {
+    var accTxt = e.avg_acc != null ? (Math.round(e.avg_acc * 100) + "%") : "--";
+    var title = "value=" + e.value + " · " + e.run_count + " run(s) · avg pass_rate=" + accTxt
+      + (e.is_current ? " (current)" : " · click to load into input");
+    h += '<span class="cfg-hist-pill ' + (e.is_current ? "current" : "") + '"'
+      + ' title="' + esc(title) + '"'
+      + ' onclick="loadCfgHistValue(\'' + compKey + "','" + key + "'," + JSON.stringify(e.value) + ')">'
+      + esc(String(e.value)) + " @ " + accTxt
+      + (e.is_current ? " ★" : "")
+      + "</span>";
+  });
+  h += "</div>";
+  return h;
+}
+
+function loadCfgHistValue(compKey, key, value) {
+  var input = document.getElementById("comp-cfg-" + compKey + "-" + key);
+  if (input) {
+    input.value = value;
+    input.focus();
+    // Visual feedback
+    input.style.background = "#fef3c7";
+    setTimeout(function() { input.style.background = ""; }, 600);
+  }
+}
+
 /* ── Component: Config ───────────────────────── */
 async function loadComponentConfig(compKey) {
   var def = COMP_DEFS[compKey];
   var target = document.getElementById("comp-" + compKey + "-config");
   try {
-    var r = await fetch(API + "/api/eval/config");
-    var cfg = await r.json();
+    // Fetch current config AND recent runs in parallel for history pills
+    var [cfgRes, runsRes] = await Promise.all([
+      fetch(API + "/api/eval/config"),
+      fetch(API + "/api/eval/runs?page=1&page_size=30"),
+    ]);
+    var cfg = await cfgRes.json();
+    var runsData = await runsRes.json();
+    var runs = runsData.items || [];
     var thresholds = cfg.config_thresholds || {};
     var relevant = {};
 
@@ -916,9 +1018,11 @@ async function loadComponentConfig(compKey) {
     h += '<div class="config-grid">';
     keys.forEach(function(k) {
       var val = relevant[k];
+      var history = buildConfigHistory(runs, k, val);
       h += '<div class="config-field">'
         + "<label>" + esc(k) + "</label>"
         + '<input type="text" id="comp-cfg-' + compKey + "-" + k + '" value="' + val + '" data-key="' + esc(k) + '">'
+        + renderCfgHistory(compKey, k, history)
         + "</div>";
     });
     h += "</div>";
@@ -929,11 +1033,17 @@ async function loadComponentConfig(compKey) {
 
     // Also show model + sampling if relevant (fraud/ambiguity use LLM)
     if (compKey === "fraud" || compKey === "ambiguity") {
+      var modelHist  = buildConfigHistory(runs, "model", cfg.model);
+      var tempHist   = buildConfigHistory(runs, "temperature", cfg.temperature || 0);
+      var tokHist    = buildConfigHistory(runs, "max_tokens", cfg.max_tokens || 1024);
       h += '<div style="margin-top:1rem"><div class="config-section-title">LLM Parameters</div>'
         + '<div class="config-grid">'
-        + '<div class="config-field"><label>Model</label><input type="text" id="comp-cfg-' + compKey + '-model" value="' + esc(cfg.model || "") + '"></div>'
-        + '<div class="config-field"><label>Temperature</label><input type="number" id="comp-cfg-' + compKey + '-temperature" step="0.1" value="' + (cfg.temperature || 0) + '"></div>'
-        + '<div class="config-field"><label>Max Tokens</label><input type="number" id="comp-cfg-' + compKey + '-max_tokens" step="128" value="' + (cfg.max_tokens || 1024) + '"></div>'
+        + '<div class="config-field"><label>Model</label><input type="text" id="comp-cfg-' + compKey + '-model" value="' + esc(cfg.model || "") + '">'
+        + renderCfgHistory(compKey, "model", modelHist) + "</div>"
+        + '<div class="config-field"><label>Temperature</label><input type="number" id="comp-cfg-' + compKey + '-temperature" step="0.1" value="' + (cfg.temperature || 0) + '">'
+        + renderCfgHistory(compKey, "temperature", tempHist) + "</div>"
+        + '<div class="config-field"><label>Max Tokens</label><input type="number" id="comp-cfg-' + compKey + '-max_tokens" step="128" value="' + (cfg.max_tokens || 1024) + '">'
+        + renderCfgHistory(compKey, "max_tokens", tokHist) + "</div>"
         + "</div></div>";
     }
 
