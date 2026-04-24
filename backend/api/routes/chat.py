@@ -38,8 +38,8 @@ from backend.api.routes.submissions import _run_pipeline, _sub_dict
 from backend.quick.finalize import save_draft_as_report_line
 from backend.db.store import (
     append_draft_messages, create_audit_log, create_draft, create_submission,
-    get_db, get_draft, get_employee, get_submission, get_submission_by_invoice,
-    list_submissions, mark_draft_submitted,
+    get_db, get_draft, get_employee, get_report, get_submission,
+    get_submission_by_invoice, list_submissions, mark_draft_submitted,
     update_draft_field as store_update_draft_field,
     update_draft_receipt,
 )
@@ -57,7 +57,7 @@ router = APIRouter()
 # 前还会二次校验，任何试图调用白名单外 tool 的请求都会被拒绝。
 # ═══════════════════════════════════════════════════════════════════
 
-AgentRole = Literal["employee_submit", "employee_qa", "employee_report_edit", "employee_unified", "manager_explain"]
+AgentRole = Literal["employee_submit", "employee", "manager_explain"]
 
 _TOOL_DEFS: dict[str, dict] = {
     "extract_receipt_fields": {
@@ -223,7 +223,10 @@ _TOOL_DEFS: dict[str, dict] = {
 }
 
 TOOL_REGISTRY: dict[str, list[str]] = {
-    # 员工 submit 页——全交互式 chat，所有 5 个 tool 都可用
+    # ── employee_submit ──────────────────────────────────────────────
+    # The quick.html inline chat agent. Owns the draft-filling flow
+    # (receipt OCR → field write → budget check). Persists chat_history
+    # on the draft record. Not used by the shared drawer.
     "employee_submit": [
         "extract_receipt_fields",
         "suggest_category",
@@ -232,32 +235,27 @@ TOOL_REGISTRY: dict[str, list[str]] = {
         "update_draft_field",
         "check_budget_status",
     ],
-    # 员工 Q&A 页（"我的报销"）——只读：没有 update_draft_field，
-    # 没有 extract_receipt_fields，LLM 即使被注入也无法写任何 draft
-    "employee_qa": [
+    # ── employee ─────────────────────────────────────────────────────
+    # The Concur/Expensify-style unified drawer agent. Runs on every
+    # employee page via /api/chat/message. Security model:
+    # - All WRITE tools validate ownership + state INSIDE the tool
+    #   (data-level ACL, not role-level)
+    # - AI has NO submit / approve / reject / pay tools — those are
+    #   UI-only actions because they carry legal/compliance weight
+    # Same drawer whether user is "just an employee" or also a manager;
+    # the tool set is static, per-object auth does the gating.
+    "employee": [
         "get_my_recent_submissions",
         "get_report_detail",
         "get_spend_summary",
         "get_budget_summary",
         "get_policy_rules",
-    ],
-    # 员工 report 页——可修改已提交行项目的字段
-    "employee_report_edit": [
-        "update_report_line_field",
-        "get_report_detail",
-        "get_policy_rules",
-    ],
-    # 员工统一 agent——合并 QA + submit + report_edit 三个角色的能力
-    "employee_unified": [
-        "get_my_recent_submissions", "get_report_detail", "get_spend_summary",
-        "get_budget_summary", "get_policy_rules",
-        "extract_receipt_fields", "suggest_category", "check_duplicate_invoice",
-        "update_draft_field", "check_budget_status",
         "update_report_line_field",
     ],
-    # 经理/财务审批页 AI 解释卡——读取审计报告 + 员工历史，组装一段
-    # 结构化解释。完全只读：没有任何写能力，没有 update_draft，没有 submit。
-    # 即使被注入也只能读已存在的报销数据。
+    # ── manager_explain ──────────────────────────────────────────────
+    # Behind the structured AI explanation card on /manager/queue and
+    # /finance/review (POST /api/chat/explain/{id}). Not a chat — single
+    # request / single structured JSON response. Read-only.
     "manager_explain": [
         "get_submission_for_review",
         "get_employee_submission_history",
@@ -533,7 +531,7 @@ async def tool_get_submission_for_review(
     """只读：经理/财务读某一笔报销的完整数据 + 审计报告。
 
     不做 owner 校验——审批角色本来就需要看别人的报销。这是为什么这个 tool
-    只在 manager_explain 白名单里，employee_qa 永远拿不到它。
+    只在 manager_explain 白名单里，`employee` role 拿不到它。
     """
     sub_id = (args.get("submission_id") or "").strip()
     if not sub_id:
@@ -699,6 +697,77 @@ async def tool_update_draft_field(
     return {"ok": True, "field": field, "value": value, "source": source}
 
 
+async def tool_update_report_line_field(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """修改某条行项目（submission）的某个字段——Concur 式 data-level ACL。
+
+    所有安全校验在**工具内部**执行，不依赖路由层 role 白名单：
+      1. line_id 必须存在
+      2. 对应 submission 的报销单必须归 ctx.user_id
+      3. 报销单状态必须是 open 或 needs_revision
+      4. 字段必须在 EDITABLE_FIELDS 白名单里
+
+    以上任一不满足返回 {error: ...}。满足则落库 + 审计日志。
+    LLM 即便被 prompt injection 诱导传入别人的 line_id，也会被第 2/3 条拦下。
+    """
+    from backend.db.store import get_submission as _get_sub
+    from backend.api.routes.reports import EDITABLE_FIELDS
+
+    line_id = args.get("line_id")
+    field = args.get("field")
+    value = args.get("value")
+    if not line_id or not field:
+        return {"error": "line_id 和 field 必填"}
+    if field not in EDITABLE_FIELDS:
+        return {"error": f"字段 '{field}' 不可编辑", "allowed": sorted(EDITABLE_FIELDS)}
+
+    sub = await _get_sub(db, line_id)
+    if not sub:
+        return {"error": "行项目不存在"}
+
+    report = await get_report(db, sub.report_id)
+    if not report:
+        return {"error": "报销单不存在"}
+    if report.employee_id != ctx.user_id:
+        return {"error": "无权修改（非本人报销单）"}
+    if report.status not in ("open", "needs_revision"):
+        return {
+            "error": f"报销单当前状态 {report.status}，不可编辑。"
+                     "提交后需先撤回或等经理退回才能改。"
+        }
+
+    # 类型转换
+    if field in ("amount", "tax_amount", "exchange_rate"):
+        try:
+            value = float(value)
+        except (ValueError, TypeError):
+            return {"error": f"{field} 必须是数字"}
+
+    old_value = getattr(sub, field, None)
+    setattr(sub, field, value)
+    if field == "exchange_rate" and value is not None:
+        sub.converted_amount = round(float(sub.amount) * float(value), 2)
+    elif field == "amount" and sub.exchange_rate is not None:
+        sub.converted_amount = round(float(value) * float(sub.exchange_rate), 2)
+    sub.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(sub)
+
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="line_field_edited",
+        resource_type="submission", resource_id=line_id,
+        detail={
+            "field": field,
+            "old": str(old_value),
+            "new": str(value),
+            "report_id": sub.report_id,
+            "via": "chat_employee_drawer",
+        },
+    )
+    return {"ok": True, "line_id": line_id, "field": field, "value": value}
+
+
 async def tool_check_budget_status(
     args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
 ) -> dict:
@@ -834,7 +903,7 @@ TOOL_HANDLERS = {
     "get_submission_for_review":         tool_get_submission_for_review,
     "get_employee_submission_history":   tool_get_employee_submission_history,
     "update_draft_field":                tool_update_draft_field,
-    "update_report_line_field":          None,  # dynamically injected per-request
+    "update_report_line_field":          tool_update_report_line_field,
     "check_budget_status":               tool_check_budget_status,
     "get_budget_summary":                tool_get_budget_summary,
     "get_policy_rules":                  tool_get_policy_rules,
@@ -881,10 +950,11 @@ class MockLLM(BaseLLM):
         tools: list[dict],
         agent_role: str = "employee_submit",
     ) -> LLMResponse:
-        if agent_role == "employee_qa":
+        # "employee" role = unified drawer. Route it through the
+        # conservative QA script (no OCR/write side effects unless the
+        # user explicitly asks). Real LLM is recommended for this role.
+        if agent_role == "employee":
             return self._qa_turn(messages)
-        if agent_role == "employee_unified":
-            return self._unified_turn(messages)
         # 默认：employee_submit 脚本
         # 扫描历史找：最后一条 user 消息、是否有 extract 结果、是否有 dup 结果、是否已有 suggest 结果
         last_user_idx = self._find_last(messages, role="user", text_not_tool=True)
@@ -982,136 +1052,9 @@ class MockLLM(BaseLLM):
             stop_reason="end_turn",
         )
 
-    # ── employee_unified 分支 ──
-    def _unified_turn(self, messages: list[dict]) -> LLMResponse:
-        """统一 agent 的 MockLLM 分支——根据消息内容中的上下文提示分派。"""
-        # 检测消息文本中是否包含上下文提示
-        all_text = " ".join(self._extract_text(m) for m in messages)
-
-        if "draft_id" in all_text:
-            # Draft 上下文 → 走 submit 逻辑（复用现有的 employee_submit 流程）
-            return self._submit_turn(messages)
-
-        if "report_id" in all_text:
-            # Report 上下文 → 处理行项目编辑
-            last_idx = self._find_last(messages, role="user", text_not_tool=True)
-            last_text = self._extract_text(messages[last_idx]) if last_idx is not None else ""
-
-            # 检查是否已经有 update_report_line_field 的结果
-            line_result = self._find_tool_result(messages, "update_report_line_field")
-            if line_result is not None:
-                if line_result.get("ok"):
-                    field = line_result.get("field", "")
-                    value = line_result.get("value", "")
-                    return LLMResponse(
-                        text=f"已修改：{field} = {value}",
-                        stop_reason="end_turn",
-                    )
-                return LLMResponse(
-                    text=f"修改失败：{line_result.get('error', '未知错误')}",
-                    stop_reason="end_turn",
-                )
-
-            # 尝试从上下文中找到 line_id 并生成 tool call
-            if any(k in last_text for k in ("改", "换", "修改", "update", "change")):
-                # 从消息中解析行项目信息
-                import re
-                line_ids = re.findall(r'id=([0-9a-f-]+)', all_text)
-                if line_ids:
-                    # 简单逻辑：对第一个行项目做修改
-                    return LLMResponse(
-                        text="好的，我来帮你修改…",
-                        tool_calls=[self._tool_call("update_report_line_field", {
-                            "line_id": line_ids[0],
-                            "field": "category",
-                            "value": "meal",
-                        })],
-                        stop_reason="tool_use",
-                    )
-
-            return LLMResponse(
-                text="请告诉我您想修改哪个行项目的哪个字段，例如：'把第一笔的类别改成餐饮'。",
-                stop_reason="end_turn",
-            )
-
-        # 没有特定上下文 → QA 模式
-        return self._qa_turn(messages)
-
-    def _submit_turn(self, messages: list[dict]) -> LLMResponse:
-        """Draft submit 逻辑——从 next_turn 的 employee_submit 分支复制出来供复用。"""
-        last_user_idx = self._find_last(messages, role="user", text_not_tool=True)
-        last_user_text = ""
-        if last_user_idx is not None:
-            last_user_text = self._extract_text(messages[last_user_idx]).lower()
-
-        extract_result = self._find_tool_result(messages, "extract_receipt_fields")
-        dup_result     = self._find_tool_result(messages, "check_duplicate_invoice")
-        suggest_result = self._find_tool_result(messages, "suggest_category")
-
-        if extract_result is None and last_user_idx is not None:
-            return LLMResponse(
-                text="好，我先识别一下您上传的发票图片…",
-                tool_calls=[self._tool_call("extract_receipt_fields", {})],
-                stop_reason="tool_use",
-            )
-        if extract_result and not extract_result.get("error") and dup_result is None:
-            inv = extract_result.get("invoice_number")
-            if inv:
-                return LLMResponse(
-                    text=f"识别成功！商户：**{extract_result.get('merchant', '—')}**，金额：¥{extract_result.get('amount', 0)}。我先查一下发票号是否重复…",
-                    tool_calls=[self._tool_call("check_duplicate_invoice", {"invoice_number": inv})],
-                    stop_reason="tool_use",
-                )
-        if dup_result and dup_result.get("is_duplicate"):
-            existing = dup_result.get("existing_submission_id", "")
-            return LLMResponse(
-                text=f"这张发票已被报销过（单据 #{existing[:8]}），不能重复提交。请检查是否上传了正确的发票。",
-                stop_reason="end_turn",
-            )
-        if extract_result and not extract_result.get("error") and suggest_result is None:
-            merchant = extract_result.get("merchant", "")
-            return LLMResponse(
-                text="发票号 OK，没有重复。让我根据商户名称推荐一个类别…",
-                tool_calls=[self._tool_call("suggest_category", {"merchant": merchant})],
-                stop_reason="tool_use",
-            )
-        if extract_result and suggest_result and not self._has_draft_writes(messages):
-            tc = []
-            f = extract_result
-            tc.append(self._tool_call("update_draft_field", {"field": "merchant", "value": str(f.get("merchant") or ""), "source": "ocr"}))
-            tc.append(self._tool_call("update_draft_field", {"field": "amount", "value": str(f.get("amount") or 0), "source": "ocr"}))
-            tc.append(self._tool_call("update_draft_field", {"field": "date", "value": str(f.get("date") or ""), "source": "ocr"}))
-            tc.append(self._tool_call("update_draft_field", {"field": "tax_amount", "value": str(f.get("tax_amount") or 0), "source": "ocr"}))
-            if f.get("invoice_number"):
-                tc.append(self._tool_call("update_draft_field", {"field": "invoice_number", "value": f["invoice_number"], "source": "ocr"}))
-            if f.get("invoice_code"):
-                tc.append(self._tool_call("update_draft_field", {"field": "invoice_code", "value": f["invoice_code"], "source": "ocr"}))
-            tc.append(self._tool_call("update_draft_field", {"field": "category", "value": suggest_result.get("category", "other"), "source": "agent_suggested"}))
-            if f.get("description"):
-                tc.append(self._tool_call("update_draft_field", {"field": "description", "value": f["description"], "source": "ocr"}))
-            return LLMResponse(
-                text=f"推荐类别：**{self._cat_label(suggest_result.get('category'))}**（置信度 {int(suggest_result.get('confidence', 0) * 100)}%）。我把所有字段填到左侧表单了，请您检查——如需修改某个字段，告诉我即可。",
-                tool_calls=tc,
-                stop_reason="tool_use",
-            )
-        if self._has_draft_writes(messages):
-            return LLMResponse(
-                text="所有字段已填入左侧表单。您可以：\n\n- 检查确认后点击「提交报销单」\n- 告诉我需要修改什么（例如：把金额改成 500）\n- 换一个类别（例如：这是团建不是餐饮）",
-                stop_reason="end_turn",
-            )
-        if "改" in last_user_text or "换" in last_user_text or "修改" in last_user_text:
-            return LLMResponse(
-                text="明白，请告诉我具体要改哪个字段改成什么值。例如：'把金额改成 380' 或 '类别改成 entertainment'。",
-                stop_reason="end_turn",
-            )
-        return LLMResponse(
-            text="你好！我是报销助手。您可以上传发票图让我自动识别，或者直接告诉我您要报销什么。",
-            stop_reason="end_turn",
-        )
-
-    # ── employee_qa 分支 ──
+    # ── employee drawer (read-mostly) 分支 ──
     def _qa_turn(self, messages: list[dict]) -> LLMResponse:
-        """只读 QA 模式的规则脚本。
+        """只读 QA 模式的规则脚本（MockLLM 下 employee role 走这条）。
 
         两轮循环：第 1 轮根据最新 user 文本决定调哪个 tool；第 2 轮看到
         tool 结果 → 格式化成自然语言 → end_turn。纯关键词匹配，零推理。
@@ -1361,36 +1304,18 @@ _SYSTEM_PROMPTS: dict[str, str] = {
         "可修改的字段：merchant、amount、category、date、tax_amount、invoice_number、invoice_code、project_code、description、currency。"
         "\n\n预算检查规则：员工填写金额后，调用 check_budget_status（使用员工的成本中心和填写金额）。如果 signal 为 'info'，告知预算使用情况和预计占比。如果 signal 为 'blocked' 或 'over_budget'，明确告知提交后将被财务管理员拦截审核，不要隐瞒。如果 signal 为 'ok' 或成本中心未配置预算，无需提及预算。"
     ),
-    "employee_qa": (
-        "你是企业报销查询助手，帮助员工查询自己的报销记录。"
-        "你只能读取数据，不能修改任何内容。请用中文回复，信息简洁清晰。"
-        "\n\n页面加载规则：收到 trigger=page_load 且 page=my-reports 时，立即调用 get_budget_summary。如果 signal 为 'info'、'blocked' 或 'over_budget'，在等待用户输入之前主动发送一条预算状态提示。如果 signal 为 'ok'，保持静默——一切正常时不要打扰用户。"
-        "\n\n趋势提示规则：当 get_budget_summary 返回的 trend.overrun_risk 为 'high' 时，在预算状态提示后用自然语气补充一句趋势预测（例如：按近 3 个月的节奏，预计 X 日前后预算耗尽）。如果 trend 为 null 或 overrun_risk 为 'ok'/'moderate'，不提趋势。"
-    ),
-    "employee_report_edit": (
-        "你是企业报销助手，帮助员工修改报销单中的行项目字段。请用中文回复，简洁专业。\n\n"
-        "字段修改规则：当用户要求修改某个字段，你必须立即调用 update_report_line_field 工具执行修改。\n"
-        "类别名称映射：餐饮=meal、交通=transport、住宿=accommodation、招待/团建=entertainment、其他=other。\n"
-        "可修改的字段：merchant、amount、category、date、tax_amount、invoice_number、invoice_code、project_code、description、currency。"
-    ),
-    "employee_unified": (
-        "你是企业报销综合助手，帮助员工完成所有报销相关操作。请用中文回复，简洁专业。\n\n"
-        "你的能力包括：\n"
-        "1. 查询：查看历史报销记录、消费汇总、预算状态、报销政策\n"
-        "2. 草稿填写：识别发票图片、推荐费用类别、检查重复发票、更新草稿字段、检查预算\n"
-        "3. 报销单编辑：修改已有报销单的行项目字段\n\n"
-        "字段修改规则：当用户要求修改某个字段（例如'把金额改成 380'、'类型改成餐饮'），"
-        "你必须立即调用对应的工具执行修改，不要只回复建议文字。\n"
-        "类别名称映射：餐饮=meal、交通=transport、住宿=accommodation、招待/团建=entertainment、其他=other。\n"
-        "可修改的字段：merchant、amount、category、date、tax_amount、invoice_number、invoice_code、project_code、description、currency。\n\n"
-        "上下文感知规则：用户消息中可能包含页面上下文（draft_id、report_id、lines）。根据上下文判断可用工具：\n"
-        "- 有 draft_id 上下文时：可以调用 update_draft_field、extract_receipt_fields 等草稿相关工具\n"
-        "- 有 report_id + lines 上下文时：调用 update_report_line_field 修改行项目，使用上下文中的 line_id\n"
-        "- 无特定上下文时：只能使用查询类工具（get_my_recent_submissions、get_report_detail、get_spend_summary、get_budget_summary、get_policy_rules）\n\n"
-        "安全约束：\n"
-        "- 没有 draft 上下文时，不要调用 update_draft_field\n"
-        "- 没有 report 上下文时，不要调用 update_report_line_field\n"
-        "- update_report_line_field 的 line_id 参数必须从上下文中获取，不要编造"
+    "employee": (
+        "你是企业报销助手。请镜像用户语言（中/英），简洁作答。\n\n"
+        "可做：查报销记录、查预算、查政策、改自己 open/needs_revision 状态报销单里的行字段。\n"
+        "不可做：提交报销单、审批、拒绝、付款——这类动作必须用户在 UI 点按钮完成，"
+        "即使用户要求你执行，也要婉拒并指引到对应按钮。\n\n"
+        "字段修改规则：用户要改字段时调用 update_report_line_field，工具会自己检查归属和状态。\n"
+        "类别映射：餐饮=meal、交通=transport、住宿=accommodation、招待/团建=entertainment、其他=other。\n"
+        "可改字段：merchant、amount、category、date、tax_amount、invoice_number、invoice_code、project_code、description、currency。\n\n"
+        "报销单页加载规则（trigger=page_load + page=my-reports）：调一次 get_budget_summary；"
+        "signal=info/blocked/over_budget → 一行预算提示；signal=ok 或工具返回 error → 保持静默。\n\n"
+        "简短确认（OK/好的/嗯/thanks）不视为新请求，简单回应或静默即可。\n"
+        "闲聊/无关问题一句话拒答并提示可问什么。"
     ),
     "manager_explain": (
         "你是审批辅助助手，帮助经理理解报销单的风险情况。"
@@ -1729,19 +1654,15 @@ class ChatMessageBody(BaseModel):
     message: str
 
 
-class QAMessageBody(BaseModel):
-    """Stateless QA 请求体——前端维护最近 N 轮历史。
+class EmployeeChatBody(BaseModel):
+    """Unified employee-drawer request body (stateless, multi-turn).
 
-    messages 数组每项形如 {"role": "user"|"assistant", "content": "..."}。
-    后端不做持久化，每次请求是一次独立的 agent 运行。
+    Front-end maintains chat_history in memory and sends last N turns.
+    `context` is optional page state — the endpoint injects it into the
+    conversation so the LLM knows what report the user is looking at.
     """
     messages: list[dict]
-
-
-class UnifiedMessageBody(BaseModel):
-    """统一 agent 请求体——前端传 page_context 指定当前页面上下文。"""
-    messages: list[dict]
-    page_context: Optional[dict] = None
+    context: Optional[dict] = None
 
 
 def _draft_dict(draft) -> dict:
@@ -2022,269 +1943,55 @@ async def explain_submission(
     return result
 
 
-@router.post("/qa/message")
-async def send_qa_message(
-    body: QAMessageBody,
+@router.post("/message")
+async def send_employee_chat(
+    body: EmployeeChatBody,
     ctx: UserContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """只读 Q&A 入口——"我的报销" drawer 走这条，tool 白名单是 employee_qa。
+    """Unified employee drawer — Concur/Expensify-style single entry point.
 
-    LLM 看不到也调不到 update_draft_field / extract_receipt_fields /
-    submit 相关能力，即便被 prompt injection 也只能读自己的数据。
+    Routing: there's no routing. One endpoint, one agent, one tool set.
+    Security model:
+      - ``agent_role='employee'`` is hard-coded here; front-end cannot
+        escalate by tweaking a parameter.
+      - Every WRITE tool validates ownership + state INSIDE the tool (data-
+        level ACL). A hallucinated tool call still can't touch someone
+        else's data or an already-submitted report.
+      - Tool whitelist excludes submit/approve/reject/pay entirely: AI
+        never executes actions that carry legal/compliance weight.
+
+    Multi-tenant note for future: when the whitelist gains manager-read
+    tools (e.g. list_pending_approvals), each such tool must check
+    ``ctx.user_id`` is the approver of record for the target object.
     """
-    async def event_stream() -> AsyncIterator[str]:
-        try:
-            async for event in run_agent(
-                user_message="",
-                draft_id=None,
-                ctx=ctx,
-                db=db,
-                agent_role="employee_qa",
-                messages_history=body.messages,
-            ):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        except Exception as exc:  # noqa: BLE001
-            err = {"type": "error", "message": str(exc)}
-            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+    messages_for_agent = list(body.messages or [])
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-class ReportLineEditBody(BaseModel):
-    message: str
-    report_id: str
-    lines: list[dict] = []
-
-
-@router.post("/report-line/edit")
-async def edit_report_line_via_chat(
-    body: ReportLineEditBody,
-    ctx: UserContext = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-):
-    """LLM-powered field edit for report line items.
-
-    Frontend sends report_id + all line summaries. The LLM picks the right
-    line via merchant/index, then calls update_report_line_field with
-    line_id + field + value.
-    """
-    from backend.db.store import get_submission
-    from backend.api.routes.reports import EDITABLE_FIELDS
-
-    report = await get_report(db, body.report_id)
-    if not report:
-        raise HTTPException(status_code=404, detail="报销单不存在")
-    if report.employee_id != ctx.user_id:
-        raise HTTPException(status_code=403, detail="权限不足")
-    if report.status not in ("open", "needs_revision"):
-        raise HTTPException(status_code=409, detail="报销单已提交或已审批，无法编辑")
-
-    lines_context = "\n".join(
-        f"  第{i+1}笔: id={l.get('id','?')}, 商户={l.get('merchant','?')}, "
-        f"金额={l.get('amount','?')} {l.get('currency','CNY')}, 类别={l.get('category','?')}"
-        for i, l in enumerate(body.lines)
-    )
-
-    async def _handle_update_line(args, _ctx, _db, _draft_id):
-        line_id = args.get("line_id")
-        field = args.get("field")
-        value = args.get("value")
-        if not line_id:
-            return {"error": "缺少 line_id"}
-        sub = await get_submission(db, line_id)
-        if not sub or sub.report_id != body.report_id:
-            return {"error": "行项目不存在"}
-        if field not in EDITABLE_FIELDS:
-            return {"error": f"字段 '{field}' 不允许修改"}
-        if field in ("amount", "tax_amount"):
-            try:
-                value = float(value)
-            except (ValueError, TypeError):
-                return {"error": f"{field} 必须是数字"}
-        setattr(sub, field, value)
-        if field == "amount" and sub.exchange_rate is not None:
-            sub.converted_amount = round(float(value) * float(sub.exchange_rate), 2)
-        from datetime import datetime, timezone
-        sub.updated_at = datetime.now(timezone.utc)
-        await db.commit()
-        await db.refresh(sub)
-        return {"ok": True, "field": field, "value": value, "line_id": line_id}
-
-    context_msg = (
-        f"当前报销单包含以下行项目：\n{lines_context}\n\n"
-        f"用户请求：{body.message}"
-    )
-
-    async def event_stream() -> AsyncIterator[str]:
-        try:
-            async for event in run_agent(
-                user_message="",
-                draft_id=None,
-                ctx=ctx,
-                db=db,
-                agent_role="employee_report_edit",
-                messages_history=[{"role": "user", "content": context_msg}],
-                extra_handlers={"update_report_line_field": _handle_update_line},
-            ):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        except Exception as exc:  # noqa: BLE001
-            err = {"type": "error", "message": str(exc)}
-            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-@router.post("/unified/message")
-async def send_unified_message(
-    body: UnifiedMessageBody,
-    ctx: UserContext = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-):
-    """统一员工 agent 入口——根据 page_context 自动选择模式。
-
-    三种模式：
-    - draft 模式（page_context 有 draft_id）：持久化 chat history 到 draft
-    - report 编辑模式（page_context 有 report_id + lines）：注入 update_report_line_field handler
-    - QA 模式（无特定上下文）：stateless 查询
-    """
-    from backend.api.routes.reports import EDITABLE_FIELDS
-    from backend.db.store import get_submission, get_report
-
-    page_context = body.page_context or {}
-    draft_id = page_context.get("draft_id")
-    report_id = page_context.get("report_id")
-    lines = page_context.get("lines")
-    extra_handlers = None
-    messages_for_agent = list(body.messages)
-
-    if draft_id:
-        # Draft 模式：提取最新 user 消息，走持久化路径
-        user_message = ""
-        for msg in reversed(body.messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    user_message = content
-                elif isinstance(content, list):
-                    user_message = " ".join(
-                        b.get("text", "") for b in content
-                        if isinstance(b, dict) and b.get("type") == "text"
+    # If the caller passed page context (e.g. {report_id: ...}), inject a
+    # synthesized first user turn so the LLM knows what the user is looking
+    # at. Keeps prompts short (we don't re-send this every turn; client
+    # sends it once per page load).
+    if body.context:
+        report_id = (body.context or {}).get("report_id")
+        if report_id:
+            report = await get_report(db, report_id)
+            # Silent if lookup fails — the user can still chat about other
+            # things. ACL per tool prevents any ability to act on it.
+            if report and report.employee_id == ctx.user_id:
+                from backend.db.store import list_report_submissions
+                subs = await list_report_submissions(db, report_id)
+                ctx_text = (
+                    f"[当前上下文] 打开的报销单: {report.title} "
+                    f"(id={report_id}, status={report.status}, {len(subs)} 笔)\n"
+                )
+                for i, s in enumerate(subs, 1):
+                    ctx_text += (
+                        f"  line#{i}: id={s.id} | merchant={s.merchant or '-'} | "
+                        f"{s.currency or ''} {s.amount} | category={s.category or '-'} | "
+                        f"date={s.date or '-'}\n"
                     )
-                break
+                messages_for_agent = [{"role": "user", "content": ctx_text}] + messages_for_agent
 
-        async def event_stream() -> AsyncIterator[str]:
-            try:
-                async for event in run_agent(
-                    user_message=user_message,
-                    draft_id=draft_id,
-                    ctx=ctx,
-                    db=db,
-                    agent_role="employee_unified",
-                ):
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            except Exception as exc:  # noqa: BLE001
-                err = {"type": "error", "message": str(exc)}
-                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    if report_id and lines:
-        # Report 编辑模式：验证权限，注入 handler
-        report = await get_report(db, report_id)
-        if not report:
-            raise HTTPException(status_code=404, detail="报销单不存在")
-        if report.employee_id != ctx.user_id:
-            raise HTTPException(status_code=403, detail="权限不足")
-        if report.status not in ("open", "needs_revision"):
-            raise HTTPException(status_code=409, detail="报销单已提交或已审批，无法编辑")
-
-        lines_context = "\n".join(
-            f"  第{i+1}笔: id={l.get('id','?')}, 商户={l.get('merchant','?')}, "
-            f"金额={l.get('amount','?')} {l.get('currency','CNY')}, 类别={l.get('category','?')}"
-            for i, l in enumerate(lines)
-        )
-
-        async def _handle_update_line(args, _ctx, _db, _draft_id):
-            line_id = args.get("line_id")
-            field = args.get("field")
-            value = args.get("value")
-            if not line_id:
-                return {"error": "缺少 line_id"}
-            sub = await get_submission(db, line_id)
-            if not sub or sub.report_id != report_id:
-                return {"error": "行项目不存在"}
-            if field not in EDITABLE_FIELDS:
-                return {"error": f"字段 '{field}' 不允许修改"}
-            if field in ("amount", "tax_amount"):
-                try:
-                    value = float(value)
-                except (ValueError, TypeError):
-                    return {"error": f"{field} 必须是数字"}
-            setattr(sub, field, value)
-            if field == "amount" and sub.exchange_rate is not None:
-                sub.converted_amount = round(float(value) * float(sub.exchange_rate), 2)
-            sub.updated_at = datetime.now(timezone.utc)
-            await db.commit()
-            await db.refresh(sub)
-            return {"ok": True, "field": field, "value": value, "line_id": line_id}
-
-        extra_handlers = {"update_report_line_field": _handle_update_line}
-
-        # Prepend line info into the messages as context
-        context_prefix = f"当前报销单 (report_id={report_id}) 包含以下行项目：\n{lines_context}\n\n"
-        if messages_for_agent and messages_for_agent[-1].get("role") == "user":
-            last_msg = messages_for_agent[-1]
-            original_content = last_msg.get("content", "")
-            if isinstance(original_content, str):
-                messages_for_agent = messages_for_agent[:-1] + [
-                    {"role": "user", "content": context_prefix + original_content}
-                ]
-            else:
-                messages_for_agent = messages_for_agent[:-1] + [
-                    {"role": "user", "content": context_prefix + str(original_content)}
-                ]
-
-        async def event_stream() -> AsyncIterator[str]:
-            try:
-                async for event in run_agent(
-                    user_message="",
-                    draft_id=None,
-                    ctx=ctx,
-                    db=db,
-                    agent_role="employee_unified",
-                    messages_history=messages_for_agent,
-                    extra_handlers=extra_handlers,
-                ):
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            except Exception as exc:  # noqa: BLE001
-                err = {"type": "error", "message": str(exc)}
-                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    # QA 模式：stateless
     async def event_stream() -> AsyncIterator[str]:
         try:
             async for event in run_agent(
@@ -2292,7 +1999,7 @@ async def send_unified_message(
                 draft_id=None,
                 ctx=ctx,
                 db=db,
-                agent_role="employee_unified",
+                agent_role="employee",
                 messages_history=messages_for_agent,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -2303,7 +2010,10 @@ async def send_unified_message(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

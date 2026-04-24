@@ -1,8 +1,11 @@
 /**
- * AI 报销助手 — 可嵌入任何员工页面的侧边栏聊天组件。
+ * AI 报销助手 — 可嵌入任何员工页面的侧边栏 drawer。
  *
  * 用法：在页面底部加 <script src="/shared/ai-assistant.js"></script>
- * 自动注入 FAB 按钮 + 侧边栏 drawer，使用 /api/chat/unified/message (unified employee agent)。
+ * 调用 /api/chat/message (unified `employee` agent)。
+ *
+ * 可选：宿主页面用 window.aiPageContext() 返回 {report_id} 让 AI
+ * 感知当前打开的报销单。安全不靠这个——所有写工具内部都有 ACL。
  */
 (function () {
   "use strict";
@@ -153,12 +156,15 @@
       const headers = await getHeaders();
       headers["Content-Type"] = "application/json";
 
-      const pageContext = (typeof window.aiPageContext === 'function')
-        ? window.aiPageContext()
-        : { page: "unknown" };
+      // Optional page context — host pages can expose report_id via
+      // window.aiPageContext(). Back-end uses it only to inject report
+      // info into the prompt; all write tools enforce ACL themselves.
+      const context = (typeof window.aiPageContext === 'function')
+        ? window.aiPageContext() || {}
+        : {};
 
-      const url = "/api/chat/unified/message";
-      const body = { messages: chatHistory.slice(-10), page_context: pageContext };
+      const url = "/api/chat/message";
+      const body = { messages: chatHistory.slice(-10), context };
 
       const resp = await fetch(url, {
         method: "POST",

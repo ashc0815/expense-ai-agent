@@ -321,7 +321,7 @@
           <option value="fraud_llm_analyzer">Fraud LLM</option>
           <option value="ambiguity_detector">Ambiguity</option>
           <option value="ocr">OCR</option>
-          <option value="chat_employee_submit,chat_employee_qa,chat_manager_explain">Chat Agent</option>
+          <option value="chat_employee_submit,chat_employee,chat_manager_explain">Chat Agent</option>
         </select>
       </div>
       <div class="sidebar-filter">
@@ -473,7 +473,7 @@ const COMP_DEFS = {
     name: "Chat Agent",
     icon: "&#9993;",
     subtitle: "GPT-4o | Employee Submit / QA / Manager Explain",
-    promptKeys: ["chat_employee_submit", "chat_employee_qa", "chat_manager_explain"],
+    promptKeys: ["chat_employee_submit", "chat_employee", "chat_manager_explain"],
     configKeys: [],
     casePrefix: ["chat_", "agent_"],
     evalCmd: "pytest backend/tests/test_agent_eval.py -v",

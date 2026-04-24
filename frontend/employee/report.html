@@ -755,12 +755,12 @@ loadReport().then(() => {
 <script>
 let currentEditLineId = null;
 
+// The drawer's back-end re-reads the full report + line data from the DB
+// on every request (fresh state, never stale). We only tell it *which*
+// report the user is looking at; auth + editability checks happen
+// server-side inside the chat endpoint and each write tool.
 window.aiPageContext = function() {
-  if (!REPORT_ID || !reportData) return { page: "report" };
-  var lines = (reportData.lines || []).map(function(l) {
-    return { id: l.id, merchant: l.merchant, amount: l.amount, currency: l.currency, category: l.category, date: l.date };
-  });
-  return { page: "report", report_id: REPORT_ID, lines: lines };
+  return REPORT_ID ? { report_id: REPORT_ID } : {};
 };
 
 window.addEventListener("ai-assistant-event", function(e) {
