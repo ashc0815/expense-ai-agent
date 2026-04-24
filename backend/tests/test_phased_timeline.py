@@ -52,7 +52,7 @@ def setup_module(_):
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    asyncio.get_event_loop().run_until_complete(_init())
+    asyncio.new_event_loop().run_until_complete(_init())
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_storage] = lambda: _storage
 

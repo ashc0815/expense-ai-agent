@@ -107,7 +107,7 @@ def setup_module(_):
             })
             _FIXTURES["stranger_sub_id"] = stranger_sub.id
 
-    asyncio.get_event_loop().run_until_complete(_seed())
+    asyncio.new_event_loop().run_until_complete(_seed())
     app.dependency_overrides[get_db] = _override_get_db
 
 

@@ -29,7 +29,7 @@ def setup_module(_):
     async def _create():
         async with _test_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-    asyncio.get_event_loop().run_until_complete(_create())
+    asyncio.new_event_loop().run_until_complete(_create())
     app.dependency_overrides[get_db] = _override_get_db
 
 def teardown_module(_):
@@ -57,7 +57,7 @@ def test_budget_status_no_budget_returns_ok():
 
 
 def test_budget_status_under_info_threshold_returns_ok():
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.new_event_loop().run_until_complete(
         _seed_budget("CC-LOW", "2026-Q2", 10000.0)
     )
     r = client.get("/api/budget/status/CC-LOW?period=2026-Q2", headers=HEADERS)
@@ -67,7 +67,7 @@ def test_budget_status_under_info_threshold_returns_ok():
 
 def test_budget_status_projected_blocked():
     """Passing amount that would push usage to ≥ 95% → signal: blocked."""
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.new_event_loop().run_until_complete(
         _seed_budget("CC-HIGH", "2026-Q2", 10000.0)
     )
     # 0 spent + 9501 amount = 95.01% of 10000 → blocked
@@ -182,8 +182,8 @@ def test_submit_with_budget_blocked_sets_flag():
     from decimal import Decimal
     cc = "CC-BLOCK-TEST"
     emp_id = f"emp-blk-{uuid.uuid4().hex[:6]}"
-    asyncio.get_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
-    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.new_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
+    asyncio.new_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
 
     # Seed existing spend of 9500 (95%) so any new amount triggers block
     async def _seed_spend():
@@ -203,7 +203,7 @@ def test_submit_with_budget_blocked_sets_flag():
                     cost_center=cc,
                 ))
                 await db.commit()
-    asyncio.get_event_loop().run_until_complete(_seed_spend())
+    asyncio.new_event_loop().run_until_complete(_seed_spend())
 
     r = client.post(
         "/api/submissions",
@@ -240,7 +240,7 @@ def test_unblock_submission():
                     budget_blocked=True,
                 ))
                 await db.commit()
-    asyncio.get_event_loop().run_until_complete(_create_blocked())
+    asyncio.new_event_loop().run_until_complete(_create_blocked())
 
     r = client.patch("/api/submissions/blocked-sub-t4/unblock", headers=ADMIN_HEADERS)
     assert r.status_code == 200
@@ -260,7 +260,7 @@ def test_budget_status_trend_high_risk():
     from datetime import date as _date
 
     cc = "CC-TREND"
-    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.new_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
 
     # Seed Q2 spend (April 2026): 87% = 8700 used, 1300 remaining
     async def _seed_q2():
@@ -278,7 +278,7 @@ def test_budget_status_trend_high_risk():
                     cost_center=cc,
                 ))
                 await db.commit()
-    asyncio.get_event_loop().run_until_complete(_seed_q2())
+    asyncio.new_event_loop().run_until_complete(_seed_q2())
 
     # Seed past 3 complete months (Jan/Feb/Mar 2026 relative to today ≥ 2026-04-01)
     # 1800 + 2200 + 2525 = 6525, avg = 2175
@@ -303,7 +303,7 @@ def test_budget_status_trend_high_risk():
                         cost_center=cc,
                     ))
             await db.commit()
-    asyncio.get_event_loop().run_until_complete(_seed_past())
+    asyncio.new_event_loop().run_until_complete(_seed_past())
 
     r = client.get(f"/api/budget/status/{cc}?period=2026-Q2", headers=HEADERS)
     assert r.status_code == 200
@@ -319,7 +319,7 @@ def test_budget_status_trend_high_risk():
 def test_budget_status_trend_zero_history():
     """No past-month submissions → monthly_avg=0, overrun_risk=ok, no overrun date."""
     cc = "CC-TREND-ZERO"
-    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.new_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
 
     r = client.get(f"/api/budget/status/{cc}?period=2026-Q2", headers=HEADERS)
     assert r.status_code == 200
@@ -346,8 +346,8 @@ def test_snapshot_me_appends_trend_narrative_when_high_risk():
     """snapshot/me: when signal=info/blocked and overrun_risk=high → message contains 月均."""
     cc = "CC-SNAP-HIGH"
     emp_id = "emp-snap-high"
-    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
-    asyncio.get_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
+    asyncio.new_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.new_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
 
     # Seed Q2 spend at 80% (info signal)
     async def _seed_q2_snap():
@@ -388,8 +388,8 @@ def test_snapshot_me_appends_trend_narrative_when_high_risk():
                     ))
             await db.commit()
 
-    asyncio.get_event_loop().run_until_complete(_seed_q2_snap())
-    asyncio.get_event_loop().run_until_complete(_seed_past_snap())
+    asyncio.new_event_loop().run_until_complete(_seed_q2_snap())
+    asyncio.new_event_loop().run_until_complete(_seed_past_snap())
 
     r = client.get(
         "/api/budget/snapshot/me",
@@ -405,8 +405,8 @@ def test_snapshot_me_no_trend_when_ok_risk():
     """snapshot/me: when overrun_risk=ok (low avg), message does not mention 月均."""
     cc = "CC-SNAP-OK"
     emp_id = "emp-snap-ok"
-    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
-    asyncio.get_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
+    asyncio.new_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.new_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
 
     # Seed Q2 spend at 80% (info signal — so we get a message)
     async def _seed_q2_ok():
@@ -426,7 +426,7 @@ def test_snapshot_me_no_trend_when_ok_risk():
                 await db.commit()
 
     # No past-month submissions → monthly_avg = 0 → overrun_risk = ok
-    asyncio.get_event_loop().run_until_complete(_seed_q2_ok())
+    asyncio.new_event_loop().run_until_complete(_seed_q2_ok())
 
     r = client.get(
         "/api/budget/snapshot/me",
@@ -444,8 +444,8 @@ def test_tool_get_budget_summary_includes_trend():
     """tool_get_budget_summary must return a 'trend' key so the LLM can read overrun_risk."""
     cc = "CC-CHAT-TREND"
     emp_id = "emp-chat-trend"
-    asyncio.get_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
-    asyncio.get_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
+    asyncio.new_event_loop().run_until_complete(_seed_budget(cc, "2026-Q2", 10000.0))
+    asyncio.new_event_loop().run_until_complete(_seed_employee_with_cc(emp_id, cc))
 
     async def _call_tool():
         from backend.api.routes.chat import tool_get_budget_summary
@@ -454,6 +454,6 @@ def test_tool_get_budget_summary_includes_trend():
             ctx = UserContext(user_id=emp_id, role="employee")
             return await tool_get_budget_summary({}, ctx, db, "")
 
-    result = asyncio.get_event_loop().run_until_complete(_call_tool())
+    result = asyncio.new_event_loop().run_until_complete(_call_tool())
     assert "trend" in result
     assert result["trend"] is not None or result.get("configured") is False
