@@ -113,13 +113,13 @@ When score >50, calls Claude API for deep semantic analysis (falls back to rule-
 
 ## Conversational Agent
 
-Three Agent roles, each with independent tool whitelists (preventing prompt injection):
+One unified drawer for every employee page, plus a dedicated submit-chat on the quick-add flow. Security is **not** enforced by role-based tool whitelists — it lives inside each write tool (data-level ACL) and in the simple rule that **AI has zero state-changing business actions**: no `submit_expense`, no `approve`, no `reject`, no `pay`.
 
-| Role | Scenario | Available Tools |
-|------|----------|----------------|
-| **employee_submit** | Employee filling reimbursement | OCR extraction, category suggestion, invoice dedup, draft editing, budget query |
-| **employee_qa** | Employee querying history | View recent expenses, expense details, spend summary, budget status (read-only) |
-| **manager_explain** | Manager approval assistance | View pending expenses, employee history → output risk assessment + approval recommendation |
+| Role | Where | Available Tools |
+|------|-------|----------------|
+| **employee_submit** | `quick.html` inline chat (draft creation) | OCR extraction, category suggestion, invoice dedup, draft editing, budget query |
+| **employee** | Shared drawer on every employee page (`/api/chat/message`) | Recent expenses, report detail, spend summary, budget summary, policy rules, **line-item edits** (owner + `status ∈ {open, needs_revision}` checked inside the tool) |
+| **manager_explain** | Structured AI risk card on approval pages (`/api/chat/explain/{id}`) | View pending expenses, employee history → output risk assessment + approval recommendation |
 
 **LLM Abstraction:** Defaults to MockLLM (deterministic state machine, no API Key needed, ideal for demo and testing). Set `OPENAI_API_KEY` + `AGENT_USE_REAL_LLM=1` to switch to GPT-4o.
 
@@ -139,27 +139,34 @@ Three Agent roles, each with independent tool whitelists (preventing prompt inje
 | 5-Skill compliance pipeline | 5 sequential steps, policy_engine hard rules | **Workflow (intentional)** | Compliance requires determinism; LLM must not alter the flow |
 | Manager/Finance AI explanation card | Calls read-only tools, assembles risk assessment + recommendation | **Agent (lightweight)** | Must independently decide which tools to call for evidence gathering |
 
-### 2. Tool Whitelist (Prompt Injection Defense)
+### 2. Unified Agent + Data-Level ACL (Concur Joule / Expensify Concierge Pattern)
 
-`TOOL_REGISTRY` maps each `agent_role` to its allowed tool list. The whitelist is enforced at two layers:
+The shared drawer is a **single agent** — it does not switch behavior by page or role. Auth is enforced inside the tools, not at the routing layer:
 
-1. **LLM only sees whitelisted tool definitions** (the list fed to `tools=` parameter is pre-filtered)
-2. **Dispatcher double-checks**: even if LLM hallucinates a tool name outside the whitelist, dispatch is rejected
+1. **Hard ceiling: AI has no state-changing business actions.** Submit / approve / reject / pay are UI-only because they carry legal and compliance weight; they must be human-confirmed. The `employee` whitelist literally doesn't list them.
+2. **Write tools self-validate.** `tool_update_report_line_field` re-checks ownership (`report.employee_id == ctx.user_id`), state (`status ∈ {open, needs_revision}`), and field (`∈ EDITABLE_FIELDS`) inside the handler. A prompt-injected LLM that passes a stranger's `line_id` or targets a `pending` report still gets rejected by the tool, not by the router.
+3. **Dispatcher double-checks.** Even before the tool's own check, if the LLM hallucinates a tool outside the role's whitelist (e.g. tries to call `update_draft_field` from the unified `employee` role), dispatch is rejected up front.
 
 ```python
 TOOL_REGISTRY = {
+    # Specialized flow — quick.html's draft-filling pipeline.
     "employee_submit": ["extract_receipt_fields", "suggest_category",
                         "check_duplicate_invoice", "get_my_recent_submissions",
-                        "update_draft_field", "check_budget_status"],   # has write access
-    "employee_qa":     ["get_my_recent_submissions", "get_report_detail",
+                        "update_draft_field", "check_budget_status"],
+    # Unified drawer — shared across every employee page. Auth inside tools.
+    "employee":        ["get_my_recent_submissions", "get_report_detail",
                         "get_spend_summary", "get_budget_summary",
-                        "get_policy_rules"],                             # read-only
+                        "get_policy_rules",
+                        "update_report_line_field"],   # owner + state check in the tool
+    # Risk card on approval pages — single request, structured JSON.
     "manager_explain": ["get_submission_for_review",
-                        "get_employee_submission_history"],              # read-only
+                        "get_employee_submission_history"],
 }
 ```
 
-> The Agent never has `submit_expense` / `approve` tools. This is not a limitation — it's a design decision.
+**Why unified, not one role per page?** Real users have dual identities — every mid-level manager is both an employee filing their own expenses and an approver for their team. Role-based segmentation would force them to "switch hats" or navigate to a specific page to get the right tool set. Data-level ACL handles the same-user-two-hats case naturally: the LLM picks the right data by intent, and the tool checks ownership on the specific object the user references. Industry precedent: SAP Joule, Expensify Concierge, Ramp Copilot, Navan Ava all use this pattern.
+
+> The Agent never has `submit_expense` / `approve` tools. This is not a limitation — it's the boundary between helper and actor.
 
 ### 3. Phased Audit Timeline
 
@@ -429,10 +436,10 @@ Results are automatically posted to the Observatory API if the server is running
 |--------|------|------|-------------|
 | `POST` | `/api/chat/drafts` | employee | Create new draft |
 | `POST` | `/api/chat/drafts/{id}/receipt` | employee | Upload receipt to draft |
-| `POST` | `/api/chat/drafts/{id}/message` | employee | Agent 1: submit chat (SSE) |
+| `POST` | `/api/chat/drafts/{id}/message` | employee | Agent 1: submit-flow chat on `quick.html` (SSE) |
 | `POST` | `/api/chat/drafts/{id}/submit` | employee | Convert draft to formal submission |
-| `POST` | `/api/chat/qa/message` | employee | Agent 2: read-only QA (SSE) |
-| `POST` | `/api/chat/explain/{id}` | manager / finance_admin | Agent 3: AI explanation card (JSON) |
+| `POST` | `/api/chat/message` | employee | Agent 2: unified drawer on every employee page (SSE). Optional `context: {report_id}` tells the LLM which report the user is looking at |
+| `POST` | `/api/chat/explain/{id}` | manager / finance_admin | Agent 3: structured AI risk card (JSON, not a chat) |
 
 **Budget**
 
