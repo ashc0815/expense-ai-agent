@@ -179,7 +179,14 @@ def setup_module(_):
 
 def teardown_module(_):
     app.dependency_overrides.pop(get_db, None)
-    os.unlink(_TMP_DB.name)
+    try:
+        asyncio.new_event_loop().run_until_complete(_engine.dispose())
+    except Exception:
+        pass
+    try:
+        os.unlink(_TMP_DB.name)
+    except PermissionError:
+        pass  # Windows: temp file still locked, OS Temp cleanup handles it
 
     # Always write the pass-rate summary to stderr (visible even without -s)
     total = len(_EVAL_RESULTS)

@@ -154,7 +154,14 @@ def setup_module(_: Any) -> None:
 
 
 def teardown_module(_: Any) -> None:
-    os.unlink(_TMP_DB.name)
+    try:
+        asyncio.new_event_loop().run_until_complete(_engine.dispose())
+    except Exception:
+        pass
+    try:
+        os.unlink(_TMP_DB.name)
+    except PermissionError:
+        pass  # Windows: temp file still locked, OS Temp cleanup handles it
 
     total = len(_EVAL_RESULTS)
     passed_n = sum(1 for r in _EVAL_RESULTS.values() if r.get("passed"))
