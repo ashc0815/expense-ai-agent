@@ -284,7 +284,7 @@
   async function qaStream(messages, onEvent) {
     const headers = await global.auth.getHeaders();
     headers["Content-Type"] = "application/json";
-    const res = await fetch(`${BASE}/api/chat/qa/message`, {
+    const res = await fetch(`${BASE}/api/chat/message`, {
       method: "POST", headers,
       body: JSON.stringify({ messages }),
     });

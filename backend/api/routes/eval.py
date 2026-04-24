@@ -103,7 +103,7 @@ async def list_traces(
     if component:
         # Accept comma-separated list so a single UI filter (e.g. "Chat Agent")
         # can match multiple concrete component values (chat_employee_submit /
-        # chat_employee_qa / chat_manager_explain).
+        # chat_employee / chat_manager_explain).
         values = [v.strip() for v in component.split(",") if v.strip()]
         if len(values) == 1:
             q = q.where(LLMTrace.component == values[0])

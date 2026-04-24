@@ -2,7 +2,7 @@
 
 Parameterized test cases from eval_cases.yaml, covering all 3 agent forms:
 
-  employee_qa       (4 cases)  intent routing + tool whitelist
+  employee          (4 cases)  intent routing + tool whitelist
   manager_explain   (5 cases)  tier→recommendation + role ACL
   whitelist_inject  (3 cases)  prompt-injection defense
 
@@ -238,7 +238,7 @@ def test_eval_case(case: dict[str, Any]) -> None:  # noqa: C901
     headers = _ROLE_HEADERS[role]
 
     try:
-        if agent == "employee_qa":
+        if agent == "employee":
             _run_qa_case(case, headers, expect)
 
         elif agent == "manager_explain":
@@ -261,7 +261,7 @@ def test_eval_case(case: dict[str, Any]) -> None:  # noqa: C901
 
 def _run_qa_case(case: dict, headers: dict, expect: dict) -> None:
     resp = client.post(
-        "/api/chat/qa/message",
+        "/api/chat/message",
         headers=headers,
         json={"messages": [{"role": "user", "content": case["message"]}]},
     )
@@ -351,7 +351,7 @@ def _run_whitelist_case(case: dict, headers: dict, expect: dict) -> None:
     chat_mod.get_llm = lambda: _InjectedLLM()
     try:
         resp = client.post(
-            "/api/chat/qa/message",
+            "/api/chat/message",
             headers=headers,
             json={"messages": [{"role": "user", "content": "test injection"}]},
         )

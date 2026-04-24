@@ -1,7 +1,7 @@
 # Agent Eval Cases — loaded by test_agent_eval.py
 #
 # agent types:
-#   employee_qa       → POST /api/chat/qa/message (SSE)
+#   employee          → POST /api/chat/message (SSE)
 #   manager_explain   → POST /api/chat/explain/{id} (JSON)
 #   whitelist_inject  → injects a forbidden tool call, verifies the block
 #
@@ -10,7 +10,7 @@
 # ── 1. QA intent routing ──────────────────────────────────────────────────────
 - id: qa_monthly_spend
   description: "月度消费查询 → get_spend_summary(period=month)"
-  agent: employee_qa
+  agent: employee
   role: employee
   message: "我这个月花了多少钱"
   expect:
@@ -20,7 +20,7 @@
 
 - id: qa_quarterly_spend
   description: "季度消费查询 → get_spend_summary(period=quarter)"
-  agent: employee_qa
+  agent: employee
   role: employee
   message: "这个季度总共花了多少"
   expect:
@@ -30,7 +30,7 @@
 
 - id: qa_recent_list
   description: "最近报销记录 → get_my_recent_submissions"
-  agent: employee_qa
+  agent: employee
   role: employee
   message: "最近有哪些报销"
   expect:
@@ -39,7 +39,7 @@
 
 - id: qa_unrecognized_intent
   description: "无关问题 → 无 tool 调用，返回帮助文本"
-  agent: employee_qa
+  agent: employee
   role: employee
   message: "你好啊今天天气不错"
   expect:

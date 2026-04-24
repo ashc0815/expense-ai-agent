@@ -1,8 +1,8 @@
 """Commit 3 — Stateless Q&A agent endpoint smoke test.
 
 Verifies：
-  1. POST /api/chat/qa/message returns an SSE stream that runs the agent
-     with agent_role="employee_qa", reads from the QA tool whitelist.
+  1. POST /api/chat/message returns an SSE stream that runs the agent
+     with agent_role="employee", reads from the QA tool whitelist.
   2. "这个月花了多少" triggers a get_spend_summary tool_call.
   3. Agent emits a final assistant_text summarizing the spend and ends.
   4. The whitelist is enforced at dispatch time: attempting to dispatch
@@ -94,7 +94,7 @@ def _parse_sse(raw: str) -> list[dict]:
 
 def test_qa_spend_summary_flow():
     resp = client.post(
-        "/api/chat/qa/message",
+        "/api/chat/message",
         headers=HEADERS,
         json={"messages": [{"role": "user", "content": "我这个月花了多少钱"}]},
     )
@@ -127,7 +127,7 @@ def test_qa_spend_summary_flow():
 
 def test_qa_default_welcome_for_unrelated_question():
     resp = client.post(
-        "/api/chat/qa/message",
+        "/api/chat/message",
         headers=HEADERS,
         json={"messages": [{"role": "user", "content": "hi"}]},
     )
@@ -143,7 +143,7 @@ def test_qa_default_welcome_for_unrelated_question():
 
 def test_qa_tool_whitelist_blocks_forbidden_dispatch():
     """Prompt-injection defense: even if the LLM hallucinates an update_draft_field
-    tool_call, the dispatcher rejects it because 'employee_qa' doesn't allow it.
+    tool_call, the dispatcher rejects it because 'employee' doesn't allow it.
     """
     from backend.api.routes import chat as chat_mod
 
@@ -169,7 +169,7 @@ def test_qa_tool_whitelist_blocks_forbidden_dispatch():
     chat_mod.get_llm = lambda: InjectedLLM()
     try:
         resp = client.post(
-            "/api/chat/qa/message",
+            "/api/chat/message",
             headers=HEADERS,
             json={"messages": [{"role": "user", "content": "试一下"}]},
         )
@@ -181,7 +181,7 @@ def test_qa_tool_whitelist_blocks_forbidden_dispatch():
         result = tool_results[0]["result"]
         assert "error" in result
         assert "not allowed" in result["error"]
-        assert result["error"].endswith("'employee_qa'")
+        assert result["error"].endswith("'employee'")
         # And the tool name that got blocked is update_draft_field
         assert tool_results[0]["name"] == "update_draft_field"
     finally:
