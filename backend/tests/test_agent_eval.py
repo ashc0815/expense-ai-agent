@@ -173,7 +173,7 @@ def setup_module(_):
             )
             _SUB_IDS["T4"] = sub4.id
 
-    asyncio.get_event_loop().run_until_complete(_init())
+    asyncio.new_event_loop().run_until_complete(_init())
     app.dependency_overrides[get_db] = _override_get_db
 
 

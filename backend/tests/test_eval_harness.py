@@ -150,7 +150,7 @@ def setup_module(_: Any) -> None:
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    asyncio.get_event_loop().run_until_complete(_init())
+    asyncio.new_event_loop().run_until_complete(_init())
 
 
 def teardown_module(_: Any) -> None:
@@ -318,7 +318,7 @@ def test_fraud_llm_rule(case: dict) -> None:
     trial_messages: list[str] = []
 
     for trial_num in range(1, trials + 1):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.new_event_loop().run_until_complete(
             analyze_submission(sub_row, recent, receipt_loc)
         )
 

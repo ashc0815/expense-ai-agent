@@ -119,7 +119,7 @@ def setup_module(_):
             )
             _SUB_ID_T4 = sub4.id
 
-    asyncio.get_event_loop().run_until_complete(_init())
+    asyncio.new_event_loop().run_until_complete(_init())
     app.dependency_overrides[get_db] = _override_get_db
 
 
@@ -198,4 +198,4 @@ def test_compose_whitelist_blocks_offlist_tool():
                               "check_duplicate_invoice", "get_my_recent_submissions"):
                 assert forbidden not in allowed, f"{forbidden} should NOT be in manager_explain"
 
-    asyncio.get_event_loop().run_until_complete(go())
+    asyncio.new_event_loop().run_until_complete(go())

@@ -71,7 +71,7 @@ def setup_module(_):
                 "invoice_number": "QA00000002",
             })
 
-    asyncio.get_event_loop().run_until_complete(_init())
+    asyncio.new_event_loop().run_until_complete(_init())
     app.dependency_overrides[get_db] = _override_get_db
 
 

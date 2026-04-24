@@ -39,7 +39,7 @@ def setup_module(_):
     async def _create():
         async with _test_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-    asyncio.get_event_loop().run_until_complete(_create())
+    asyncio.new_event_loop().run_until_complete(_create())
 
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_storage] = lambda: _test_storage

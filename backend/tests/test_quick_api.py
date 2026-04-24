@@ -44,7 +44,7 @@ def setup_module(_):
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    asyncio.get_event_loop().run_until_complete(_init())
+    asyncio.new_event_loop().run_until_complete(_init())
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_storage] = lambda: _test_storage
 
@@ -102,7 +102,7 @@ def test_attest_rejects_layer_3():
             d.layer = "3_hard"
             await db.commit()
 
-    asyncio.get_event_loop().run_until_complete(_force())
+    asyncio.new_event_loop().run_until_complete(_force())
 
     r3 = client.post(f"/api/quick/attest/{draft_id}", headers=HEADERS)
     assert r3.status_code == 422
