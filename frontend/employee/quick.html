@@ -855,17 +855,10 @@ showForm = async function(draftId) {
   await _origShowForm(draftId);
 };
 
-window.aiPageContext = function() {
-  return activeDraftId ? { page: "quick", draft_id: activeDraftId } : { page: "quick" };
-};
-
-window.addEventListener("ai-assistant-event", function(e) {
-  if (e.detail.type === "draft_updated" && activeDraftId) {
-    applyDraftUpdate(activeDraftId, e.detail.fields || {}, e.detail.field_sources || {});
-  }
-});
 </script>
+<!-- The shared AI drawer is intentionally NOT included on quick.html: the
+     inline submit chat already owns the draft flow, and adding a second
+     chat surface would confuse users about which one writes to the draft. -->
 
-<script src="/shared/ai-assistant.js"></script>
 </body>
 </html>
