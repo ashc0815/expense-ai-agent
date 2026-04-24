@@ -38,8 +38,8 @@ from backend.api.routes.submissions import _run_pipeline, _sub_dict
 from backend.quick.finalize import save_draft_as_report_line
 from backend.db.store import (
     append_draft_messages, create_audit_log, create_draft, create_submission,
-    get_db, get_draft, get_employee, get_submission, get_submission_by_invoice,
-    list_submissions, mark_draft_submitted,
+    get_db, get_draft, get_employee, get_report, get_submission,
+    get_submission_by_invoice, list_submissions, mark_draft_submitted,
     update_draft_field as store_update_draft_field,
     update_draft_receipt,
 )
@@ -57,7 +57,7 @@ router = APIRouter()
 # 前还会二次校验，任何试图调用白名单外 tool 的请求都会被拒绝。
 # ═══════════════════════════════════════════════════════════════════
 
-AgentRole = Literal["employee_submit", "employee_qa", "manager_explain"]
+AgentRole = Literal["employee_submit", "employee_qa", "employee_edit", "manager_explain"]
 
 _TOOL_DEFS: dict[str, dict] = {
     "extract_receipt_fields": {
@@ -166,6 +166,19 @@ _TOOL_DEFS: dict[str, dict] = {
             "required": ["field", "value", "source"],
         },
     },
+    "update_report_line_field": {
+        "name": "update_report_line_field",
+        "description": "修改当前报销单中某一行费用的字段。只能在报销单状态为 open 或 needs_revision 时调用。允许字段：merchant, amount, currency, category, date, tax_amount, description, invoice_number, project_code, exchange_rate。调用前先用 get_report_detail 获取 line_id。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "line_id": {"type": "string", "description": "行项目（submission）的 ID，从 get_report_detail 返回中获取"},
+                "field": {"type": "string"},
+                "value": {"type": "string", "description": "字段值（数字也以字符串传入）"},
+            },
+            "required": ["line_id", "field", "value"],
+        },
+    },
     "check_budget_status": {
         "name": "check_budget_status",
         "description": "查询当前成本中心的预算使用情况，以及提交指定金额后的预计占用比例。在员工填写金额后调用。",
@@ -227,6 +240,17 @@ TOOL_REGISTRY: dict[str, list[str]] = {
         "get_spend_summary",
         "get_budget_summary",
         "get_policy_rules",
+    ],
+    # 员工 edit 模式——报销单详情页、仅当 status∈{open, needs_revision} 时启用。
+    # 允许改本单内行项目字段，但不能 submit / approve / 跨单操作。
+    # 后端端点 /chat/edit/message 会在进入 agent loop 前校验归属+状态，
+    # 工具内部还会再校验一次（defense-in-depth）。
+    "employee_edit": [
+        "get_report_detail",
+        "get_my_recent_submissions",
+        "suggest_category",
+        "get_policy_rules",
+        "update_report_line_field",
     ],
     # 经理/财务审批页 AI 解释卡——读取审计报告 + 员工历史，组装一段
     # 结构化解释。完全只读：没有任何写能力，没有 update_draft，没有 submit。
@@ -671,6 +695,70 @@ async def tool_update_draft_field(
     return {"ok": True, "field": field, "value": value, "source": source}
 
 
+async def tool_update_report_line_field(
+    args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
+) -> dict:
+    """修改 open 或 needs_revision 状态下报销单的某条行项目字段。
+
+    Self-validates: ownership + report status + editable field. The endpoint
+    also checks these before entering the agent loop — this is defense-in-depth.
+    """
+    from backend.db.store import get_submission
+    from backend.api.routes.reports import EDITABLE_FIELDS
+
+    line_id = args.get("line_id")
+    field = args.get("field")
+    value = args.get("value")
+    if not line_id or not field:
+        return {"error": "line_id 和 field 必填"}
+    if field not in EDITABLE_FIELDS:
+        return {"error": f"字段 '{field}' 不可编辑", "allowed": sorted(EDITABLE_FIELDS)}
+
+    sub = await get_submission(db, line_id)
+    if not sub:
+        return {"error": "行项目不存在"}
+
+    report = await get_report(db, sub.report_id)
+    if not report:
+        return {"error": "报销单不存在"}
+    if report.employee_id != ctx.user_id:
+        return {"error": "无权修改（非本人报销单）"}
+    if report.status not in ("open", "needs_revision"):
+        return {
+            "error": f"报销单当前状态 {report.status}，不可编辑。只有 open / needs_revision 可改。",
+        }
+
+    # Type coercion for numeric fields
+    if field in ("amount", "tax_amount", "exchange_rate"):
+        try:
+            value = float(value)
+        except (ValueError, TypeError):
+            return {"error": f"{field} 必须是数字"}
+
+    old_value = getattr(sub, field, None)
+    setattr(sub, field, value)
+    if field == "exchange_rate" and value is not None:
+        sub.converted_amount = round(float(sub.amount) * float(value), 2)
+    elif field == "amount" and sub.exchange_rate is not None:
+        sub.converted_amount = round(float(value) * float(sub.exchange_rate), 2)
+    sub.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(sub)
+
+    await create_audit_log(
+        db, actor_id=ctx.user_id, action="line_field_edited",
+        resource_type="submission", resource_id=line_id,
+        detail={
+            "field": field,
+            "old": str(old_value),
+            "new": str(value),
+            "report_id": sub.report_id,
+            "via": "chat_employee_edit",
+        },
+    )
+    return {"ok": True, "line_id": line_id, "field": field, "value": value}
+
+
 async def tool_check_budget_status(
     args: dict, ctx: UserContext, db: AsyncSession, draft_id: str
 ) -> dict:
@@ -806,6 +894,7 @@ TOOL_HANDLERS = {
     "get_submission_for_review":         tool_get_submission_for_review,
     "get_employee_submission_history":   tool_get_employee_submission_history,
     "update_draft_field":                tool_update_draft_field,
+    "update_report_line_field":          tool_update_report_line_field,
     "check_budget_status":               tool_check_budget_status,
     "get_budget_summary":                tool_get_budget_summary,
     "get_policy_rules":                  tool_get_policy_rules,
@@ -1205,6 +1294,19 @@ _SYSTEM_PROMPTS: dict[str, str] = {
         "\n\n页面加载规则：收到 trigger=page_load 且 page=my-reports 时，立即调用 get_budget_summary。如果 signal 为 'info'、'blocked' 或 'over_budget'，在等待用户输入之前主动发送一条预算状态提示。如果 signal 为 'ok'，保持静默——一切正常时不要打扰用户。"
         "\n\n趋势提示规则：当 get_budget_summary 返回的 trend.overrun_risk 为 'high' 时，在预算状态提示后用自然语气补充一句趋势预测（例如：按近 3 个月的节奏，预计 X 日前后预算耗尽）。如果 trend 为 null 或 overrun_risk 为 'ok'/'moderate'，不提趋势。"
     ),
+    "employee_edit": (
+        "你是员工报销编辑助手，帮助员工在报销单详情页修改费用字段。"
+        "只有当报销单状态是 open 或 needs_revision 时才会进入这个模式。"
+        "请严格按用户输入语言回复（中文/英文镜像），简洁明确。"
+        "\n\n工作流：\n"
+        "1. 用户要改字段时，先调 get_report_detail 确认要改的行 ID 和当前值\n"
+        "2. 调 update_report_line_field 执行修改，把 line_id 和新值传进去\n"
+        "3. 成功后用自然语言确认改动（例：已把第二笔的类别改成餐饮）\n"
+        "\n约束：\n"
+        "- 只能改本张报销单的字段，不能 submit、不能 approve、不能跨单操作\n"
+        "- 工具返回 error 时，如实转述给用户，不要幻觉成功\n"
+        "- 用户问非编辑相关问题（闲聊、天气、代码），一句话拒答并提示可做什么"
+    ),
     "manager_explain": (
         "你是审批辅助助手，帮助经理理解报销单的风险情况。"
         "你只能读取报销数据，不能修改任何内容。请用中文回复，提供简洁的风险摘要。"
@@ -1550,6 +1652,12 @@ class QAMessageBody(BaseModel):
     messages: list[dict]
 
 
+class EditMessageBody(BaseModel):
+    """Edit 模式请求体——指向具体报销单，stateless 历史由前端维护。"""
+    report_id: str
+    messages: list[dict]
+
+
 def _draft_dict(draft) -> dict:
     return {
         "id": draft.id,
@@ -1848,6 +1956,68 @@ async def send_qa_message(
                 db=db,
                 agent_role="employee_qa",
                 messages_history=body.messages,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            err = {"type": "error", "message": str(exc)}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/edit/message")
+async def send_edit_message(
+    body: EditMessageBody,
+    ctx: UserContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """报销单编辑入口——详情页 drawer 当 status∈{open,needs_revision} 时走这条。
+
+    入参校验（defense-in-depth 的第一层）：
+      1. 报销单存在且属于当前员工
+      2. 状态必须是 open 或 needs_revision（其他状态已交给经理/财务，不能改）
+    通过后以 employee_edit 角色跑 agent loop。工具层还会再做一次相同校验。
+    """
+    report = await get_report(db, body.report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报销单不存在")
+    if report.employee_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="权限不足")
+    if report.status not in ("open", "needs_revision"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"报销单当前状态 {report.status}，不可进入编辑模式。"
+                   "只有 open / needs_revision 可改。",
+        )
+
+    # Inject report context so the LLM knows line_ids without an extra tool roundtrip.
+    from backend.db.store import list_report_submissions
+    lines = await list_report_submissions(db, body.report_id)
+    ctx_lines = [f"Report: {report.title} (id={body.report_id}, status={report.status}, {len(lines)} lines)"]
+    for i, s in enumerate(lines, 1):
+        ctx_lines.append(
+            f"  line#{i}: id={s.id} | merchant={s.merchant or '-'} | "
+            f"{s.currency or ''} {s.amount} | category={s.category or '-'} | date={s.date or '-'}"
+        )
+    context_msg = {"role": "user", "content": "\n".join(ctx_lines)}
+    messages_with_ctx = [context_msg] + list(body.messages or [])
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for event in run_agent(
+                user_message="",
+                draft_id=None,
+                ctx=ctx,
+                db=db,
+                agent_role="employee_edit",
+                messages_history=messages_with_ctx,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001

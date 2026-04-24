@@ -2,7 +2,12 @@
  * AI 报销助手 — 可嵌入任何员工页面的侧边栏聊天组件。
  *
  * 用法：在页面底部加 <script src="/shared/ai-assistant.js"></script>
- * 自动注入 FAB 按钮 + 侧边栏 drawer，使用 /api/chat/qa/message (employee_qa agent)。
+ * 默认使用 /api/chat/qa/message (employee_qa agent，只读)。
+ *
+ * Edit 模式（报销单详情页用）：
+ *   window.ExpenseFlowAIAssistant.setEditMode(reportId)  // 切换到可编辑
+ *   window.ExpenseFlowAIAssistant.setQAMode()            // 切回只读
+ *   详情页根据 report.status ∈ {open, needs_revision} 自己调用。
  */
 (function () {
   "use strict";
@@ -152,10 +157,15 @@
     try {
       const headers = await getHeaders();
       headers["Content-Type"] = "application/json";
-      const resp = await fetch("/api/chat/qa/message", {
+      const editCtx = window.ExpenseFlowAIAssistant && window.ExpenseFlowAIAssistant._editReportId;
+      const url = editCtx ? "/api/chat/edit/message" : "/api/chat/qa/message";
+      const payload = editCtx
+        ? { report_id: editCtx, messages: chatHistory.slice(-10) }
+        : { messages: chatHistory.slice(-10) };
+      const resp = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({ messages: chatHistory.slice(-10) }),
+        body: JSON.stringify(payload),
       });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
 
@@ -213,4 +223,29 @@
   document.querySelectorAll("#ai-suggestions button[data-q]").forEach(function (btn) {
     btn.addEventListener("click", function () { send(btn.dataset.q); });
   });
+
+  // ── Public API — host pages can switch between QA (read-only) and Edit modes ──
+  window.ExpenseFlowAIAssistant = {
+    _editReportId: null,
+    setEditMode: function (reportId) {
+      this._editReportId = reportId;
+      chatHistory = [];
+      const msgBox = document.getElementById("ai-messages");
+      if (msgBox) msgBox.innerHTML = "";
+      const header = document.querySelector(".ai-drawer-header h3");
+      if (header) header.textContent = _t("ai.title-edit") || "AI 编辑助手";
+      const input = document.getElementById("ai-input");
+      if (input) input.placeholder = _t("ai.placeholder-edit") || "改字段、问报销问题…";
+    },
+    setQAMode: function () {
+      this._editReportId = null;
+      chatHistory = [];
+      const msgBox = document.getElementById("ai-messages");
+      if (msgBox) msgBox.innerHTML = "";
+      const header = document.querySelector(".ai-drawer-header h3");
+      if (header) header.textContent = _t("ai.title") || "AI 报销助手";
+      const input = document.getElementById("ai-input");
+      if (input) input.placeholder = _t("ai.placeholder") || "问我任何报销问题…";
+    },
+  };
 })();

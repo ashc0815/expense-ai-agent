@@ -246,6 +246,12 @@ async function loadReport() {
   }
   reportData = await r.json();
   render();
+  // Wire the AI drawer to edit-mode when the report is employee-owned and editable.
+  if (window.ExpenseFlowAIAssistant) {
+    const editable = ["open", "needs_revision"].includes(reportData.status);
+    if (editable) window.ExpenseFlowAIAssistant.setEditMode(REPORT_ID);
+    else window.ExpenseFlowAIAssistant.setQAMode();
+  }
 }
 
 function render() {
