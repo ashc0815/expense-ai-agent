@@ -57,7 +57,14 @@ def setup_module(_):
 def teardown_module(_):
     app.dependency_overrides.pop(get_db, None)
     app.dependency_overrides.pop(get_storage, None)
-    os.unlink(_TMP_DB.name)
+    try:
+        asyncio.new_event_loop().run_until_complete(_engine.dispose())
+    except Exception:
+        pass
+    try:
+        os.unlink(_TMP_DB.name)
+    except PermissionError:
+        pass  # Windows: temp file still locked, OS Temp cleanup handles it
 
 client = TestClient(app)
 
