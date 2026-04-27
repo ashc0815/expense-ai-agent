@@ -6,19 +6,103 @@
   <title>导出入账 — ExpenseFlow</title>
   <link rel="stylesheet" href="/shared/styles.css">
   <script>window.AUTH_MODE = "mock"; window.API_BASE = "";</script>
+  <style>
+    /* Voucher card — one card per voucher number = one report */
+    .voucher-card {
+      background: white;
+      border: 1px solid var(--gray-200, #e2e8f0);
+      border-radius: 10px;
+      margin-bottom: .8rem;
+      overflow: hidden;
+      transition: box-shadow .15s;
+    }
+    .voucher-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .voucher-card.selected { border-color: #18b48e; background: #f0fdf4; }
+
+    .voucher-head {
+      display: flex;
+      align-items: center;
+      gap: .8rem;
+      padding: .8rem 1rem;
+      background: linear-gradient(180deg, #f8fafc 0%, white 100%);
+      border-bottom: 1px solid var(--gray-100, #f1f5f9);
+      font-size: .88rem;
+    }
+    .voucher-head input[type="checkbox"] { transform: scale(1.15); cursor: pointer; }
+    .voucher-head .vn {
+      font-family: ui-monospace, monospace;
+      font-weight: 700;
+      font-size: .92rem;
+      color: #0f172a;
+      background: #e0e7ff;
+      padding: .15rem .5rem;
+      border-radius: 4px;
+    }
+    .voucher-head .meta { color: var(--gray-500, #64748b); }
+    .voucher-head .total {
+      margin-left: auto;
+      font-weight: 800;
+      font-size: 1rem;
+      color: #0f172a;
+    }
+    .voucher-head .lines-badge {
+      font-size: .72rem;
+      color: var(--gray-400, #94a3b8);
+      background: var(--gray-100, #f1f5f9);
+      padding: .1rem .45rem;
+      border-radius: 10px;
+    }
+
+    .voucher-lines { width: 100%; border-collapse: collapse; }
+    .voucher-lines th {
+      text-align: left;
+      padding: .45rem .8rem;
+      font-size: .7rem;
+      font-weight: 600;
+      color: var(--gray-500, #64748b);
+      text-transform: uppercase;
+      letter-spacing: .03em;
+      background: #fafbfc;
+      border-bottom: 1px solid var(--gray-100, #f1f5f9);
+    }
+    .voucher-lines th.right, .voucher-lines td.right { text-align: right; }
+    .voucher-lines td {
+      padding: .55rem .8rem;
+      font-size: .85rem;
+      border-bottom: 1px solid var(--gray-100, #f1f5f9);
+    }
+    .voucher-lines tr:last-child td { border-bottom: none; }
+    .voucher-lines code {
+      font-size: .78rem;
+      background: var(--gray-100, #f1f5f9);
+      padding: .08rem .35rem;
+      border-radius: 3px;
+    }
+    .voucher-lines .credit-row {
+      background: #fef9e7;
+      font-weight: 600;
+    }
+    .voucher-lines .credit-row td { color: #92400e; font-style: italic; }
+
+    .summary-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: .6rem .25rem; margin-bottom: .75rem;
+      font-size: .85rem; color: var(--gray-500, #64748b);
+    }
+  </style>
 </head>
 <body>
 <div id="nav-root"></div>
 <script src="/shared/i18n.js"></script>
-  <script src="/shared/auth.js"></script>
+<script src="/shared/auth.js"></script>
 <script src="/shared/nav.js"></script>
 
 <main class="page-wide">
   <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1.25rem">
     <div>
       <h1 style="font-size:1.25rem; font-weight:700; margin:0" data-i18n="export.title">ERP 入账导出</h1>
-      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem" data-i18n="export.subtitle">
-        财务已批准、未导出的报销单 — 选择后导出 CSV 即可推入金蝶/用友/SAP
+      <div style="font-size:.82rem; color:var(--gray-400); margin-top:.25rem">
+        <span data-i18n="export.subtitle-voucher">财务已批准、未导出的报销单 — 一张报销单 = 一个凭证号 = 一组分录</span>
       </div>
     </div>
     <div>
@@ -30,10 +114,8 @@
 
   <div id="alert-box"></div>
 
-  <div class="card">
-    <div id="list-body">
-      <div style="text-align:center; padding:2rem"><span class="spinner"></span></div>
-    </div>
+  <div id="list-body">
+    <div style="text-align:center; padding:2rem"><span class="spinner"></span></div>
   </div>
 
   <div style="margin-top:1rem; font-size:.78rem; color:var(--gray-400)" data-i18n="export.csv-hint">
@@ -45,8 +127,9 @@
 <script src="/shared/api.js"></script>
 <script>
 (function () {
-  let items = [];
-  let selected = new Set();
+  let groups = [];
+  let totalCount = 0;
+  let selected = new Set();    // submission IDs (the export endpoint still takes line IDs)
   const _t = window.t || (k => k);
   const _cat = c => (window.i18n && window.i18n.cat(c)) ||
     ({ meal:'餐饮', transport:'交通', accommodation:'住宿', entertainment:'招待', other:'其他' }[c] || c);
@@ -54,7 +137,8 @@
   async function load() {
     try {
       const data = await api.financeExportPreview();
-      items = data.items;
+      groups = data.groups || [];
+      totalCount = data.total_count || 0;
       render();
     } catch (err) {
       document.getElementById('list-body').innerHTML =
@@ -64,7 +148,7 @@
 
   function render() {
     if (window.i18n) window.i18n.apply();
-    if (!items.length) {
+    if (!groups.length) {
       document.getElementById('list-body').innerHTML =
         `<div style="text-align:center; padding:3rem; color:var(--gray-400)">
           🎉 ${_t('export.empty')}
@@ -72,61 +156,141 @@
       return;
     }
 
-    const totalAmt = items.reduce((s, x) => s + x.amount, 0);
+    const totalAmt = groups.reduce((s, g) => s + g.total_amount, 0);
+    const isEN = window.LANG === 'en';
 
     document.getElementById('list-body').innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem; padding:0 .25rem">
-        <label style="display:flex; align-items:center; gap:.5rem; font-size:.85rem; cursor:pointer">
+      <div class="summary-bar">
+        <label style="display:flex; align-items:center; gap:.5rem; cursor:pointer">
           <input type="checkbox" id="check-all" onchange="window._toggleAll(this.checked)">
-          ${window.LANG === 'en' ? 'Select All' : '全选'} (${items.length})
+          <span>${isEN ? 'Select all vouchers' : '全选凭证'}</span>
+          <span style="color:var(--gray-400)">(${groups.length} ${isEN ? 'vouchers' : '张凭证'} · ${totalCount} ${isEN ? 'lines' : '行分录'})</span>
         </label>
+        <span style="font-weight:700">${isEN ? 'Total' : '合计'}: CNY ${totalAmt.toFixed(2)}</span>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th style="width:32px"></th>
-            <th>${_t('export.col-voucher')}</th>
-            <th>${_t('export.col-emp')}</th>
-            <th>${_t('export.col-dept')}</th>
-            <th>${_t('export.col-merchant')}</th>
-            <th>${_t('export.col-cat')}</th>
-            <th>${_t('export.col-gl')}</th>
-            <th>${_t('export.col-proj')}</th>
-            <th style="text-align:right">${_t('export.col-amount')}</th>
-            <th>${_t('export.col-fin-at')}</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${items.map(s => `
-            <tr>
-              <td><input type="checkbox" data-id="${s.id}" onchange="window._toggle('${s.id}', this.checked)"></td>
-              <td><code style="font-size:.75rem">${s.voucher_number || '—'}</code></td>
-              <td>${s.employee_id}</td>
-              <td>${s.department || '—'}</td>
-              <td>${s.merchant}</td>
-              <td>${_cat(s.category)}</td>
-              <td><code style="font-size:.75rem">${s.gl_account || '—'}</code></td>
-              <td>${s.project_code || '—'}</td>
-              <td style="text-align:right; font-weight:600">${s.currency || 'CNY'} ${s.amount.toFixed(2)}</td>
-              <td style="font-size:.78rem; color:var(--gray-400)">${s.finance_approved_at?.slice(0,10) || '—'}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>`;
+      ${groups.map(renderVoucherCard).join('')}
+    `;
   }
 
-  window._toggle = function(id, checked) {
-    if (checked) selected.add(id); else selected.delete(id);
+  function renderVoucherCard(g) {
+    const isEN = window.LANG === 'en';
+    const credit = isEN ? 'Credit (Payable to Employee)' : '贷：应付职工薪酬';
+    return `
+      <div class="voucher-card" id="card-${g.voucher_number}">
+        <div class="voucher-head">
+          <input type="checkbox"
+                 data-voucher="${g.voucher_number}"
+                 onchange="window._toggleVoucher('${g.voucher_number}', this.checked)">
+          <span class="vn">${g.voucher_number}</span>
+          <span class="meta">${esc(g.employee_name || g.employee_id)}${g.department ? ' · ' + esc(g.department) : ''}</span>
+          <span class="meta" style="font-size:.78rem">${esc(g.report_title || '')}</span>
+          <span class="lines-badge">${g.line_count} ${isEN ? 'lines' : '行'}</span>
+          <span class="total">${g.currency || 'CNY'} ${g.total_amount.toFixed(2)}</span>
+        </div>
+        <table class="voucher-lines">
+          <thead>
+            <tr>
+              <th style="width:32px"></th>
+              <th>${_t('export.col-merchant')}</th>
+              <th>${_t('export.col-cat')}</th>
+              <th>${_t('export.col-gl')}</th>
+              <th>${_t('export.col-proj')}</th>
+              <th class="right">${_t('export.col-amount')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${g.lines.map(line => `
+              <tr>
+                <td><input type="checkbox" data-id="${line.id}" data-voucher="${g.voucher_number}"
+                           onchange="window._toggleLine('${line.id}', '${g.voucher_number}', this.checked)"></td>
+                <td>${esc(line.merchant || '—')}</td>
+                <td>${_cat(line.category)}</td>
+                <td><code>${esc(line.gl_account || '—')}</code></td>
+                <td>${esc(line.project_code || '—')}</td>
+                <td class="right" style="font-weight:600">${line.currency || 'CNY'} ${line.amount.toFixed(2)}</td>
+              </tr>
+            `).join('')}
+            <tr class="credit-row">
+              <td></td>
+              <td colspan="4">${credit}</td>
+              <td class="right">${g.currency || 'CNY'} ${g.total_amount.toFixed(2)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ── Selection logic ──────────────────────────────────────────────
+  // Selection state lives in `selected` (a set of submission/line IDs).
+  // Voucher-level checkbox is a convenience — it batch-toggles all lines
+  // under that voucher.
+
+  window._toggleLine = function(lineId, voucherNumber, checked) {
+    if (checked) selected.add(lineId); else selected.delete(lineId);
+    syncVoucherCheckbox(voucherNumber);
+    syncSelectAllCheckbox();
+    syncCardClass(voucherNumber);
     updateBtn();
   };
+
+  window._toggleVoucher = function(voucherNumber, checked) {
+    document.querySelectorAll(`input[data-voucher="${voucherNumber}"][data-id]`).forEach(cb => {
+      cb.checked = checked;
+      if (checked) selected.add(cb.dataset.id);
+      else selected.delete(cb.dataset.id);
+    });
+    syncSelectAllCheckbox();
+    syncCardClass(voucherNumber);
+    updateBtn();
+  };
+
   window._toggleAll = function(checked) {
     selected.clear();
     document.querySelectorAll('input[data-id]').forEach(cb => {
       cb.checked = checked;
       if (checked) selected.add(cb.dataset.id);
     });
+    document.querySelectorAll('input[data-voucher]:not([data-id])').forEach(cb => {
+      cb.checked = checked;
+    });
+    document.querySelectorAll('.voucher-card').forEach(card => {
+      card.classList.toggle('selected', checked);
+    });
     updateBtn();
   };
+
+  function syncVoucherCheckbox(voucherNumber) {
+    const lineCbs = document.querySelectorAll(`input[data-voucher="${voucherNumber}"][data-id]`);
+    const headerCb = document.querySelector(`input[data-voucher="${voucherNumber}"]:not([data-id])`);
+    if (!headerCb) return;
+    const allChecked = Array.from(lineCbs).every(cb => cb.checked);
+    const anyChecked = Array.from(lineCbs).some(cb => cb.checked);
+    headerCb.checked = allChecked;
+    headerCb.indeterminate = anyChecked && !allChecked;
+  }
+
+  function syncSelectAllCheckbox() {
+    const all = document.getElementById('check-all');
+    if (!all) return;
+    const lines = document.querySelectorAll('input[data-id]');
+    const allChecked = Array.from(lines).every(cb => cb.checked);
+    const anyChecked = Array.from(lines).some(cb => cb.checked);
+    all.checked = allChecked;
+    all.indeterminate = anyChecked && !allChecked;
+  }
+
+  function syncCardClass(voucherNumber) {
+    const card = document.getElementById(`card-${voucherNumber}`);
+    if (!card) return;
+    const lineCbs = card.querySelectorAll('input[data-id]');
+    const anyChecked = Array.from(lineCbs).some(cb => cb.checked);
+    card.classList.toggle('selected', anyChecked);
+  }
+
   function updateBtn() {
     document.getElementById('export-count').textContent = selected.size;
     document.getElementById('export-btn').disabled = selected.size === 0;

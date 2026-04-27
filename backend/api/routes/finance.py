@@ -21,8 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.middleware.auth import UserContext, require_role
 from backend.api.routes.submissions import _sub_dict
 from backend.db.store import (
-    create_audit_log, get_db, get_submission, list_submissions,
-    mark_submissions_exported,
+    create_audit_log, get_db, get_employee, get_report, get_submission,
+    list_submissions, mark_submissions_exported,
 )
 
 router = APIRouter()
@@ -39,13 +39,82 @@ async def export_preview(
     ctx: UserContext = Depends(require_role("finance_admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    """列出 finance_approved 但未导出的所有单。"""
+    """List finance-approved-not-exported submissions, grouped by voucher.
+
+    Each group corresponds to ONE report and shares ONE voucher number — the
+    standard double-entry accounting unit. The legacy flat shape (items: [...])
+    is still included for backward compatibility with any caller that hasn't
+    migrated to the grouped shape.
+    """
     result = await list_submissions(
         db, status="finance_approved", exported=False,
         page=1, page_size=500,
     )
-    result["items"] = [_sub_dict(s) for s in result["items"]]
-    return result
+    subs = result["items"]
+
+    # Cache lookups so we don't query the same employee/report N times
+    employee_cache: dict[str, object] = {}
+    report_cache: dict[str, object] = {}
+
+    async def _get_emp(eid: str):
+        if eid not in employee_cache:
+            employee_cache[eid] = await get_employee(db, eid)
+        return employee_cache[eid]
+
+    async def _get_rep(rid: str):
+        if not rid:
+            return None
+        if rid not in report_cache:
+            report_cache[rid] = await get_report(db, rid)
+        return report_cache[rid]
+
+    groups_map: dict[str, dict] = {}
+    for sub in subs:
+        vn = sub.voucher_number or "(no-voucher)"
+        if vn not in groups_map:
+            report = await _get_rep(sub.report_id) if sub.report_id else None
+            employee = await _get_emp(sub.employee_id)
+            groups_map[vn] = {
+                "voucher_number": vn,
+                "report_id": sub.report_id,
+                "report_title": report.title if report else "—",
+                "employee_id": sub.employee_id,
+                "employee_name": employee.name if employee else sub.employee_id,
+                "department": getattr(employee, "department", None) if employee else None,
+                "currency": sub.currency or "CNY",
+                "total_amount": 0.0,
+                "line_count": 0,
+                "finance_approved_at": (
+                    sub.finance_approved_at.isoformat()
+                    if sub.finance_approved_at else None
+                ),
+                "lines": [],
+            }
+        group = groups_map[vn]
+        group["lines"].append({
+            "id": sub.id,
+            "merchant": sub.merchant,
+            "category": sub.category,
+            "amount": float(sub.amount),
+            "currency": sub.currency or "CNY",
+            "gl_account": sub.gl_account,
+            "project_code": sub.project_code,
+            "date": sub.date,
+        })
+        group["total_amount"] += float(sub.amount)
+        group["line_count"] += 1
+
+    # Stable order: by voucher number ascending
+    groups = sorted(groups_map.values(), key=lambda g: g["voucher_number"])
+
+    return {
+        "groups": groups,
+        "total_count": len(subs),
+        "total_groups": len(groups),
+        # Backward-compat — keep flat list so old callers (and the CSV export
+        # body validator) still work without changes
+        "items": [_sub_dict(s) for s in subs],
+    }
 
 
 # ── POST /export ──────────────────────────────────────────────────
