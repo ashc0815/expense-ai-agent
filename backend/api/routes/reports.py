@@ -355,7 +355,9 @@ async def finance_approve_report(
 
     subs = await list_report_submissions(db, report_id)
     now = datetime.now(timezone.utc)
-    voucher = await next_voucher_number(db)
+    # Idempotent: passes report_id so a retry after partial failure reuses
+    # the voucher number already attached to this report.
+    voucher = await next_voucher_number(db, report_id=report_id)
     for s in subs:
         if s.status == "manager_approved":
             await update_submission_finance(
@@ -371,7 +373,12 @@ async def finance_approve_report(
                 phase="finance_approved",
             )
 
+    # Per-report voucher: write the voucher number on the Report itself so
+    # downstream readers (export page, audit, ERP push) treat the report as
+    # the unit of voucher (one business event = one voucher).
     report.status = "finance_approved"
+    report.voucher_number = voucher
+    report.voucher_posted_at = now
     report.updated_at = now
     await db.commit()
 
@@ -437,7 +444,7 @@ async def finance_bulk_approve_reports(
             continue
         subs = await list_report_submissions(db, rid)
         now = datetime.now(timezone.utc)
-        voucher = await next_voucher_number(db)
+        voucher = await next_voucher_number(db, report_id=rid)
         for s in subs:
             if s.status == "manager_approved":
                 await update_submission_finance(
@@ -448,6 +455,8 @@ async def finance_bulk_approve_reports(
                     voucher_number=voucher,
                 )
         report.status = "finance_approved"
+        report.voucher_number = voucher
+        report.voucher_posted_at = now
         report.updated_at = now
         await db.commit()
         await create_audit_log(
