@@ -301,6 +301,9 @@
     "export.title":      { zh: "ERP 入账导出", en: "ERP Export"                },
     "export.subtitle":   { zh: "财务已批准、未导出的报销单 — 选择后导出 CSV 即可推入金蝶/用友/SAP",
                            en: "Finance-approved, unposted expenses — export CSV to push to ERP (SAP/NetSuite/QuickBooks)" },
+    "export.subtitle-voucher": {
+                           zh: "财务已批准、未导出的报销单 — 一张报销单 = 一个凭证号 = 一组分录",
+                           en: "Finance-approved, unposted reports — one report = one voucher = one journal entry group" },
     "export.btn":        { zh: "导出选中",   en: "Export Selected"            },
     "export.empty":      { zh: "没有待导出的报销单", en: "No expenses pending export" },
     "export.col-voucher":{ zh: "凭证号",     en: "Voucher"                    },
