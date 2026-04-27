@@ -261,6 +261,12 @@ class Report(Base):
     title         = Column(String(255), nullable=False, default="新建报销单")
     status        = Column(String(20),  nullable=False, default="open")
     revision_reason = Column(String(500), nullable=True)
+    # Per-report voucher number — assigned once when finance approves the
+    # report and shared across all submissions in this report (matches
+    # standard double-entry accounting: one business event = one voucher,
+    # multiple debit lines + one credit line).
+    voucher_number     = Column(String(50),  nullable=True, unique=True, index=True)
+    voucher_posted_at  = Column(DateTime(timezone=True), nullable=True)
     submitted_at  = Column(DateTime(timezone=True), nullable=True)
     withdrawn_at  = Column(DateTime(timezone=True), nullable=True)
     created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -960,16 +966,45 @@ async def mark_notification_read(
 
 # ── 凭证号生成 — YYYYMM-NNNN，按月重置 ────────────────────────────
 
-async def next_voucher_number(db: AsyncSession) -> str:
-    """生成 YYYYMM-NNNN 凭证号。NNNN 在当月内自增。"""
+async def next_voucher_number(
+    db: AsyncSession, report_id: Optional[str] = None
+) -> str:
+    """生成 YYYYMM-NNNN 凭证号。
+
+    幂等保证（当传入 report_id 时）：如果该报销单已经有 voucher_number，
+    直接返回它，不再分配新号。这保证一张 report 全程只占用一个凭证号——
+    即使财务批准失败重试也不会消耗新号位。
+
+    NNNN 在当月内自增，跨 reports 唯一。
+    """
+    # Idempotency: if this report already has a voucher, reuse it.
+    if report_id:
+        existing = await db.execute(
+            select(Report.voucher_number).where(Report.id == report_id)
+        )
+        existing_vn = existing.scalar_one_or_none()
+        if existing_vn:
+            return existing_vn
+
     now = datetime.now(timezone.utc)
     prefix = now.strftime("%Y%m")
-    result = await db.execute(
-        select(func.count()).select_from(Submission).where(
-            Submission.voucher_number.like(f"{prefix}-%")
+    # Count distinct existing vouchers (from both reports.voucher_number and
+    # legacy submissions.voucher_number to keep series continuous during
+    # the migration window).
+    report_count = await db.execute(
+        select(func.count()).select_from(Report).where(
+            Report.voucher_number.like(f"{prefix}-%")
         )
     )
-    count = result.scalar_one() or 0
+    sub_count = await db.execute(
+        select(func.count(func.distinct(Submission.voucher_number))).where(
+            Submission.voucher_number.like(f"{prefix}-%"),
+            Submission.report_id.notin_(
+                select(Report.id).where(Report.voucher_number.isnot(None))
+            ),
+        )
+    )
+    count = (report_count.scalar_one() or 0) + (sub_count.scalar_one() or 0)
     return f"{prefix}-{count + 1:04d}"
 
 
