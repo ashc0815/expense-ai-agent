@@ -329,6 +329,87 @@ class Notification(Base):
     created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+# ── Compliance reasoning data — read-only inputs for the agent ────────
+#
+# Three small tables that the agent compliance reasoner queries via
+# read-only tools (see backend/services/compliance_lookups.py). They
+# represent state hard-coded rules can't see in a single submission:
+#
+#   employee_leaves       — HR vacation/sick records  (catches: travel
+#                           expense submitted during approved leave)
+#   employee_allowances   — recurring stipends         (catches: claiming
+#                           a category already covered by an allowance,
+#                           e.g. car_allowance + personal_car_mileage)
+#   submission_attendees  — who attended a meal        (catches: cross-
+#                           employee double-dipping on the same dinner)
+#
+# In production these would sync from HR systems; here they are
+# first-class tables so demos and tests can seed them deterministically.
+
+class EmployeeLeave(Base):
+    __tablename__ = "employee_leaves"
+
+    id           = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    employee_id  = Column(String(64), nullable=False, index=True)
+    start_date   = Column(Date, nullable=False)
+    end_date     = Column(Date, nullable=False)
+    kind         = Column(String(32), nullable=False)
+    # vacation | sick | personal | parental | other
+    status       = Column(String(16), nullable=False, default="pending")
+    # approved | pending | cancelled
+    approved_by  = Column(String(64), nullable=True)
+    notes        = Column(Text, nullable=True)
+    created_at   = Column(DateTime(timezone=True),
+                          default=lambda: datetime.now(timezone.utc))
+    updated_at   = Column(DateTime(timezone=True),
+                          default=lambda: datetime.now(timezone.utc),
+                          onupdate=lambda: datetime.now(timezone.utc))
+
+
+class EmployeeAllowance(Base):
+    __tablename__ = "employee_allowances"
+
+    id              = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    employee_id     = Column(String(64), nullable=False, index=True)
+    kind            = Column(String(32), nullable=False)
+    # car_allowance | meal_per_diem | phone_allowance | housing_allowance
+    monthly_amount  = Column(Numeric(10, 2), nullable=False)
+    effective_from  = Column(Date, nullable=False)
+    effective_to    = Column(Date, nullable=True)   # NULL = open-ended
+    notes           = Column(Text, nullable=True)
+    created_at      = Column(DateTime(timezone=True),
+                              default=lambda: datetime.now(timezone.utc))
+    updated_at      = Column(DateTime(timezone=True),
+                              default=lambda: datetime.now(timezone.utc),
+                              onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "employee_id", "kind", "effective_from",
+            name="uq_employee_allowance_period",
+        ),
+    )
+
+
+class SubmissionAttendee(Base):
+    """People who attended a meal / entertainment expense.
+
+    employee_id is set when the attendee is on payroll, NULL when they
+    are external (client, vendor, etc.). The compliance reasoner uses
+    employee_id to detect cross-employee duplicates.
+    """
+    __tablename__ = "submission_attendees"
+
+    id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    submission_id = Column(String(36), nullable=False, index=True)
+    name          = Column(String(255), nullable=False)
+    employee_id   = Column(String(64), nullable=True, index=True)
+    role          = Column(String(50), nullable=True)
+    # client | colleague | external | family | other
+    created_at    = Column(DateTime(timezone=True),
+                            default=lambda: datetime.now(timezone.utc))
+
+
 # ── 预算期间工具 ──────────────────────────────────────────────────
 
 def _current_period() -> str:
@@ -390,6 +471,7 @@ async def init_db() -> None:
     # 种植演示数据（幂等）
     async with AsyncSessionLocal() as db:
         await seed_budget_demo(db)
+        await seed_compliance_demo(db)
 
 
 # ── CRUD — submissions ────────────────────────────────────────────
@@ -1304,6 +1386,163 @@ async def insert_telemetry(
     await db.commit()
 
 
+# ── CRUD — compliance reasoning data ─────────────────────────────
+
+async def add_employee_leave(
+    db: AsyncSession,
+    *,
+    employee_id: str,
+    start_date: date,
+    end_date: date,
+    kind: str,
+    status: str = "approved",
+    approved_by: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> EmployeeLeave:
+    leave = EmployeeLeave(
+        employee_id=employee_id, start_date=start_date, end_date=end_date,
+        kind=kind, status=status, approved_by=approved_by, notes=notes,
+    )
+    db.add(leave)
+    await db.commit()
+    await db.refresh(leave)
+    return leave
+
+
+async def list_employee_leaves(
+    db: AsyncSession,
+    employee_id: str,
+    *,
+    overlaps_start: Optional[date] = None,
+    overlaps_end: Optional[date] = None,
+    status: Optional[str] = None,
+) -> list[EmployeeLeave]:
+    """Leave records overlapping a date range. Two ranges overlap iff
+    leave.start_date <= range_end AND leave.end_date >= range_start.
+    """
+    q = select(EmployeeLeave).where(EmployeeLeave.employee_id == employee_id)
+    if status:
+        q = q.where(EmployeeLeave.status == status)
+    if overlaps_end is not None:
+        q = q.where(EmployeeLeave.start_date <= overlaps_end)
+    if overlaps_start is not None:
+        q = q.where(EmployeeLeave.end_date >= overlaps_start)
+    q = q.order_by(EmployeeLeave.start_date.asc())
+    return list((await db.execute(q)).scalars().all())
+
+
+async def upsert_employee_allowance(
+    db: AsyncSession,
+    *,
+    employee_id: str,
+    kind: str,
+    monthly_amount: Decimal,
+    effective_from: date,
+    effective_to: Optional[date] = None,
+    notes: Optional[str] = None,
+) -> EmployeeAllowance:
+    """Idempotent on (employee_id, kind, effective_from)."""
+    existing = await db.execute(
+        select(EmployeeAllowance).where(
+            EmployeeAllowance.employee_id == employee_id,
+            EmployeeAllowance.kind == kind,
+            EmployeeAllowance.effective_from == effective_from,
+        )
+    )
+    row = existing.scalar_one_or_none()
+    if row is None:
+        row = EmployeeAllowance(
+            employee_id=employee_id, kind=kind,
+            monthly_amount=monthly_amount,
+            effective_from=effective_from,
+            effective_to=effective_to,
+            notes=notes,
+        )
+        db.add(row)
+    else:
+        row.monthly_amount = monthly_amount
+        row.effective_to = effective_to
+        row.notes = notes
+        row.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def list_active_allowances(
+    db: AsyncSession, employee_id: str, on_date: date,
+) -> list[EmployeeAllowance]:
+    """Allowances effective on the given date.
+    `effective_to IS NULL` means open-ended.
+    """
+    q = select(EmployeeAllowance).where(
+        EmployeeAllowance.employee_id == employee_id,
+        EmployeeAllowance.effective_from <= on_date,
+        or_(
+            EmployeeAllowance.effective_to.is_(None),
+            EmployeeAllowance.effective_to >= on_date,
+        ),
+    )
+    return list((await db.execute(q)).scalars().all())
+
+
+async def add_submission_attendee(
+    db: AsyncSession,
+    *,
+    submission_id: str,
+    name: str,
+    employee_id: Optional[str] = None,
+    role: Optional[str] = None,
+) -> SubmissionAttendee:
+    a = SubmissionAttendee(
+        submission_id=submission_id, name=name,
+        employee_id=employee_id, role=role,
+    )
+    db.add(a)
+    await db.commit()
+    await db.refresh(a)
+    return a
+
+
+async def list_submission_attendees(
+    db: AsyncSession, submission_id: str,
+) -> list[SubmissionAttendee]:
+    rows = await db.execute(
+        select(SubmissionAttendee).where(
+            SubmissionAttendee.submission_id == submission_id
+        )
+    )
+    return list(rows.scalars().all())
+
+
+async def find_attendee_appearances(
+    db: AsyncSession,
+    employee_id: str,
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> list[tuple[SubmissionAttendee, Submission]]:
+    """Find every (attendee_row, submission) where the employee appears
+    as a guest on someone ELSE's submission within the date window.
+    Filters out the employee's own submissions — those are handled by
+    the regular self-meal check.
+    """
+    q = (
+        select(SubmissionAttendee, Submission)
+        .join(Submission, Submission.id == SubmissionAttendee.submission_id)
+        .where(
+            SubmissionAttendee.employee_id == employee_id,
+            Submission.employee_id != employee_id,
+        )
+    )
+    if start_date:
+        q = q.where(Submission.date >= start_date)
+    if end_date:
+        q = q.where(Submission.date <= end_date)
+    q = q.order_by(Submission.date.desc())
+    return list((await db.execute(q)).all())
+
+
 # ── Demo 数据种子 ─────────────────────────────────────────────────
 
 async def seed_budget_demo(db: AsyncSession) -> None:
@@ -1371,6 +1610,69 @@ async def seed_budget_demo(db: AsyncSession) -> None:
             date=date_str, merchant=merchant,
             receipt_url="/uploads/demo/receipt_02.jpg",
             cost_center="MKT-EVENTS", department="Marketing",
+        ))
+
+    await db.commit()
+
+
+async def seed_compliance_demo(db: AsyncSession) -> None:
+    """Seed the three demo scenarios the agent compliance reasoner exists
+    to catch. Idempotent — skip if data already present.
+
+      1. E001 took approved vacation 2026-04-15 to 2026-04-17, then later
+         submits a travel expense dated 2026-04-16 → reasoner must flag.
+      2. E003 receives a monthly car allowance (CNY 2000), then submits
+         personal_car_mileage → reasoner must flag.
+      3. E001 self-claims a meal AND appears as an attendee on E002's
+         entertainment submission seed-mkt-1 → reasoner must flag.
+
+    Demo scenarios live alongside the budget seed for one-command demos.
+    """
+    # Scenario 1: leave on 2026-04-15..17
+    existing = await db.execute(select(EmployeeLeave).where(
+        EmployeeLeave.employee_id == "E001",
+        EmployeeLeave.start_date == date(2026, 4, 15),
+    ))
+    if existing.scalar_one_or_none() is None:
+        db.add(EmployeeLeave(
+            employee_id="E001",
+            start_date=date(2026, 4, 15),
+            end_date=date(2026, 4, 17),
+            kind="vacation",
+            status="approved",
+            approved_by="seed",
+            notes="Demo: shows agent catching travel-during-leave.",
+        ))
+
+    # Scenario 2: E003 has an active car allowance
+    await upsert_employee_allowance(
+        db,
+        employee_id="E003",
+        kind="car_allowance",
+        monthly_amount=Decimal("2000"),
+        effective_from=date(2026, 1, 1),
+        effective_to=None,
+        notes="Demo: blocks personal_car_mileage claims.",
+    )
+
+    # Scenario 3: E001 appears as attendee on E002's seed-mkt-1
+    existing = await db.execute(select(SubmissionAttendee).where(
+        SubmissionAttendee.submission_id == "seed-mkt-1",
+        SubmissionAttendee.employee_id == "E001",
+    ))
+    if existing.scalar_one_or_none() is None:
+        db.add(SubmissionAttendee(
+            submission_id="seed-mkt-1",
+            name="Zhang Wei",
+            employee_id="E001",
+            role="colleague",
+        ))
+        # Add a couple non-employee attendees for realism
+        db.add(SubmissionAttendee(
+            submission_id="seed-mkt-1",
+            name="Acme Client",
+            employee_id=None,
+            role="client",
         ))
 
     await db.commit()
