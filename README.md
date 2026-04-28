@@ -127,6 +127,37 @@ One unified drawer for every employee page, plus a dedicated submit-chat on the 
 
 ## Design Decisions
 
+### 0. Design Principles (aligned with Airwallex Spend AI / Concur Joule / Expensify Concierge)
+
+ExpenseFlow follows three principles that mirror modern AI-native expense
+platforms ([Airwallex Spend AI 2026](https://www.airwallex.com/blog/meet-your-finance-ai-agents-a-new-way-to-manage-bills-and-expenses), Concur Joule, Brex AI, Ramp Copilot):
+
+1. **Automation-first** — repetitive, rules-based work (receipt OCR, policy
+   checks, voucher generation, payment routing) should never consume human
+   time. Implemented via the **5-Skill compliance pipeline**.
+
+2. **Explainability** — every AI decision is **transparent, auditable, and
+   traceable to a specific rule**. Implemented via:
+   - **Cite the rule** — `audit_report.violations[]` lists each triggered
+     rule_id (e.g. `policy.limit_exceeded`, `ambiguity.description_vague`)
+     with plain-language text + suggested fix, rendered as a dedicated
+     "📋 触发规则" block on the AI explanation card
+   - **Phased timeline** — `audit_report.timeline` only ever reflects what
+     has actually happened, not future-tense predictions
+   - **Per-tool audit logs** — every write tool emits an audit_log entry
+     citing which user / role / rule fired
+
+3. **Human-in-the-loop** — AI **does not execute** state-changing actions
+   that carry legal liability (submit / approve / reject / pay). Those are
+   UI-only buttons. Implemented via the empty action whitelist on every
+   chat agent (`TOOL_REGISTRY["employee"]` excludes them by construction).
+
+The **AI Auto-Approval Funnel** KPI on the Eval Observatory dashboard
+tracks the production result of these principles (e.g. *"71.8% of recent
+expenses auto-approved by AI, 21.1% routed to human review, 7.0% suggested
+reject"*) so we can tell whether tiering is actually doing useful work —
+not just whether the eval suite passes.
+
 ### 1. Workflow vs Agent: Honest Labeling
 
 > "Agentic AI" is overused. Here we explicitly label what's an agent and what's a workflow.
