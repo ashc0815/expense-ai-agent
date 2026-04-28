@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.db.store import EvalRun, LLMTrace, get_eval_db
+from backend.db.store import EvalRun, LLMTrace, Submission, get_db, get_eval_db
 
 router = APIRouter()
 
@@ -179,6 +179,82 @@ async def eval_stats(db: AsyncSession = Depends(get_eval_db)) -> dict:
         })
 
     return {"trend": trend, "components": components}
+
+
+# ── Auto-approval funnel KPI ─────────────────────────────────────────
+# Inspired by Airwallex Spend AI's published metric: "64% of expenses are
+# auto-approved because the system already verified compliance in real time".
+# This endpoint computes the same funnel for ExpenseFlow's own data so the
+# eval dashboard can show whether AI tiering is actually doing useful work.
+#
+# Definitions (matches the tier_map in submissions._run_pipeline):
+#   T1 / T2 → AI auto-approve (low / next-low risk)
+#   T3      → human review needed
+#   T4      → AI suggests reject
+# auto_approve_rate = (T1 + T2) / (T1 + T2 + T3 + T4)
+#
+# Reads from the BUSINESS db (submissions table), not the eval db, so it's
+# tracking real production-style outcomes — not eval-suite synthetic cases.
+
+@router.get("/auto-approval-rate")
+async def auto_approval_rate(
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(30, ge=1, le=365, description="Look-back window in days"),
+) -> dict:
+    """Tier breakdown + auto-approval funnel for the recent N days.
+
+    Returns:
+      {
+        window_days: 30,
+        total: 142,
+        by_tier: {T1: 78, T2: 24, T3: 30, T4: 10},
+        auto_approve_count: 102,    # T1 + T2
+        auto_approve_rate: 0.7183,  # 71.83%
+        human_review_count: 30,
+        human_review_rate: 0.2113,
+        rejection_count: 10,
+        rejection_rate: 0.0704,
+      }
+
+    A submission is counted only if it has been reviewed (tier IS NOT NULL).
+    Open / draft / processing submissions are excluded.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    rows = (await db.execute(
+        select(Submission.tier, func.count(Submission.id))
+        .where(Submission.tier.isnot(None))
+        .where(Submission.created_at >= cutoff)
+        .group_by(Submission.tier)
+    )).all()
+
+    by_tier = {tier: count for tier, count in rows if tier}
+    total = sum(by_tier.values())
+
+    auto = by_tier.get("T1", 0) + by_tier.get("T2", 0)
+    review = by_tier.get("T3", 0)
+    reject = by_tier.get("T4", 0)
+
+    def _rate(n: int) -> float:
+        return round(n / total, 4) if total > 0 else 0.0
+
+    return {
+        "window_days": days,
+        "total": total,
+        "by_tier": {
+            "T1": by_tier.get("T1", 0),
+            "T2": by_tier.get("T2", 0),
+            "T3": by_tier.get("T3", 0),
+            "T4": by_tier.get("T4", 0),
+        },
+        "auto_approve_count":  auto,
+        "auto_approve_rate":   _rate(auto),
+        "human_review_count":  review,
+        "human_review_rate":   _rate(review),
+        "rejection_count":     reject,
+        "rejection_rate":      _rate(reject),
+    }
 
 
 # ── Serializers ───────────────────────────────────────────────────────
