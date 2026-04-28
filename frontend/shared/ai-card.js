@@ -62,6 +62,39 @@
         </div>`;
     };
 
+    // ── Cite the rule: structured violations rendering ──
+    // Each violation has {rule_id, rule_text, severity, suggestion?, evidence?}
+    // Source: audit_report.violations, populated by the 5-Skill pipeline +
+    // agent.violation_registry. This is what makes the AI's flagging
+    // auditable — every red/yellow flag points to a specific, citable rule.
+    const violationsHtml = (() => {
+      const vs = data.violations || [];
+      if (!vs.length) return "";
+      const sevClass = (sev) => ({
+        error: "ai-vio-error",
+        warn: "ai-vio-warn",
+        info: "ai-vio-info",
+      }[sev] || "ai-vio-warn");
+      const sevIcon = (sev) => ({ error: "🛑", warn: "⚠️", info: "ℹ️" }[sev] || "•");
+      return `
+        <div class="ai-violations">
+          <div class="ai-violations-label">📋 触发规则 (${vs.length})</div>
+          ${vs.map(v => `
+            <div class="ai-vio ${sevClass(v.severity)}">
+              <div class="ai-vio-head">
+                <span class="ai-vio-icon">${sevIcon(v.severity)}</span>
+                <code class="ai-vio-id">${escape(v.rule_id || "")}</code>
+              </div>
+              <div class="ai-vio-text">${escape(v.rule_text || "")}</div>
+              ${v.suggestion ? `
+                <div class="ai-vio-suggestion">建议：${escape(v.suggestion)}</div>` : ""}
+              ${v.evidence ? `
+                <div class="ai-vio-evidence">证据：<code>${escape(v.evidence)}</code></div>` : ""}
+            </div>
+          `).join("")}
+        </div>`;
+    })();
+
     const ctxLine = data.context && data.context.history_avg != null
       ? `员工历史 ${data.context.history_count} 笔 · 平均 ¥${data.context.history_avg.toFixed(0)}`
       : (data.context && data.context.history_count
@@ -90,6 +123,7 @@
         ${flagsHtml("✓ 通过", data.green_flags, "ai-green")}
         ${flagsHtml("⚠ 注意", data.yellow_flags, "ai-yellow")}
         ${flagsHtml("✗ 风险", data.red_flags, "ai-red")}
+        ${violationsHtml}
 
         ${data.advisory ? `
           <div class="ai-card-advisory">
