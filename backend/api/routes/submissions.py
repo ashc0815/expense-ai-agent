@@ -183,6 +183,37 @@ async def _run_pipeline(submission_id: str, form_data: dict) -> None:
         if result.shield_report and isinstance(result.shield_report, dict):
             violations = list(result.shield_report.get("violations") or [])
 
+        # ── Agent compliance reasoner ──────────────────────────────────
+        # Cross-record checks the deterministic pipeline can't do (leave
+        # overlap, allowance conflict, cross-person meal). Failures are
+        # appended to the same `violations` list with rule_id="agent.*"
+        # so downstream UI / ERP push consumes one flat list.
+        async with Session() as db:
+            try:
+                from agent.compliance_reasoner import reason_about_submission
+                from agent.violation_registry import collect_agent_violations
+                findings = await reason_about_submission(
+                    db,
+                    submission_id=submission_id,
+                    employee_id=form_data["employee_id"],
+                    expense_date=form_data["date"],
+                    category=form_data["category"],
+                    amount=float(form_data["amount"]),
+                )
+                agent_violations = collect_agent_violations(findings)
+                if agent_violations:
+                    # Bump risk if hard rules didn't already escalate. An
+                    # agent.* finding is at least as severe as a yellow
+                    # ambiguity flag — never silently downgrade T3/T4.
+                    has_error = any(v.get("severity") == "error"
+                                    for v in agent_violations)
+                    if has_error and tier in ("T1", "T2"):
+                        tier = "T3"
+                        risk_score = max(risk_score, 70.0)
+                violations.extend(agent_violations)
+            except Exception:  # noqa: BLE001 — reasoner must never break pipeline
+                pass
+
         audit_report = {
             "final_status": final_status,
             "timeline": [

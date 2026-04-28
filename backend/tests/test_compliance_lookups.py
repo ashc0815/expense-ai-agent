@@ -34,7 +34,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from backend.db.store import (
     Base, EvalBase, add_employee_leave, add_submission_attendee,
-    create_submission, init_db, upsert_employee_allowance,
+    create_submission, seed_budget_demo, seed_compliance_demo,
+    upsert_employee_allowance,
 )
 from backend.services.compliance_lookups import (
     find_overlapping_claims, get_employee_allowances,
@@ -48,13 +49,21 @@ _Session = async_sessionmaker(_engine, expire_on_commit=False)
 
 
 def setup_module(_):
+    # We bypass init_db() because it uses the module-level `engine` in
+    # backend.db.store, which is bound at import time to whichever
+    # DATABASE_URL env var happened to be set first across the whole
+    # pytest run. Building tables + running seeds against THIS file's
+    # local engine keeps each test module fully self-contained.
     import backend.config as _cfg
     _cfg.DATABASE_URL = _DB_URL
 
     async def _init():
-        # init_db both creates tables AND seeds the compliance demo data,
-        # so most tests can assert against the seeded scenarios directly.
-        await init_db()
+        async with _engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(EvalBase.metadata.create_all)
+        async with _Session() as db:
+            await seed_budget_demo(db)
+            await seed_compliance_demo(db)
 
     asyncio.new_event_loop().run_until_complete(_init())
 
@@ -262,11 +271,11 @@ async def test_get_attendees_returns_seeded_attendees_for_seed_mkt_1():
 # ── Idempotency on init_db ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_running_init_db_twice_does_not_duplicate_seed():
-    """The seed is wired into init_db; a server restart must not pile
-    up duplicates."""
-    await init_db()  # again
+async def test_running_seed_twice_does_not_duplicate():
+    """seed_compliance_demo is wired into init_db; a server restart must
+    not pile up duplicates."""
     async with _Session() as db:
+        await seed_compliance_demo(db)  # second call
         # Still exactly one allowance for E003
         out = await get_employee_allowances(
             db, employee_id="E003", on_date="2026-04-15",

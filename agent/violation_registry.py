@@ -84,9 +84,78 @@ POLICY_VIOLATIONS: dict[str, dict[str, str]] = {
         "rule_id": "policy.limit_exceeded",
         "rule_text": "费用金额超过适用政策限额（按城市等级 × 员工等级匹配）。",
         "severity": "error",
-        "suggestion": "拆分至限额以内、补充审批材料、或寻求一次性例外授权。",
+        # NOTE: do NOT suggest "拆分至限额以内" — splitting one expense into
+        # multiple submissions to dodge the per-submission limit is itself a
+        # policy violation. Suggest legitimate paths only.
+        "suggestion": "补充业务正当性说明并附领导事先批准；或申请一次性例外授权。",
     },
 }
+
+
+# ── Agent compliance reasoner findings → violation template ───────────
+# These are violations that hard-coded rules can't catch because they
+# need cross-record reasoning (other submissions, HR data, allowance
+# tables). Source: backend.services.compliance_lookups + the reasoner
+# in agent.compliance_reasoner. Each entry's `severity` is the default;
+# the factory may override per-finding (e.g. an APPROVED leave is
+# error, a pending one is warn).
+AGENT_VIOLATIONS: dict[str, dict[str, str]] = {
+    "agent.travel_during_leave": {
+        "rule_id": "agent.travel_during_leave",
+        "rule_text": "出差/差旅费用日期与该员工已批准的休假记录重叠，需说明实际行程。",
+        "severity": "error",
+        # No "withdraw and resubmit" — that's also a workaround. Either it
+        # was a real business need (then explain it), or it's a mistake
+        # (then withdraw the line item).
+        "suggestion": "若确为公务出差，请说明业务必要性并附领导确认；若为误报，请撤回该笔。",
+    },
+    "agent.claim_vs_allowance": {
+        "rule_id": "agent.claim_vs_allowance",
+        "rule_text": "该员工已领取覆盖此类支出的固定补贴，不可同时再行实报实销。",
+        "severity": "error",
+        "suggestion": "本笔费用应由现有补贴承担；如属补贴未覆盖的特殊情形，请在描述中说明。",
+    },
+    "agent.cross_person_meal_double_dip": {
+        "rule_id": "agent.cross_person_meal_double_dip",
+        "rule_text": "同一顿用餐同时出现在你和他人的报销单中，疑似一餐被两人重复报销。",
+        "severity": "error",
+        "suggestion": "请确认是否为不同场合；若为同一顿，应仅由一人报销，另一方撤回。",
+    },
+}
+
+
+def violation_from_agent_finding(finding: dict) -> dict | None:
+    """Map a reasoner finding → fully-populated violation dict.
+
+    `finding` shape:
+        {
+            "kind":           "agent.travel_during_leave" | ...
+            "evidence_chain": [ {kind, ...}, ... ]
+            "context":        { ...free-form display hints... }
+        }
+    """
+    kind = finding.get("kind")
+    template = AGENT_VIOLATIONS.get(kind) if kind else None
+    if not template:
+        return None
+    v = dict(template)
+    chain = finding.get("evidence_chain") or []
+    if chain:
+        v["evidence_chain"] = chain
+    ctx = finding.get("context") or {}
+    if ctx:
+        v["context"] = ctx
+    return v
+
+
+def collect_agent_violations(findings) -> list[dict]:
+    """Convert a list of reasoner findings → violation dicts."""
+    out: list[dict] = []
+    for f in findings or []:
+        v = violation_from_agent_finding(f)
+        if v:
+            out.append(v)
+    return out
 
 
 def violation_from_factor(factor: str) -> dict | None:
