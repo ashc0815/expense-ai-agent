@@ -27,7 +27,7 @@ async def test_pipeline_emits_events_in_order():
         draft = await create_draft(db, "emp_pipe_1")
         await update_draft_receipt(db, draft.id, "/uploads/stub.jpg")
 
-        ctx = UserContext(user_id="emp_pipe_1", role="employee")
+        ctx = UserContext(user_id="emp_pipe_1", roles=["employee"])
         events = []
         async for ev in run_quick_pipeline(draft.id, ctx, db):
             events.append(ev)
@@ -51,7 +51,7 @@ async def test_pipeline_persists_layer_to_draft():
     async with _Session() as db:
         draft = await create_draft(db, "emp_pipe_2")
         await update_draft_receipt(db, draft.id, "/uploads/stub.jpg")
-        ctx = UserContext(user_id="emp_pipe_2", role="employee")
+        ctx = UserContext(user_id="emp_pipe_2", roles=["employee"])
 
         async for _ in run_quick_pipeline(draft.id, ctx, db):
             pass
