@@ -63,10 +63,13 @@
     };
 
     // ── Cite the rule: structured violations rendering ──
-    // Each violation has {rule_id, rule_text, severity, suggestion?, evidence?}
-    // Source: audit_report.violations, populated by the 5-Skill pipeline +
-    // agent.violation_registry. This is what makes the AI's flagging
-    // auditable — every red/yellow flag points to a specific, citable rule.
+    // Each violation has {rule_id, rule_text, severity, suggestion?,
+    // evidence?, evidence_chain?, context?}.
+    // Hard-rule violations (rule_id="ambiguity.*" / "policy.*") use the
+    // single-line `evidence` field; agent violations (rule_id="agent.*")
+    // come with a structured `evidence_chain` of cross-record references
+    // showing the OTHER rows that justify the finding — that's the
+    // "data-vs-policy diff" view we want in place of opaque scoring.
     const violationsHtml = (() => {
       const vs = data.violations || [];
       if (!vs.length) return "";
@@ -76,22 +79,94 @@
         info: "ai-vio-info",
       }[sev] || "ai-vio-warn");
       const sevIcon = (sev) => ({ error: "🛑", warn: "⚠️", info: "ℹ️" }[sev] || "•");
+
+      // Evidence-chain renderers — one row template per `kind` returned
+      // by the reasoner. Unknown kinds fall through to a generic
+      // key-value dump so we never silently drop information.
+      const renderChainItem = (item) => {
+        if (item.kind === "approved_leave") {
+          const range = item.start_date === item.end_date
+            ? escape(item.start_date)
+            : `${escape(item.start_date)} ~ ${escape(item.end_date)}`;
+          const kindLabel = ({
+            vacation: "年假", sick: "病假",
+            personal: "事假", parental: "陪产/产假",
+          }[item.leave_kind] || escape(item.leave_kind || ""));
+          return `
+            <div class="ai-vio-chain-item">
+              <span class="ai-vio-chain-icon">📅</span>
+              <span class="ai-vio-chain-text">
+                <strong>已批准${kindLabel}</strong> · ${range}
+                ${item.approved_by ? ` · 批准人 ${escape(item.approved_by)}` : ""}
+              </span>
+            </div>`;
+        }
+        if (item.kind === "active_allowance") {
+          const kindLabel = ({
+            car_allowance: "车补",
+            meal_per_diem: "餐补",
+            phone_allowance: "话补",
+            housing_allowance: "房补",
+          }[item.allowance_kind] || escape(item.allowance_kind || ""));
+          return `
+            <div class="ai-vio-chain-item">
+              <span class="ai-vio-chain-icon">💰</span>
+              <span class="ai-vio-chain-text">
+                <strong>${kindLabel}</strong> · ¥${Number(item.monthly_amount || 0).toFixed(0)}/月
+                · 自 ${escape(item.effective_from || "")}
+                ${item.effective_to ? ` 至 ${escape(item.effective_to)}` : " 起生效"}
+              </span>
+            </div>`;
+        }
+        if (item.kind === "appears_on_other_submission") {
+          return `
+            <div class="ai-vio-chain-item">
+              <span class="ai-vio-chain-icon">👥</span>
+              <span class="ai-vio-chain-text">
+                作为<strong>${escape(item.attendee_role || "参与人")}</strong>
+                出现在 <code>${escape(item.other_submitter_id || "")}</code>
+                的报销 (${escape(item.other_category || "")} ¥${Number(item.other_amount || 0).toFixed(0)}
+                · ${escape(item.other_merchant || "")} · ${escape(item.other_date || "")})
+              </span>
+            </div>`;
+        }
+        // Unknown kind — generic fallback.
+        const pairs = Object.entries(item)
+          .filter(([k]) => k !== "kind")
+          .map(([k, v]) => `${escape(k)}=${escape(String(v))}`)
+          .join(", ");
+        return `
+          <div class="ai-vio-chain-item">
+            <span class="ai-vio-chain-icon">•</span>
+            <span class="ai-vio-chain-text">${escape(item.kind || "")} · ${pairs}</span>
+          </div>`;
+      };
+
       return `
         <div class="ai-violations">
           <div class="ai-violations-label">📋 触发规则 (${vs.length})</div>
-          ${vs.map(v => `
-            <div class="ai-vio ${sevClass(v.severity)}">
+          ${vs.map(v => {
+            const isAgent = (v.rule_id || "").startsWith("agent.");
+            const chain = Array.isArray(v.evidence_chain) ? v.evidence_chain : [];
+            return `
+            <div class="ai-vio ${sevClass(v.severity)} ${isAgent ? "ai-vio-agent" : ""}">
               <div class="ai-vio-head">
                 <span class="ai-vio-icon">${sevIcon(v.severity)}</span>
                 <code class="ai-vio-id">${escape(v.rule_id || "")}</code>
+                ${isAgent ? `<span class="ai-vio-badge-agent">AI 跨数据发现</span>` : ""}
               </div>
               <div class="ai-vio-text">${escape(v.rule_text || "")}</div>
+              ${chain.length ? `
+                <div class="ai-vio-evidence-chain">
+                  <div class="ai-vio-chain-label">↳ 依据</div>
+                  ${chain.map(renderChainItem).join("")}
+                </div>` : ""}
               ${v.suggestion ? `
                 <div class="ai-vio-suggestion">建议：${escape(v.suggestion)}</div>` : ""}
-              ${v.evidence ? `
+              ${(!chain.length && v.evidence) ? `
                 <div class="ai-vio-evidence">证据：<code>${escape(v.evidence)}</code></div>` : ""}
-            </div>
-          `).join("")}
+            </div>`;
+          }).join("")}
         </div>`;
     })();
 
