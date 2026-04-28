@@ -174,6 +174,15 @@ async def _run_pipeline(submission_id: str, form_data: dict) -> None:
         # 执行将由 approve_submission / finance_approve 在实际审批通过后追加。
         # 这样 audit_report.timeline 永远只反映"已经发生的事"。
         SUBMIT_PHASE_LIMIT = 3
+        # Pull rolled-up rule violations from the shield report (set by
+        # ExpenseController._build_shield_report) up to the top level so
+        # the AI explanation card and any future ERP push can read a flat
+        # list of {rule_id, rule_text, severity, suggestion?} entries
+        # without having to walk into per-line shield items.
+        violations = []
+        if result.shield_report and isinstance(result.shield_report, dict):
+            violations = list(result.shield_report.get("violations") or [])
+
         audit_report = {
             "final_status": final_status,
             "timeline": [
@@ -186,6 +195,7 @@ async def _run_pipeline(submission_id: str, form_data: dict) -> None:
                 for s in result.timeline[:SUBMIT_PHASE_LIMIT]
             ],
             "shield_report": result.shield_report,
+            "violations": violations,
         }
 
         async with Session() as db:

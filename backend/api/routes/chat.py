@@ -1901,6 +1901,12 @@ async def compose_explanation(
     elif tier == "T4":
         advisory = "建议驳回并要求员工重新提交完整证据"
 
+    # ── Cite the rule: structured rule violations from audit_report ──
+    # Each entry is {rule_id, rule_text, severity, suggestion?, evidence?}.
+    # Sourced from audit_report.violations (built by ExpenseController and
+    # the submit handler — see agent/violation_registry.py for the catalog).
+    violations = audit.get("violations") or []
+
     return {
         "submission_id": sub["id"],
         "tier": tier,
@@ -1917,6 +1923,7 @@ async def compose_explanation(
         "green_flags": green[:5],
         "yellow_flags": yellow[:5],
         "red_flags": red[:5],
+        "violations": violations,
         "advisory": advisory,
         "context": context,
         "_agent_role": role,

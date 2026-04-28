@@ -241,10 +241,24 @@ class ExpenseController:
     @staticmethod
     def _build_shield_report(compliance_result: Any) -> dict:
         """从合规结果中提取模糊检测报告（含 LLM 分析）。"""
+        from agent.violation_registry import collect_ambiguity_violations
+
         flagged_items: list[dict] = []
+        all_violations: list[dict] = []
         for detail in getattr(compliance_result, "line_details", []):
             ambiguity = getattr(detail, "ambiguity", None)
             if ambiguity and ambiguity.recommendation != "auto_pass":
+                # Per-line violations: cite each triggered factor as a structured rule
+                line_violations = collect_ambiguity_violations(
+                    list(ambiguity.triggered_factors or [])
+                )
+                # Also collect any failed extra_checks (policy-engine RuleResults
+                # attached to this line item)
+                from agent.violation_registry import collect_policy_violations
+                line_violations.extend(
+                    collect_policy_violations(getattr(detail, "extra_checks", []))
+                )
+
                 item_dict: dict = {
                     "expense_type": detail.line_item.expense_type,
                     "amount": detail.line_item.amount,
@@ -253,6 +267,9 @@ class ExpenseController:
                     "recommendation": ambiguity.recommendation,
                     "triggered_factors": ambiguity.triggered_factors,
                     "explanation": ambiguity.explanation,
+                    # NEW: structured rule citations — every flag points to a
+                    # specific rule_id with human-readable text + suggestion
+                    "violations": line_violations,
                 }
                 if ambiguity.llm_review:
                     item_dict["llm_review"] = {
@@ -264,11 +281,16 @@ class ExpenseController:
                         "required_materials": ambiguity.llm_review.required_materials,
                     }
                 flagged_items.append(item_dict)
+                all_violations.extend(line_violations)
         return {
             "shield_triggered": True,
             "overall_level": compliance_result.overall_level.value,
             "flagged_items": flagged_items,
             "total_issues": len(compliance_result.issues),
+            # Top-level rolled-up violation list — convenient for UI consumers
+            # that show "this expense violated the following rules:" without
+            # having to walk per-line items
+            "violations": all_violations,
         }
 
 
