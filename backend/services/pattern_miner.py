@@ -150,7 +150,7 @@ async def find_matching_active_rules(
     merchant: Optional[str],
 ) -> list[AutoRule]:
     """Return active rules whose trigger matches the given merchant (used by
-    the auto-applier in PR-C). Only matches employee-scoped rules for now.
+    the auto-applier). Only matches employee-scoped rules for now.
     """
     if not merchant:
         return []
@@ -164,3 +164,54 @@ async def find_matching_active_rules(
         )
     )
     return list(result.scalars().all())
+
+
+async def apply_rules_to_draft(
+    db: AsyncSession,
+    *,
+    employee_id: str,
+    draft_id: str,
+    merchant: Optional[str],
+    overwrite: bool = True,
+) -> list[dict]:
+    """Apply every active rule for this merchant to the draft. Returns a list
+    of {rule_id, field, value} for each rule that fired so the caller can
+    surface them to the user and write an audit log.
+
+    `overwrite=True` means rule values replace whatever the classifier wrote
+    (the user already certified this mapping, so it outranks heuristic
+    suggestions). When False, only empty fields are filled.
+    """
+    from backend.db.store import (
+        get_draft, increment_rule_applied, update_draft_field,
+    )
+
+    rules = await find_matching_active_rules(
+        db, employee_id=employee_id, merchant=merchant,
+    )
+    if not rules:
+        return []
+
+    draft = await get_draft(db, draft_id)
+    if draft is None:
+        return []
+    fields = dict(draft.fields or {})
+
+    applied: list[dict] = []
+    for rule in rules:
+        existing = fields.get(rule.field)
+        if not overwrite and existing:
+            continue
+        if existing == rule.value:
+            # Already correct; no need to write or count.
+            continue
+        await update_draft_field(
+            db, draft_id, rule.field, rule.value, source="auto_rule",
+        )
+        await increment_rule_applied(db, rule.id)
+        applied.append({
+            "rule_id": rule.id,
+            "field": rule.field,
+            "value": rule.value,
+        })
+    return applied

@@ -401,6 +401,16 @@ function streamPipeline(draftId, file) {
         draftData[draftId].fields.category = ev.category;
         draftData[draftId].sources.category = "ai";
       }
+    } else if (ev.type === "auto_rules_applied") {
+      // #5 user-behavior learning: an active auto-rule fired. Mark fields
+      // in the local cache so the form badges them as "auto-rule" instead
+      // of "ai" (so the user can see the system used their saved rule).
+      const d = draftData[draftId];
+      d.autoRulesApplied = ev.rules || [];
+      for (const r of (ev.rules || [])) {
+        d.fields[r.field] = r.value;
+        d.sources[r.field] = "auto_rule";
+      }
     } else if (ev.type === "dedupe_done") {
       markScanStep(draftId, "dedupe", "done");
       markScanStep(draftId, "budget", "active");
