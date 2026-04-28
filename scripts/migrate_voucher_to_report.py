@@ -36,18 +36,66 @@ from pathlib import Path
 # Make `backend` importable when run as a script
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from backend.config import DATABASE_URL
 from backend.db.store import Base, Report, Submission
 
 
+# ── Schema migration: ensure new columns exist on the reports table ──
+# When PR #20 added Report.voucher_number / Report.voucher_posted_at to
+# the SQLAlchemy model, existing SQLite files (created before that PR)
+# don't have these columns. SQLAlchemy's create_all() only creates tables
+# that don't exist; it does NOT add new columns to existing ones. Without
+# this step, every query that touches the reports table will fail with
+# "no such column: reports.voucher_number".
+
+_REQUIRED_REPORT_COLUMNS: list[tuple[str, str]] = [
+    ("voucher_number",     "VARCHAR(50)"),
+    ("voucher_posted_at",  "DATETIME"),
+]
+
+
+async def _ensure_report_columns(engine, dry_run: bool = False) -> list[str]:
+    """Add any missing voucher columns to the reports table. Returns list
+    of column names that were actually added."""
+    added: list[str] = []
+    async with engine.begin() as conn:
+        rows = (await conn.execute(text("PRAGMA table_info(reports)"))).all()
+        existing = {row[1] for row in rows}  # row[1] is column name
+        for col, sql_type in _REQUIRED_REPORT_COLUMNS:
+            if col in existing:
+                continue
+            if dry_run:
+                added.append(col)
+                continue
+            await conn.execute(
+                text(f"ALTER TABLE reports ADD COLUMN {col} {sql_type}")
+            )
+            added.append(col)
+    return added
+
+
 async def migrate(dry_run: bool = False) -> dict:
     engine = create_async_engine(DATABASE_URL)
     Session = async_sessionmaker(engine, expire_on_commit=False)
 
-    stats = {"reports_updated": 0, "submissions_normalized": 0, "skipped_already_set": 0}
+    stats = {
+        "schema_columns_added": [],
+        "reports_updated": 0,
+        "submissions_normalized": 0,
+        "skipped_already_set": 0,
+    }
+
+    # Step 1: schema — add any missing columns BEFORE any ORM query runs
+    # (SQLAlchemy will SELECT every column listed in the model, including
+    # the new ones, so the ALTER must happen first).
+    added = await _ensure_report_columns(engine, dry_run=dry_run)
+    stats["schema_columns_added"] = added
+    if added:
+        action = "would add" if dry_run else "added"
+        print(f"  schema: {action} columns to reports: {added}")
 
     async with Session() as db:
         # Find all reports whose submissions have a voucher number.
@@ -107,6 +155,7 @@ def main() -> int:
     stats = asyncio.run(migrate(dry_run=args.dry_run))
     print()
     print("Done.")
+    print(f"  schema columns added:      {stats['schema_columns_added']}")
     print(f"  reports updated:           {stats['reports_updated']}")
     print(f"  submissions normalized:    {stats['submissions_normalized']}")
     print(f"  skipped (already set):     {stats['skipped_already_set']}")
