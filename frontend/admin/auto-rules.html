@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="autorules-admin.title">自动规则总览 — ExpenseFlow</title>
+  <link rel="stylesheet" href="/shared/styles.css">
+  <script>
+    window.AUTH_MODE = "mock"; window.API_BASE = "";
+    if (!localStorage.getItem("mock_role")) { localStorage.setItem("mock_role", "finance_admin"); }
+  </script>
+  <style>
+    .ar-admin-wrap { max-width: 1080px; margin: 1.5rem auto; padding: 0 1rem; }
+    .ar-summary {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .ar-stat {
+      background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 1rem 1.2rem;
+    }
+    .ar-stat .lbl { font-size: .75rem; color: #64748b; text-transform: uppercase; letter-spacing: .4px; }
+    .ar-stat .val { font-size: 1.7rem; font-weight: 700; color: #0f172a; margin-top: .25rem; }
+    .ar-stat.suggested .val { color: #4338ca; }
+    .ar-stat.active .val    { color: #16a34a; }
+    .ar-stat.dismissed .val { color: #64748b; }
+
+    .ar-section { background: white; border: 1px solid #e2e8f0;
+                  border-radius: 12px; padding: 1rem 1.2rem; margin-bottom: 1.2rem; }
+    .ar-section h2 { font-size: 1rem; margin: 0 0 .8rem; color: #0f172a; }
+    .ar-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+    .ar-table th { text-align: left; padding: .5rem .6rem;
+                   color: #64748b; font-weight: 600; font-size: .75rem;
+                   text-transform: uppercase; letter-spacing: .4px;
+                   border-bottom: 1px solid #e2e8f0; }
+    .ar-table td { padding: .55rem .6rem; border-bottom: 1px solid #f1f5f9;
+                   color: #0f172a; }
+    .ar-table tr:last-child td { border-bottom: none; }
+    .ar-table code { background: rgba(99,102,241,.1); padding: 1px 5px;
+                     border-radius: 3px; font-family: ui-monospace, monospace;
+                     font-size: .85em; }
+    .ar-conf {
+      display: inline-block; padding: 1px 6px; border-radius: 999px;
+      background: #ede9fe; color: #5b21b6; font-weight: 600;
+      font-size: .72rem;
+    }
+    .ar-status {
+      display: inline-block; padding: 1px 6px; border-radius: 4px;
+      font-size: .72rem; font-weight: 600;
+    }
+    .ar-status.suggested { background: #ede9fe; color: #5b21b6; }
+    .ar-status.active    { background: #dcfce7; color: #166534; }
+    .ar-status.dismissed { background: #f1f5f9; color: #475569; }
+    .ar-empty { color: #64748b; font-size: .85rem; padding: 1rem 0; text-align: center; }
+  </style>
+</head>
+<body>
+  <div id="nav-root"></div>
+  <script src="/shared/i18n.js"></script>
+  <script src="/shared/auth.js"></script>
+  <script src="/shared/nav.js"></script>
+
+  <main class="ar-admin-wrap">
+    <h1 style="font-size:1.3rem; margin: 0 0 1rem" data-i18n="autorules-admin.title">自动规则总览</h1>
+    <p style="color:#64748b; margin-bottom: 1rem; font-size: .9rem" data-i18n="autorules-admin.subtitle">
+      AI 从员工行为中学习的自动规则。Suggested = 已发现待员工确认；Active = 员工已采纳；Dismissed = 员工拒绝。
+    </p>
+
+    <div id="summary" class="ar-summary"></div>
+    <div id="sections"></div>
+  </main>
+
+  <script>
+  const authH = async () => (window.auth ? await window.auth.getHeaders() : {});
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function fieldLabel(f) {
+    return t('autorules.field.' + f) || f;
+  }
+
+  async function load() {
+    const r = await fetch("/api/auto-rules/admin", { headers: await authH() });
+    if (!r.ok) {
+      document.getElementById("sections").innerHTML =
+        `<div class="ar-section ar-empty">${t('autorules-admin.load-fail')} ${r.status}</div>`;
+      return;
+    }
+    const data = await r.json();
+    renderSummary(data);
+    renderSections(data);
+  }
+
+  function renderSummary(data) {
+    const c = data.by_status || {};
+    const counts = {
+      total: data.total || 0,
+      suggested: (c.suggested || []).length,
+      active: (c.active || []).length,
+      dismissed: (c.dismissed || []).length,
+    };
+    document.getElementById("summary").innerHTML = `
+      <div class="ar-stat"><div class="lbl">${t('autorules-admin.total')}</div>
+        <div class="val">${counts.total}</div></div>
+      <div class="ar-stat suggested"><div class="lbl">${t('autorules-admin.suggested')}</div>
+        <div class="val">${counts.suggested}</div></div>
+      <div class="ar-stat active"><div class="lbl">${t('autorules-admin.active')}</div>
+        <div class="val">${counts.active}</div></div>
+      <div class="ar-stat dismissed"><div class="lbl">${t('autorules-admin.dismissed')}</div>
+        <div class="val">${counts.dismissed}</div></div>`;
+  }
+
+  function renderSections(data) {
+    const order = ["active", "suggested", "dismissed"];
+    const html = order.map(status => {
+      const rows = (data.by_status && data.by_status[status]) || [];
+      return `
+        <div class="ar-section">
+          <h2>${t('autorules-admin.heading.' + status)} (${rows.length})</h2>
+          ${rows.length === 0
+            ? `<div class="ar-empty">${t('autorules-admin.empty')}</div>`
+            : `<table class="ar-table">
+                <thead><tr>
+                  <th>${t('autorules-admin.col.employee')}</th>
+                  <th>${t('autorules-admin.col.merchant')}</th>
+                  <th>${t('autorules-admin.col.field')}</th>
+                  <th>${t('autorules-admin.col.value')}</th>
+                  <th>${t('autorules-admin.col.confidence')}</th>
+                  <th>${t('autorules-admin.col.evidence')}</th>
+                  <th>${t('autorules-admin.col.applied')}</th>
+                  <th>${t('autorules-admin.col.status')}</th>
+                </tr></thead>
+                <tbody>${rows.map(r => `
+                  <tr>
+                    <td>${escapeHtml(r.employee_id || '—')}</td>
+                    <td><code>${escapeHtml(r.trigger_value)}</code></td>
+                    <td>${fieldLabel(r.field)}</td>
+                    <td><code>${escapeHtml(r.value)}</code></td>
+                    <td><span class="ar-conf">${Math.round((r.confidence || 0) * 100)}%</span></td>
+                    <td>${r.evidence_count || 0}</td>
+                    <td>${r.applied_count || 0}</td>
+                    <td><span class="ar-status ${r.status}">${t('autorules-admin.heading.' + r.status)}</span></td>
+                  </tr>`).join("")}</tbody>
+              </table>`}
+        </div>`;
+    }).join("");
+    document.getElementById("sections").innerHTML = html;
+  }
+
+  load();
+  </script>
+</body>
+</html>
