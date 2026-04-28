@@ -368,6 +368,37 @@
         <div class="kpi-card"><div class="kpi-value" id="kpi-pass-delta">--</div><div class="kpi-label">Pass Rate Delta</div></div>
         <div class="kpi-card"><div class="kpi-value" id="kpi-latest-cases">--</div><div class="kpi-label">Latest Total Cases</div></div>
       </div>
+
+      <!-- ── Production AI funnel: how is tiering ACTUALLY behaving? ──
+           Inspired by Airwallex Spend AI's published 64% auto-approve
+           metric. Reads from the BUSINESS db (real submissions), not the
+           eval suite, so it's the production picture, not a synthetic one. -->
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:.5rem">
+        <div style="font-weight:700; font-size:.95rem; color:var(--gray-700)">AI Auto-Approval Funnel (last 30 days)</div>
+        <div style="font-size:.72rem; color:var(--gray-400)">Live submissions · tier breakdown</div>
+      </div>
+      <div class="kpi-row" style="margin-bottom:1rem">
+        <div class="kpi-card">
+          <div class="kpi-value" id="kpi-auto-approve-rate" style="color:#16a34a">--</div>
+          <div class="kpi-label">Auto-Approved (T1+T2)</div>
+          <div id="kpi-auto-approve-count" style="font-size:.7rem; color:var(--gray-400); margin-top:.15rem">--</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-value" id="kpi-human-review-rate" style="color:#d97706">--</div>
+          <div class="kpi-label">Human Review (T3)</div>
+          <div id="kpi-human-review-count" style="font-size:.7rem; color:var(--gray-400); margin-top:.15rem">--</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-value" id="kpi-rejection-rate" style="color:#dc2626">--</div>
+          <div class="kpi-label">Suggested Reject (T4)</div>
+          <div id="kpi-rejection-count" style="font-size:.7rem; color:var(--gray-400); margin-top:.15rem">--</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-value" id="kpi-funnel-total">--</div>
+          <div class="kpi-label">Total Reviewed</div>
+          <div style="font-size:.7rem; color:var(--gray-400); margin-top:.15rem">last 30 d</div>
+        </div>
+      </div>
       <div class="comp-section">
         <div class="comp-section-title">Per-Component Detection Quality (Latest Run)</div>
         <div id="overview-metrics-table"><div class="empty-state">Loading...</div></div>
@@ -555,6 +586,27 @@ async function loadOverview() {
       renderOverviewRuns(allRuns);
     }
   } catch (e) { console.error("loadOverview:", e); }
+
+  // ── AI auto-approval funnel KPIs (production data, not eval suite) ──
+  try {
+    var fr = await fetch(API + "/api/eval/auto-approval-rate?days=30");
+    var f = await fr.json();
+    var fmt = function(rate) { return (rate * 100).toFixed(1) + "%"; };
+    document.getElementById("kpi-funnel-total").textContent = f.total || 0;
+    document.getElementById("kpi-auto-approve-rate").textContent =
+      f.total > 0 ? fmt(f.auto_approve_rate) : "—";
+    document.getElementById("kpi-auto-approve-count").textContent =
+      "T1+T2: " + (f.auto_approve_count || 0) +
+      "  (T1=" + (f.by_tier?.T1 || 0) + ", T2=" + (f.by_tier?.T2 || 0) + ")";
+    document.getElementById("kpi-human-review-rate").textContent =
+      f.total > 0 ? fmt(f.human_review_rate) : "—";
+    document.getElementById("kpi-human-review-count").textContent =
+      "T3: " + (f.human_review_count || 0);
+    document.getElementById("kpi-rejection-rate").textContent =
+      f.total > 0 ? fmt(f.rejection_rate) : "—";
+    document.getElementById("kpi-rejection-count").textContent =
+      "T4: " + (f.rejection_count || 0);
+  } catch (e) { console.error("auto-approval-rate:", e); }
 }
 
 function renderOverviewMetrics(run) {
