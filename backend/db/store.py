@@ -315,6 +315,66 @@ class EvalRun(EvalBase):
     created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class AutoRule(Base):
+    """User-behavior auto-rules — pattern-mined suggestions and active rules.
+
+    Inspired by Airwallex's "auto-categorize transactions and apply automation
+    rules based on patterns we detect in your behavior". A rule says: when a
+    new draft matches `trigger_type/trigger_value`, fill `field=value`. The
+    pattern miner proposes rules with status='suggested'; the employee accepts
+    (→ active) or dismisses (→ dismissed). Active rules are applied silently
+    when a draft is created.
+
+    Scope:
+      employee_id NOT NULL — personal rule, only applies to this employee.
+      employee_id IS NULL  — org-wide rule (admin-curated, future).
+    """
+    __tablename__ = "auto_rules"
+
+    id            = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    employee_id   = Column(String(64), nullable=True, index=True)
+
+    # When the rule fires
+    trigger_type  = Column(String(20), nullable=False)
+    # merchant_exact | merchant_prefix | merchant_contains
+    trigger_value = Column(String(255), nullable=False)
+
+    # What the rule sets
+    field         = Column(String(50),  nullable=False)
+    # category | project_code | cost_center | description
+    value         = Column(String(255), nullable=False)
+
+    # Evidence the miner found
+    confidence       = Column(Float,   nullable=False, default=0.0)
+    evidence_count   = Column(Integer, nullable=False, default=0)
+    sample_ids       = Column(JSON,    nullable=True)
+
+    # Lifecycle
+    status        = Column(String(20),  nullable=False, default="suggested")
+    # suggested | active | dismissed | superseded
+
+    # Usage telemetry — how many drafts this rule has populated
+    applied_count    = Column(Integer, nullable=False, default=0)
+    last_applied_at  = Column(DateTime(timezone=True), nullable=True)
+
+    # Audit trail of accept/dismiss
+    decided_at    = Column(DateTime(timezone=True), nullable=True)
+    decided_by    = Column(String(64),  nullable=True)
+
+    created_at    = Column(DateTime(timezone=True),
+                            default=lambda: datetime.now(timezone.utc))
+    updated_at    = Column(DateTime(timezone=True),
+                            default=lambda: datetime.now(timezone.utc),
+                            onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "employee_id", "trigger_type", "trigger_value", "field",
+            name="uq_auto_rule_scope",
+        ),
+    )
+
+
 class Notification(Base):
     """站内通知 — 经理收到撤回等事件时的提醒。"""
     __tablename__ = "notifications"
@@ -1541,6 +1601,144 @@ async def find_attendee_appearances(
         q = q.where(Submission.date <= end_date)
     q = q.order_by(Submission.date.desc())
     return list((await db.execute(q)).all())
+# ── CRUD — auto_rules ────────────────────────────────────────────
+
+async def list_auto_rules(
+    db: AsyncSession,
+    *,
+    employee_id: Optional[str] = None,
+    status: Optional[str] = None,
+    statuses: Optional[list[str]] = None,
+) -> list:
+    """List auto-rules. employee_id None means: include org-wide rules only."""
+    q = select(AutoRule)
+    if employee_id is not None:
+        # Personal rules for this employee (org-wide rules are intentionally
+        # excluded so the personal page stays focused on the user's own data).
+        q = q.where(AutoRule.employee_id == employee_id)
+    if status:
+        q = q.where(AutoRule.status == status)
+    if statuses:
+        q = q.where(AutoRule.status.in_(statuses))
+    q = q.order_by(AutoRule.created_at.desc())
+    rows = (await db.execute(q)).scalars().all()
+    return list(rows)
+
+
+async def list_auto_rules_all(db: AsyncSession) -> list:
+    """Admin view — all rules across all employees."""
+    rows = (await db.execute(
+        select(AutoRule).order_by(AutoRule.created_at.desc())
+    )).scalars().all()
+    return list(rows)
+
+
+async def get_auto_rule(db: AsyncSession, rule_id: str):
+    return (await db.execute(
+        select(AutoRule).where(AutoRule.id == rule_id)
+    )).scalar_one_or_none()
+
+
+async def find_auto_rule_by_scope(
+    db: AsyncSession,
+    *,
+    employee_id: Optional[str],
+    trigger_type: str,
+    trigger_value: str,
+    field: str,
+):
+    q = select(AutoRule).where(
+        AutoRule.trigger_type == trigger_type,
+        AutoRule.trigger_value == trigger_value,
+        AutoRule.field == field,
+    )
+    if employee_id is None:
+        q = q.where(AutoRule.employee_id.is_(None))
+    else:
+        q = q.where(AutoRule.employee_id == employee_id)
+    return (await db.execute(q)).scalar_one_or_none()
+
+
+async def upsert_auto_rule(
+    db: AsyncSession,
+    *,
+    employee_id: Optional[str],
+    trigger_type: str,
+    trigger_value: str,
+    field: str,
+    value: str,
+    confidence: float,
+    evidence_count: int,
+    sample_ids: Optional[list[str]] = None,
+) -> "AutoRule":
+    """Create-or-update a suggestion. Refreshes evidence/confidence/value if
+    the same scope already exists in 'suggested' state. Active or dismissed
+    rules are not overwritten — the user already decided.
+    """
+    existing = await find_auto_rule_by_scope(
+        db,
+        employee_id=employee_id,
+        trigger_type=trigger_type,
+        trigger_value=trigger_value,
+        field=field,
+    )
+    if existing and existing.status in ("active", "dismissed"):
+        return existing
+    if existing and existing.status == "suggested":
+        existing.value = value
+        existing.confidence = confidence
+        existing.evidence_count = evidence_count
+        existing.sample_ids = sample_ids or []
+        existing.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(existing)
+        return existing
+    rule = AutoRule(
+        employee_id=employee_id,
+        trigger_type=trigger_type,
+        trigger_value=trigger_value,
+        field=field,
+        value=value,
+        confidence=confidence,
+        evidence_count=evidence_count,
+        sample_ids=sample_ids or [],
+        status="suggested",
+    )
+    db.add(rule)
+    await db.commit()
+    await db.refresh(rule)
+    return rule
+
+
+async def decide_auto_rule(
+    db: AsyncSession,
+    rule_id: str,
+    *,
+    new_status: str,
+    decided_by: str,
+):
+    """Move a suggested rule to active or dismissed. Idempotent."""
+    rule = await get_auto_rule(db, rule_id)
+    if rule is None:
+        return None
+    if new_status not in ("active", "dismissed"):
+        raise ValueError(f"invalid status {new_status}")
+    rule.status = new_status
+    rule.decided_at = datetime.now(timezone.utc)
+    rule.decided_by = decided_by
+    rule.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(rule)
+    return rule
+
+
+async def increment_rule_applied(db: AsyncSession, rule_id: str) -> None:
+    rule = await get_auto_rule(db, rule_id)
+    if rule is None:
+        return
+    rule.applied_count = (rule.applied_count or 0) + 1
+    rule.last_applied_at = datetime.now(timezone.utc)
+    await db.commit()
 
 
 # ── Demo 数据种子 ─────────────────────────────────────────────────
