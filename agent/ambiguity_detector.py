@@ -31,13 +31,15 @@ from rules.policy_engine import PolicyEngine
 
 logger = logging.getLogger(__name__)
 
-# 泛化词列表——描述中出现这些词视为模糊
-_VAGUE_WORDS: list[str] = [
+# Fallback constants — used only when the shared config loader fails or
+# returns empty values. The dashboard-editable source of truth lives in
+# backend/tests/eval_config.json (see backend.services.config_loader).
+
+_FALLBACK_VAGUE_WORDS: list[str] = [
     "相关费用", "其他", "杂项", "若干", "一批", "等等",
     "费用", "相关", "补贴", "报销",
 ]
 
-# 硬编码默认权重（兜底）
 _FALLBACK_WEIGHTS = {
     "description_vague": 0.25,
     "amount_boundary":   0.20,
@@ -47,6 +49,17 @@ _FALLBACK_WEIGHTS = {
 }
 
 _FALLBACK_LLM_TRIGGER_THRESHOLD = 50
+
+# Score boundaries: < AUTO → auto_pass, <= REVIEW → human_review,
+# > REVIEW → suggest_reject. Defaults match the historical hardcoded values.
+_FALLBACK_TIER_AUTO_PASS_MAX = 30
+_FALLBACK_TIER_HUMAN_REVIEW_MAX = 70
+
+_FALLBACK_DESC_SHORT_THRESHOLD_CHARS = 10
+_FALLBACK_DESC_SHORT_SCORE = 50.0
+
+_FALLBACK_BOUNDARY_LOWER_PCT = 0.90
+_FALLBACK_BOUNDARY_UPPER_PCT = 1.10
 
 # Fallback template — used only when eval_prompts.json has no ambiguity_llm entry.
 # The dashboard-editable version lives in backend/tests/eval_prompts.json under
@@ -97,11 +110,61 @@ def _load_trigger_threshold() -> int:
         return _FALLBACK_LLM_TRIGGER_THRESHOLD
 
 
+def _load_tier_thresholds() -> tuple[int, int]:
+    try:
+        from backend.services.config_loader import load_ambiguity_tier_thresholds
+        t = load_ambiguity_tier_thresholds()
+        return (
+            int(t.get("auto_pass_max", _FALLBACK_TIER_AUTO_PASS_MAX)),
+            int(t.get("human_review_max", _FALLBACK_TIER_HUMAN_REVIEW_MAX)),
+        )
+    except Exception:
+        return _FALLBACK_TIER_AUTO_PASS_MAX, _FALLBACK_TIER_HUMAN_REVIEW_MAX
+
+
+def _load_vague_words() -> list[str]:
+    try:
+        from backend.services.config_loader import load_ambiguity_vague_words
+        words = load_ambiguity_vague_words()
+        if words:
+            return words
+    except Exception:
+        pass
+    return list(_FALLBACK_VAGUE_WORDS)
+
+
+def _load_description_short() -> tuple[int, float]:
+    try:
+        from backend.services.config_loader import load_ambiguity_description_short
+        return load_ambiguity_description_short()
+    except Exception:
+        return (
+            _FALLBACK_DESC_SHORT_THRESHOLD_CHARS,
+            _FALLBACK_DESC_SHORT_SCORE,
+        )
+
+
+def _load_boundary_band() -> tuple[float, float]:
+    try:
+        from backend.services.config_loader import load_ambiguity_boundary_band
+        return load_ambiguity_boundary_band()
+    except Exception:
+        return (_FALLBACK_BOUNDARY_LOWER_PCT, _FALLBACK_BOUNDARY_UPPER_PCT)
+
+
 # 因素权重 — loaded from shared config
 _WEIGHTS = _load_weights()
 
 # LLM 触发阈值 — loaded from shared config
 _LLM_TRIGGER_THRESHOLD = _load_trigger_threshold()
+
+# Per-tier risk score boundaries (auto_pass / human_review / suggest_reject)
+_TIER_AUTO_PASS_MAX, _TIER_HUMAN_REVIEW_MAX = _load_tier_thresholds()
+
+# Words / lengths / bands previously hardcoded in the scoring fns
+_VAGUE_WORDS: list[str] = _load_vague_words()
+_DESC_SHORT_THRESHOLD, _DESC_SHORT_SCORE = _load_description_short()
+_BOUNDARY_LOWER_PCT, _BOUNDARY_UPPER_PCT = _load_boundary_band()
 
 
 class AmbiguityDetector:
@@ -143,7 +206,7 @@ class AmbiguityDetector:
         factors["description_vague"] = score_desc
         if score_desc > 0:
             triggered.append("description_vague")
-            if len(line_item.description) < 10:
+            if len(line_item.description) < _DESC_SHORT_THRESHOLD:
                 explanations.append(f"描述过短({len(line_item.description)}字)")
             else:
                 explanations.append("描述含泛化词")
@@ -188,9 +251,9 @@ class AmbiguityDetector:
         total_score = round(min(100.0, max(0.0, total_score)), 1)
 
         # ---- 建议 ----
-        if total_score < 30:
+        if total_score < _TIER_AUTO_PASS_MAX:
             recommendation = "auto_pass"
-        elif total_score <= 70:
+        elif total_score <= _TIER_HUMAN_REVIEW_MAX:
             recommendation = "human_review"
         else:
             recommendation = "suggest_reject"
@@ -517,7 +580,9 @@ class AmbiguityDetector:
     def _score_description(self, description: str) -> float:
         """描述模糊度评分。
 
-        <10字 → 50分，含泛化词 → 100分，清晰 → 0分。
+        含泛化词 → 100分，过短（默认 <10字）→ short_score（默认 50），清晰 → 0分。
+        Threshold and word list are loaded from eval_config.json so the
+        eval dashboard can tune sensitivity per client.
         """
         if not description or not description.strip():
             return 100.0
@@ -526,15 +591,16 @@ class AmbiguityDetector:
             if word in description:
                 return 100.0
 
-        if len(description.strip()) < 10:
-            return 50.0
+        if len(description.strip()) < _DESC_SHORT_THRESHOLD:
+            return _DESC_SHORT_SCORE
 
         return 0.0
 
     def _score_amount_boundary(self, item: LineItem, employee: Employee) -> float:
         """金额边界评分。
 
-        金额在限额 90%-110% 区间 → 100分，否则 → 0分。
+        金额落在限额的 [lower_pct, upper_pct] 区间（默认 90%-110%）→ 100分。
+        Band loaded from eval_config.json (tunable per client).
         """
         subtype_cfg = self._engine.get_subtype_config(item.expense_type)
         limit_key = subtype_cfg.get("limit_key")
@@ -545,8 +611,8 @@ class AmbiguityDetector:
         if limit is None:
             return 0.0
 
-        lower = limit * 0.90
-        upper = limit * 1.10
+        lower = limit * _BOUNDARY_LOWER_PCT
+        upper = limit * _BOUNDARY_UPPER_PCT
         if lower <= item.amount <= upper:
             return 100.0
         return 0.0

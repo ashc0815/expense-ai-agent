@@ -30,6 +30,24 @@
     "time_anomaly": 0.15,
     "city_mismatch": 0.15
   },
+  "ambiguity_thresholds": {
+    "auto_pass_max": 30,
+    "human_review_max": 70
+  },
+  "ambiguity_factors": {
+    "description": {
+      "vague_words": [
+        "相关费用", "其他", "杂项", "若干", "一批", "等等",
+        "费用", "相关", "补贴", "报销"
+      ],
+      "short_threshold_chars": 10,
+      "short_score": 50
+    },
+    "amount_boundary": {
+      "lower_pct": 0.90,
+      "upper_pct": 1.10
+    }
+  },
   "ambiguity_llm_trigger_threshold": 50,
   "fraud_llm_trigger_threshold": 50,
   "parsing_version": "v1",
