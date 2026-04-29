@@ -92,7 +92,9 @@ ExpenseFlow 模拟了一套完整的企业报销系统：员工上传发票 -> A
 
 **Shield 机制：** 当 Skill-03 的模糊评分触发人工复核（30-70 分）或建议拒绝（>70 分），管道停止，标记 `PENDING_REVIEW`，等待人工介入。
 
-**配置驱动：** 跳过审批只需 `workflow.yaml: approval.enabled: false`，改费用限额只需改 `policy.yaml` 的数字 -- 零代码适配不同客户。
+**配置驱动（在固定 schema 内）：** 跳过审批只需 `workflow.yaml: approval.enabled: false`，改费用限额只需改 `policy.yaml`，调 AmbiguityDetector 灵敏度只需改 `eval_config.json` —— 全部零代码。
+
+**当前范围：单实体（single-entity）。** 多法人实体的 GL 科目、VAT、审批链分层是架构级扩展，已写入 [`docs/multi-entity-design.md`](docs/multi-entity-design.md)。Schema 级定制（每个费用类型自定义字段、每实体覆盖规则）在 roadmap 上但尚未实装 —— 设计文档里把 4 层解耦讲清楚了，等真有客户需要时按图施工。
 
 ### AmbiguityDetector -- 五维模糊评分模型
 
