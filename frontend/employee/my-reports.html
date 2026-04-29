@@ -77,6 +77,67 @@
       padding: .5rem 1rem; border-radius: 8px; font-weight: 600;
       cursor: pointer; font-size: .85rem;
     }
+
+    /* Auto-rules suggestion panel — #5 user behavior learning */
+    .ar-panel {
+      background: linear-gradient(135deg, #f0f9ff 0%, #faf5ff 100%);
+      border: 1px solid #c7d2fe; border-radius: 12px;
+      padding: 1rem 1.2rem; margin-bottom: 1.2rem;
+    }
+    .ar-panel-head {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: .4rem;
+    }
+    .ar-panel-title { font-weight: 700; color: #4338ca; font-size: .95rem; }
+    .ar-panel-hint  { color: #475569; font-size: .8rem; margin-bottom: .8rem; }
+    .ar-refresh {
+      background: white; color: #4338ca; border: 1px solid #c7d2fe;
+      padding: .35rem .7rem; border-radius: 6px; font-size: .78rem;
+      font-weight: 600; cursor: pointer;
+    }
+    .ar-refresh:hover { background: #eef2ff; }
+    .ar-card {
+      background: white; border: 1px solid #e2e8f0;
+      border-left: 3px solid #6366f1;
+      border-radius: 8px; padding: .7rem .9rem; margin-bottom: .55rem;
+      display: flex; justify-content: space-between; align-items: center;
+      gap: .8rem;
+    }
+    .ar-card.active { border-left-color: #16a34a; background: #f0fdf4; }
+    .ar-card-text { flex: 1; }
+    .ar-card-rule { font-size: .9rem; color: #0f172a; }
+    .ar-card-rule code {
+      background: rgba(99,102,241,.1); padding: 1px 5px; border-radius: 3px;
+      font-family: ui-monospace, monospace; font-size: .85em;
+    }
+    .ar-card-meta { font-size: .72rem; color: #64748b; margin-top: .2rem; }
+    .ar-conf-badge {
+      display: inline-block; padding: 1px 6px; border-radius: 999px;
+      background: #ede9fe; color: #5b21b6; font-weight: 600;
+      margin-right: .4rem;
+    }
+    .ar-active-badge {
+      display: inline-block; padding: 1px 6px; border-radius: 4px;
+      background: #dcfce7; color: #166534; font-weight: 600;
+      font-size: .72rem;
+    }
+    .ar-card-actions { display: flex; gap: .35rem; }
+    .ar-btn-accept {
+      background: #4338ca; color: white; border: none;
+      padding: .35rem .8rem; border-radius: 6px; font-weight: 600;
+      font-size: .78rem; cursor: pointer;
+    }
+    .ar-btn-dismiss {
+      background: white; color: #64748b; border: 1px solid #cbd5e1;
+      padding: .35rem .8rem; border-radius: 6px; font-weight: 600;
+      font-size: .78rem; cursor: pointer;
+    }
+    .ar-empty { color: #64748b; font-size: .82rem; padding: .5rem 0; }
+    .ar-toggle-active {
+      background: none; border: none; color: #4338ca;
+      font-size: .78rem; cursor: pointer; padding: .3rem 0;
+      text-align: left;
+    }
   </style>
 </head>
 <body>
@@ -93,6 +154,8 @@
         <a href="/employee/quick.html" class="btn-primary" style="text-decoration:none" data-i18n="myreports.quick-link">快速添加发票 →</a>
       </div>
     </div>
+
+    <div id="auto-rules-panel"></div>
 
     <div id="reports-body">
       <div style="text-align:center; padding:2rem; color:#94a3b8" data-i18n="myreports.loading">加载中…</div>
@@ -119,6 +182,136 @@ async function load() {
   }
   const { items } = await r.json();
   render(items);
+  // Load auto-rules in parallel — failure is silent (panel stays hidden).
+  loadAutoRules();
+}
+
+// ── Auto-rules (#5 user behavior learning) ────────────────────────
+//
+// The miner runs server-side; this just lists, mines on demand, and
+// posts accept/dismiss. The panel hides itself when there's nothing to
+// show AND no active rules to summarize, so we don't pollute the page
+// for new users.
+
+let _arShowActive = false;
+
+function fieldLabel(f) {
+  return t('autorules.field.' + f) || f;
+}
+
+function ruleSentence(r) {
+  return t('autorules.rule-text')
+    .replace('{merchant}', `<code>${escapeHtml(r.trigger_value)}</code>`)
+    .replace('{field}', fieldLabel(r.field))
+    .replace('{value}', `<code>${escapeHtml(r.value)}</code>`);
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function loadAutoRules() {
+  const panel = document.getElementById("auto-rules-panel");
+  if (!panel) return;
+  let body;
+  try {
+    const r = await fetch("/api/auto-rules", { headers: await authH() });
+    if (!r.ok) { panel.innerHTML = ""; return; }
+    body = await r.json();
+  } catch { panel.innerHTML = ""; return; }
+  renderAutoRules(body);
+}
+
+async function refreshAutoRules() {
+  const panel = document.getElementById("auto-rules-panel");
+  panel.innerHTML = `<div class="ar-panel"><div class="ar-empty">${t('autorules.loading')}</div></div>`;
+  try {
+    const r = await fetch("/api/auto-rules/mine", {
+      method: "POST", headers: await authH(),
+    });
+    if (!r.ok) { await loadAutoRules(); return; }
+  } catch {}
+  await loadAutoRules();
+}
+
+function renderAutoRules(body) {
+  const panel = document.getElementById("auto-rules-panel");
+  const items = body.items || [];
+  const suggested = items.filter(r => r.status === "suggested");
+  const active = items.filter(r => r.status === "active");
+
+  // Hide the panel entirely if there's nothing to show.
+  if (suggested.length === 0 && active.length === 0) {
+    panel.innerHTML = "";
+    return;
+  }
+
+  const suggestionCards = suggested.map(r => `
+    <div class="ar-card">
+      <div class="ar-card-text">
+        <div class="ar-card-rule">${ruleSentence(r)}</div>
+        <div class="ar-card-meta">
+          <span class="ar-conf-badge">${t('autorules.confidence')} ${Math.round((r.confidence || 0) * 100)}%</span>
+          ${t('autorules.evidence-count').replace('{n}', r.evidence_count || 0)}
+        </div>
+      </div>
+      <div class="ar-card-actions">
+        <button class="ar-btn-dismiss" onclick="dismissRule('${r.id}')">${t('autorules.btn-dismiss')}</button>
+        <button class="ar-btn-accept" onclick="acceptRule('${r.id}')">${t('autorules.btn-accept')}</button>
+      </div>
+    </div>`).join("");
+
+  const activeCards = (_arShowActive ? active : []).map(r => `
+    <div class="ar-card active">
+      <div class="ar-card-text">
+        <div class="ar-card-rule">${ruleSentence(r)}</div>
+        <div class="ar-card-meta">
+          <span class="ar-active-badge">${t('autorules.active-label')}</span>
+          ${t('autorules.applied-count').replace('{n}', r.applied_count || 0)}
+        </div>
+      </div>
+    </div>`).join("");
+
+  const toggleLabel = _arShowActive
+    ? t('autorules.hide-active')
+    : t('autorules.show-active').replace('{n}', active.length);
+
+  panel.innerHTML = `
+    <div class="ar-panel">
+      <div class="ar-panel-head">
+        <div class="ar-panel-title">${t('autorules.section-title')}</div>
+        <button class="ar-refresh" onclick="refreshAutoRules()">${t('autorules.refresh-btn')}</button>
+      </div>
+      ${suggested.length ? `<div class="ar-panel-hint">${t('autorules.section-hint')}</div>` : ""}
+      ${suggestionCards}
+      ${suggested.length === 0 ? `<div class="ar-empty">${t('autorules.empty')}</div>` : ""}
+      ${active.length ? `
+        <button class="ar-toggle-active" onclick="toggleActive()">${toggleLabel}</button>
+        ${activeCards}
+      ` : ""}
+    </div>`;
+}
+
+function toggleActive() {
+  _arShowActive = !_arShowActive;
+  loadAutoRules();
+}
+
+async function acceptRule(id) {
+  const r = await fetch(`/api/auto-rules/${id}/accept`, {
+    method: "POST", headers: await authH(),
+  });
+  if (!r.ok) { alert(t('autorules.accept-fail') + r.status); return; }
+  await loadAutoRules();
+}
+
+async function dismissRule(id) {
+  const r = await fetch(`/api/auto-rules/${id}/dismiss`, {
+    method: "POST", headers: await authH(),
+  });
+  if (!r.ok) { alert(t('autorules.dismiss-fail') + r.status); return; }
+  await loadAutoRules();
 }
 
 function render(items) {

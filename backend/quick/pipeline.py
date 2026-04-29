@@ -12,8 +12,9 @@ from backend.api.routes.chat import (
     tool_check_duplicate_invoice,
     tool_get_budget_summary,
 )
-from backend.db.store import get_draft, update_draft_field
+from backend.db.store import create_audit_log, get_draft, update_draft_field
 from backend.quick.layer_decision import decide_layer
+from backend.services.pattern_miner import apply_rules_to_draft
 
 
 async def _set(db: AsyncSession, draft_id: str, field: str, value, source="pipeline"):
@@ -76,6 +77,25 @@ async def run_quick_pipeline(
         "category": classify.get("category"),
         "confidence": classify.get("confidence"),
     }
+
+    # ── 2.5 Auto-rule application ─────────────────────────────
+    # Personal rules the user already accepted (#5 user-behavior learning).
+    # These outrank the classifier — the user explicitly told us "when
+    # merchant=X, set field=Y" — so they overwrite by default.
+    try:
+        applied = await apply_rules_to_draft(
+            db, employee_id=ctx.user_id, draft_id=draft_id,
+            merchant=ocr.get("merchant"),
+        )
+    except Exception:  # noqa: BLE001 — pipeline must keep running
+        applied = []
+    if applied:
+        await create_audit_log(
+            db, actor_id=ctx.user_id, action="auto_rules_applied",
+            resource_type="draft", resource_id=draft_id,
+            detail={"merchant": ocr.get("merchant"), "rules": applied},
+        )
+        yield {"type": "auto_rules_applied", "rules": applied}
 
     # ── 3. Dedupe ──────────────────────────────────────────────
     if ocr.get("invoice_number"):

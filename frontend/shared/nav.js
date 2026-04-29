@@ -16,6 +16,7 @@
     { key: "nav.audit-log",  href: "/admin/audit-log.html",     roles: ["finance_admin"] },
     { key: "nav.dashboard",  href: "/admin/dashboard.html",     roles: ["finance_admin"] },
     { key: "nav.users",      href: "/admin/users.html",         roles: ["finance_admin"] },
+    { key: "nav.auto-rules", href: "/admin/auto-rules.html",    roles: ["finance_admin"] },
   ];
 
   const ROLE_KEYS = {
