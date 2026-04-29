@@ -127,10 +127,10 @@ One unified drawer for every employee page, plus a dedicated submit-chat on the 
 
 ## Design Decisions
 
-### 0. Design Principles (aligned with Airwallex Spend AI / Concur Joule / Expensify Concierge)
+### 0. Design Principles (aligned with Airwallex Spend AI / Concur Joule / Ramp Copilot)
 
 ExpenseFlow follows three principles that mirror modern AI-native expense
-platforms ([Airwallex Spend AI 2026](https://www.airwallex.com/blog/meet-your-finance-ai-agents-a-new-way-to-manage-bills-and-expenses), Concur Joule, Brex AI, Ramp Copilot):
+platforms ([Airwallex Spend AI 2026](https://www.airwallex.com/blog/meet-your-finance-ai-agents-a-new-way-to-manage-bills-and-expenses), Concur Joule, Ramp Copilot):
 
 1. **Automation-first** — repetitive, rules-based work (receipt OCR, policy
    checks, voucher generation, payment routing) should never consume human
