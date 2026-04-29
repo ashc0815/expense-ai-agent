@@ -10,10 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# App code
-COPY backend/ ./backend/
-COPY concurshield-agent/ ./concurshield-agent/
-COPY frontend/ ./frontend/
+# App code — backend FastAPI + the agent/skills/rules packages it imports
+# (these used to live in a sibling `concurshield-agent/` repo before being
+# vendored into the project root)
+COPY backend/    ./backend/
+COPY agent/      ./agent/
+COPY skills/     ./skills/
+COPY rules/      ./rules/
+COPY models/     ./models/
+COPY config/     ./config/
+COPY mock_data/  ./mock_data/
+COPY frontend/   ./frontend/
 
 # Create upload dir
 RUN mkdir -p /app/uploads
