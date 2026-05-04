@@ -1,0 +1,463 @@
+# Agent Compliance Reasoner — human-labeled evaluation dataset
+#
+# Purpose: Ground truth for the cross-record compliance reasoner shipped in
+# agent/compliance_reasoner.py. Without these labels, dashboard metrics for
+# the reasoner are uncalibrated noise (Hamel: "every accuracy number reported
+# without measuring agreement against humans is uncalibrated noise").
+#
+# Three finding kinds the reasoner emits:
+#   agent.travel_during_leave           — transport/accommodation on leave day
+#   agent.claim_vs_allowance            — category covered by active allowance
+#   agent.cross_person_meal_double_dip  — meal expensed AND on someone's
+#                                          attendee list the same day
+#
+# A case has FOUR sections:
+#
+#   id            — stable identifier (`agc_NNN_short_hint`)
+#   description   — one-line label of what this case probes
+#   context       — DB rows the reasoner needs to query (leave / allowances /
+#                   attendees on OTHER submissions). The test seeds these
+#                   into the eval DB before calling the reasoner.
+#   submission    — the submission the reasoner is reasoning ABOUT
+#   human_label   — { expected_findings: [{kind, severity}, ...] }
+#                   Empty list = reasoner should NOT fire (true negative).
+#                   Order doesn't matter; the test sorts by kind before
+#                   comparing.
+#   labeler_note  — WHY this label. Future-you will thank you.
+#
+# Status: 12 fully-labeled cases + 18 PLACEHOLDERs. Replace placeholders
+# with real cases before treating the κ snapshot as meaningful. Until then,
+# the test SKIPs (matches the Stage-1 placeholder convention).
+
+# ─────────────────────────────────────────────────────────────────────
+# Section 1: agent.travel_during_leave
+# ─────────────────────────────────────────────────────────────────────
+
+- id: agc_001_travel_during_approved_vacation
+  description: "Transport claim falls inside an approved vacation window"
+  context:
+    leaves:
+      - start_date: 2026-04-15
+        end_date: 2026-04-17
+        kind: vacation
+        status: approved
+  submission:
+    date: 2026-04-16
+    category: transport
+    amount: 450
+    merchant: Didi
+  human_label:
+    expected_findings:
+      - kind: agent.travel_during_leave
+        severity: error
+  labeler_note: |
+    Employee is clearly on approved vacation 4-15..4-17. A transport
+    expense on 4-16 needs explanation, even if legitimate (e.g. cut
+    vacation short for emergency). Reasoner MUST flag for human review.
+
+- id: agc_002_travel_just_after_leave_no_fire
+  description: "Transport claim one day after leave ended — no flag"
+  context:
+    leaves:
+      - start_date: 2026-04-15
+        end_date: 2026-04-17
+        kind: vacation
+        status: approved
+  submission:
+    date: 2026-04-18
+    category: transport
+    amount: 320
+    merchant: Didi
+  human_label:
+    expected_findings: []
+  labeler_note: |
+    Date is 4-18, leave ended 4-17. Reasoner should NOT fire. Tests
+    that the date-overlap check doesn't have an off-by-one bug.
+
+- id: agc_003_pending_leave_does_not_block
+  description: "Pending (not yet approved) leave should NOT trigger the rule"
+  context:
+    leaves:
+      - start_date: 2026-04-15
+        end_date: 2026-04-17
+        kind: personal
+        status: pending
+  submission:
+    date: 2026-04-16
+    category: transport
+    amount: 280
+    merchant: Didi
+  human_label:
+    expected_findings: []
+  labeler_note: |
+    Pending leave is not a confirmed vacation. The employee may have
+    cancelled the request and worked instead. Only APPROVED leave is
+    a strong enough signal to flag a transport claim.
+
+- id: agc_004_accommodation_during_leave_fires
+  description: "Hotel claim during leave — accommodation, not transport, also fires"
+  context:
+    leaves:
+      - start_date: 2026-05-10
+        end_date: 2026-05-12
+        kind: vacation
+        status: approved
+  submission:
+    date: 2026-05-11
+    category: accommodation
+    amount: 1200
+    merchant: Marriott Suzhou
+  human_label:
+    expected_findings:
+      - kind: agent.travel_during_leave
+        severity: error
+  labeler_note: |
+    The rule applies to BOTH transport and accommodation (TRAVEL_CATEGORIES
+    in compliance_reasoner.py). A hotel during approved leave is just as
+    suspicious as a flight during approved leave.
+
+- id: agc_005_meal_during_leave_no_fire
+  description: "Meal claim during leave — does NOT fire (only transport/accom does)"
+  context:
+    leaves:
+      - start_date: 2026-04-15
+        end_date: 2026-04-17
+        kind: vacation
+        status: approved
+  submission:
+    date: 2026-04-16
+    category: meal
+    amount: 80
+    merchant: Starbucks
+  human_label:
+    expected_findings: []
+  labeler_note: |
+    Buying coffee during vacation is not unusual — many employees use
+    a corp card for personal expenses they intend to settle later. The
+    rule is intentionally narrow: only travel-shaped categories flag.
+
+# ─────────────────────────────────────────────────────────────────────
+# Section 2: agent.claim_vs_allowance
+# ─────────────────────────────────────────────────────────────────────
+
+- id: agc_006_car_allowance_blocks_transport
+  description: "Employee with active car_allowance claims a taxi — fires"
+  context:
+    allowances:
+      - kind: car_allowance
+        monthly_amount: 2000
+        effective_from: 2026-01-01
+        effective_to: null
+  submission:
+    date: 2026-04-20
+    category: transport
+    amount: 95
+    merchant: Didi
+  human_label:
+    expected_findings:
+      - kind: agent.claim_vs_allowance
+        severity: error
+  labeler_note: |
+    car_allowance is a recurring stipend that covers transport. Claiming
+    a taxi on top of it is double-dipping. The reasoner correctly fires
+    even for small amounts because the principle (one or the other)
+    matters more than the size.
+
+- id: agc_007_meal_per_diem_blocks_meal
+  description: "Employee with meal_per_diem claims a meal — fires"
+  context:
+    allowances:
+      - kind: meal_per_diem
+        monthly_amount: 1500
+        effective_from: 2026-01-01
+        effective_to: null
+  submission:
+    date: 2026-04-20
+    category: meal
+    amount: 120
+    merchant: Haidilao
+  human_label:
+    expected_findings:
+      - kind: agent.claim_vs_allowance
+        severity: error
+  labeler_note: |
+    Mirror of agc_006 for the meal allowance kind. Validates the
+    ALLOWANCE_BLOCKS_CATEGORY mapping covers more than just transport.
+
+- id: agc_008_unrelated_category_does_not_fire
+  description: "Active car_allowance, but the claim is a meal — no fire"
+  context:
+    allowances:
+      - kind: car_allowance
+        monthly_amount: 2000
+        effective_from: 2026-01-01
+        effective_to: null
+  submission:
+    date: 2026-04-20
+    category: meal
+    amount: 80
+    merchant: Subway
+  human_label:
+    expected_findings: []
+  labeler_note: |
+    car_allowance only blocks transport. A meal expense is unrelated and
+    should pass. Tests that the allowance→category mapping is precise,
+    not coarse.
+
+- id: agc_009_expired_allowance_does_not_fire
+  description: "Employee had car_allowance last year but it ended; current claim ok"
+  context:
+    allowances:
+      - kind: car_allowance
+        monthly_amount: 2000
+        effective_from: 2025-01-01
+        effective_to: 2025-12-31
+  submission:
+    date: 2026-04-20
+    category: transport
+    amount: 95
+    merchant: Didi
+  human_label:
+    expected_findings: []
+  labeler_note: |
+    Allowance expired 2025-12-31. The 2026-04-20 claim is on a date with
+    NO active allowance. Reasoner must respect effective_from/effective_to
+    bounds.
+
+# ─────────────────────────────────────────────────────────────────────
+# Section 3: agent.cross_person_meal_double_dip
+# ─────────────────────────────────────────────────────────────────────
+
+- id: agc_010_appears_on_others_meal_attendee_list
+  description: "E-test-A appears as attendee on E-test-B's seeded meal — fires"
+  context:
+    other_submission:
+      id: other_sub_010
+      employee_id: emp_test_010_other
+      date: 2026-04-03
+      category: entertainment
+      amount: 3200
+      merchant: Acme Group Dinner
+    attendees:
+      - submission_id: other_sub_010
+        name: Test User Self
+        role: colleague
+        # employee_id wired to the case's employee at test time
+  submission:
+    date: 2026-04-03
+    category: meal
+    amount: 450
+    merchant: Side restaurant
+  human_label:
+    expected_findings:
+      - kind: agent.cross_person_meal_double_dip
+        severity: error
+  labeler_note: |
+    The submitter expensed their own meal on 4-3 AND appears as
+    "colleague" on E-test-B's larger entertainment claim the same day.
+    Either (a) two different meals — needs explanation, or (b) one
+    meal billed twice. Reasoner correctly surfaces the collision.
+
+- id: agc_011_no_attendee_appearance_no_fire
+  description: "Meal claim, no appearance on anyone's attendee list — no fire"
+  context: {}
+  submission:
+    date: 2026-04-03
+    category: meal
+    amount: 180
+    merchant: Solo lunch spot
+  human_label:
+    expected_findings: []
+  labeler_note: |
+    Negative case — without an attendee record on someone else's
+    submission, the reasoner has no signal to fire on. Tests that the
+    rule isn't accidentally firing on every meal claim.
+
+- id: agc_012_transport_with_attendee_appearance_no_fire
+  description: "Has attendee appearance on a meal, but submitter's claim is transport"
+  context:
+    other_submission:
+      id: other_sub_012
+      employee_id: emp_test_012_other
+      date: 2026-04-03
+      category: entertainment
+      amount: 2000
+      merchant: Group dinner
+    attendees:
+      - submission_id: other_sub_012
+        name: Test User Self
+        role: colleague
+  submission:
+    date: 2026-04-03
+    category: transport
+    amount: 65
+    merchant: Didi
+  human_label:
+    expected_findings: []
+  labeler_note: |
+    The cross-person meal rule is meal/entertainment-scoped. A
+    transport expense on the same date as an attendee appearance
+    is normal (attended a dinner, took a taxi home). MUST NOT fire.
+
+# ─────────────────────────────────────────────────────────────────────
+# PLACEHOLDERS — replace with real cases before this dataset is meaningful
+# ─────────────────────────────────────────────────────────────────────
+# Pattern hints for the next 18 cases (target ≥30 total per Hamel saturation):
+#   - 2 more travel_during_leave: sick leave (also approved); leave on
+#     boundary day (claim on start_date itself, claim on end_date itself)
+#   - 2 more claim_vs_allowance: phone_allowance + telecom; allowance starting
+#     mid-month (effective_from = mid-month)
+#   - 2 more cross_person_meal: case where BOTH parties expensed the same
+#     dinner; case where attendee role is "client" (not employee — should
+#     NOT fire because client attendance doesn't double-bill)
+#   - 4 multi-finding cases: travel during leave AND on car_allowance;
+#     meal collision AND meal_per_diem; etc.
+#   - 4 boundary cases: leave +/- 1 day; allowance effective_from = exact
+#     submission date; submission_attendee with NULL employee_id (external
+#     guest)
+#   - 4 non-trigger cases: irrelevant components, irrelevant categories,
+#     missing data, employee with no leave/allowance/attendee records
+
+- id: agc_013_placeholder_sick_leave
+  description: "PLACEHOLDER — sick leave instead of vacation"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_014_placeholder_leave_boundary_start_day
+  description: "PLACEHOLDER — claim on the very first day of leave"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_015_placeholder_phone_allowance
+  description: "PLACEHOLDER — phone_allowance + telecom claim"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_016_placeholder_allowance_mid_month_start
+  description: "PLACEHOLDER — allowance effective_from is in the middle of the month"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_017_placeholder_external_attendee_no_fire
+  description: "PLACEHOLDER — attendee role=client should NOT fire"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_018_placeholder_both_parties_expensed_same_dinner
+  description: "PLACEHOLDER — A and B both submit a meal AND attended each other's"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_019_placeholder_multi_finding_travel_and_allowance
+  description: "PLACEHOLDER — transport during leave AND car_allowance active"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_020_placeholder_multi_finding_meal_collision_and_per_diem
+  description: "PLACEHOLDER — meal collision AND meal_per_diem active"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_021_placeholder_multi_finding_three_at_once
+  description: "PLACEHOLDER — all 3 rules fire on a single submission"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_022_placeholder_leave_just_before_claim
+  description: "PLACEHOLDER — claim 1 day after leave ended (boundary)"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_023_placeholder_allowance_starts_exact_submission_date
+  description: "PLACEHOLDER — effective_from == submission date"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_024_placeholder_external_attendee_null_employee_id
+  description: "PLACEHOLDER — attendee with employee_id=NULL (external guest)"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_025_placeholder_office_supplies_no_fire
+  description: "PLACEHOLDER — office supplies during leave + car_allowance, no fire expected"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_026_placeholder_no_records_at_all
+  description: "PLACEHOLDER — employee has zero leave/allowance/attendee data"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_027_placeholder_cancelled_leave
+  description: "PLACEHOLDER — leave with status='cancelled'"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_028_placeholder_parental_leave_long_window
+  description: "PLACEHOLDER — 12-week parental leave + travel claim mid-window"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_029_placeholder_meal_collision_different_employees
+  description: "PLACEHOLDER — appears on attendee list of employee in different cost center"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
+
+- id: agc_030_placeholder_taxi_on_business_travel_during_leave
+  description: "PLACEHOLDER — work-trip cancelled vacation, but taxi to airport on day 1"
+  context: {}
+  submission: {}
+  human_label:
+    expected_findings: []
+  labeler_note: "PLACEHOLDER"
