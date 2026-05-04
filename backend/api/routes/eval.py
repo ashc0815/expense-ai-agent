@@ -1,15 +1,22 @@
 """Eval Observatory API — browse eval runs, traces, and case results.
 
 Endpoints:
-  GET  /api/eval/runs              List eval runs (paginated)
-  GET  /api/eval/runs/{id}         Single run detail
-  POST /api/eval/runs              Record a new eval run
-  GET  /api/eval/traces            List LLM traces (filterable)
-  GET  /api/eval/traces/{id}       Single trace detail
-  GET  /api/eval/stats             Aggregate stats (pass rate trend, component breakdown)
-  GET  /api/eval/config            Read current eval config (6 factors)
-  PUT  /api/eval/config            Update eval config
-  GET  /api/eval/runs/{id1}/diff/{id2}  Compare metadata between two runs
+  GET   /api/eval/runs              List eval runs (paginated)
+  GET   /api/eval/runs/{id}         Single run detail
+  POST  /api/eval/runs              Record a new eval run
+  GET   /api/eval/traces            List LLM traces (filterable; supports
+                                    reviewed=true|false + failure_mode_tag)
+  GET   /api/eval/traces/{id}       Single trace detail
+  PATCH /api/eval/traces/{id}/review
+                                    Mark a trace as reviewed by a human
+                                    (Hamel "always be looking at data")
+  GET   /api/eval/saturation        Per-component review stats: total /
+                                    reviewed / unreviewed / failure-mode
+                                    breakdown. Hamel saturation guideline.
+  GET   /api/eval/stats             Aggregate stats (pass rate trend, component breakdown)
+  GET   /api/eval/config            Read current eval config (6 factors)
+  PUT   /api/eval/config            Update eval config
+  GET   /api/eval/runs/{id1}/diff/{id2}  Compare metadata between two runs
 """
 from __future__ import annotations
 
@@ -21,13 +28,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.db.store import EvalRun, LLMTrace, Submission, get_db, get_eval_db
+from backend.db.store import (
+    EvalRun, LLMTrace, Submission, get_db, get_eval_db,
+    mark_trace_reviewed, saturation_summary,
+)
 
 router = APIRouter()
+
+
+class TraceReviewBody(BaseModel):
+    """PATCH /traces/{id}/review payload.
+
+    failure_mode_tag semantics:
+      "" or None → reviewed and judged correct
+      non-empty   → reviewed and labeled with this failure-mode tag
+                    (e.g. "wrong_attribution", "style_only", "false_positive")
+    """
+    reviewed_by: str
+    failure_mode_tag: Optional[str] = None
+    notes: Optional[str] = None
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_config.json"
 _PROMPTS_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_prompts.json"
@@ -92,6 +116,8 @@ async def list_traces(
     component: Optional[str] = None,
     submission_id: Optional[str] = None,
     has_error: Optional[bool] = None,
+    reviewed: Optional[bool] = None,
+    failure_mode_tag: Optional[str] = None,
     sort: str = Query("created_at", pattern="^(created_at|latency_ms|component)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
@@ -115,6 +141,15 @@ async def list_traces(
         q = q.where(LLMTrace.error.isnot(None))
     elif has_error is False:
         q = q.where(LLMTrace.error.is_(None))
+    # Review-state filters (Hamel "always be looking at data" workflow)
+    if reviewed is True:
+        q = q.where(LLMTrace.reviewed_at.is_not(None))
+    elif reviewed is False:
+        q = q.where(LLMTrace.reviewed_at.is_(None))
+    if failure_mode_tag is not None:
+        # `?failure_mode_tag=` (empty) → reviewed-and-correct
+        # `?failure_mode_tag=wrong_attribution` → exact tag match
+        q = q.where(LLMTrace.failure_mode_tag == failure_mode_tag)
 
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
 
@@ -137,6 +172,43 @@ async def get_trace(trace_id: str, db: AsyncSession = Depends(get_eval_db)) -> d
     if not trace:
         return {"error": "not found"}
     return _trace_to_dict(trace, include_prompt=True)
+
+
+@router.patch("/traces/{trace_id}/review")
+async def review_trace(
+    trace_id: str,
+    body: TraceReviewBody,
+    db: AsyncSession = Depends(get_eval_db),
+) -> dict:
+    """Mark a trace as reviewed.
+
+    Hamel: every reviewed trace either confirms the system was correct
+    or names a specific failure mode. Without that, "we looked at it"
+    has no signal.
+    """
+    trace = await mark_trace_reviewed(
+        db, trace_id,
+        reviewed_by=body.reviewed_by,
+        failure_mode_tag=body.failure_mode_tag,
+        notes=body.notes,
+    )
+    if trace is None:
+        raise HTTPException(status_code=404, detail="trace not found")
+    return _trace_to_dict(trace)
+
+
+@router.get("/saturation")
+async def get_saturation(
+    component: str = Query(..., description="component name to summarize"),
+    db: AsyncSession = Depends(get_eval_db),
+) -> dict:
+    """Per-component review stats — Hamel saturation diagnostic.
+
+    Returns total / reviewed / unreviewed / correct counts plus a
+    {failure_mode_tag: count} breakdown. Saturation is reached when
+    scrolling N more reviewed traces surfaces no new tag values.
+    """
+    return await saturation_summary(db, component=component)
 
 
 # ── Stats ─────────────────────────────────────────────────────────────
@@ -540,6 +612,11 @@ def _trace_to_dict(t: LLMTrace, include_prompt: bool = False) -> dict:
         "error": t.error,
         "parsed_output": t.parsed_output,
         "created_at": t.created_at.isoformat() if t.created_at else None,
+        # Review state — Hamel "always be looking at data" workflow
+        "reviewed_at": t.reviewed_at.isoformat() if t.reviewed_at else None,
+        "reviewed_by": t.reviewed_by,
+        "failure_mode_tag": t.failure_mode_tag,
+        "review_notes": t.review_notes,
     }
     if include_prompt:
         d["prompt"] = t.prompt
