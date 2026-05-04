@@ -280,3 +280,28 @@ def test_saturation_endpoint_requires_component_param():
     """Saturation is per-component by definition; no component = 422."""
     r = client.get("/api/eval/saturation")
     assert r.status_code == 422
+
+
+# ── Judge-agreement endpoint (B3 dashboard backing) ─────────────────
+
+
+def test_judge_agreement_endpoint_unknown_component_returns_empty():
+    """The endpoint must not 404 for unmapped components — the dashboard
+    relies on the empty-flag convention to render a 'no snapshot yet'
+    placeholder."""
+    r = client.get("/api/eval/judge-agreement/totally_unknown_component")
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("empty") is True
+    assert "no judge-agreement snapshot" in body.get("message", "")
+
+
+def test_judge_agreement_endpoint_known_component_returns_snapshot_or_empty():
+    """For a configured component, the endpoint either returns the snapshot
+    JSON or {empty: true} when no test_judge_agreement.py run has happened
+    yet. Either is a valid (non-error) response."""
+    r = client.get("/api/eval/judge-agreement/ambiguity_detector")
+    assert r.status_code == 200
+    body = r.json()
+    # Either a snapshot (has 'component' key) or an empty placeholder
+    assert "component" in body or body.get("empty") is True

@@ -306,6 +306,9 @@
       <button class="sidebar-nav-item" onclick="switchTab('traces', this)">
         <span class="icon">&#9776;</span> LLM Traces
       </button>
+      <button class="sidebar-nav-item" onclick="switchTab('review', this)">
+        <span class="icon">&#9745;</span> Review Quality
+      </button>
     </div>
 
     <!-- Trace filters (only visible on traces tab) -->
@@ -448,6 +451,68 @@
       <div id="trace-detail-panel"></div>
     </div>
 
+    <!-- ═══ Review Quality Tab (Hamel "always be looking at data") ═══ -->
+    <!-- Surfaces three things the eval framework can answer once B1+B2 are
+         in place:
+           1. Judge agreement (κ) per component — read from the JSON snapshot
+              that test_judge_agreement.py writes.
+           2. Saturation snapshot per component — total / reviewed / by
+              failure-mode tag.
+           3. An inbox of unreviewed traces with a single-click PATCH form
+              to mark a trace and tag a failure mode.                   -->
+    <div id="tab-review" style="display:none">
+      <div class="eval-main-header">
+        <h1>Review Quality</h1>
+        <div class="subtitle">
+          Trace review inbox · LLM judge agreement (κ) · Saturation tracking.
+          Hamel: "always be looking at data."
+        </div>
+      </div>
+
+      <!-- Component picker — drives both saturation card + inbox -->
+      <div style="display:flex; align-items:center; gap:.8rem; margin-bottom:1rem;">
+        <label style="font-size:.85rem; color:var(--gray-700); font-weight:600;">Component:</label>
+        <select id="review-component" onchange="loadReviewTab()" style="padding:.4rem .7rem; font-size:.85rem;">
+          <option value="ambiguity_detector">ambiguity_detector</option>
+          <option value="fraud_llm_analyzer">fraud_llm_analyzer</option>
+          <option value="ocr">ocr</option>
+          <option value="chat_employee">chat_employee</option>
+          <option value="chat_employee_submit">chat_employee_submit</option>
+          <option value="chat_manager_explain">chat_manager_explain</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="loadReviewTab()">Refresh</button>
+      </div>
+
+      <!-- Row of two cards: Judge κ (B1 snapshot) + Saturation (B2 endpoint) -->
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem; margin-bottom:1.2rem;">
+        <div class="kpi-card" id="review-kappa-card">
+          <div style="font-size:.75rem; color:var(--gray-500); text-transform:uppercase; letter-spacing:.05em;">
+            Judge ↔ Human (κ)
+          </div>
+          <div id="review-kappa-body" style="margin-top:.5rem;">
+            <span class="empty-state">Loading…</span>
+          </div>
+        </div>
+        <div class="kpi-card" id="review-saturation-card">
+          <div style="font-size:.75rem; color:var(--gray-500); text-transform:uppercase; letter-spacing:.05em;">
+            Saturation
+          </div>
+          <div id="review-saturation-body" style="margin-top:.5rem;">
+            <span class="empty-state">Loading…</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Inbox: unreviewed traces -->
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:.5rem;">
+        <h3 style="margin:0; font-size:1rem;">Unreviewed traces (inbox)</h3>
+        <span id="review-inbox-count" style="font-size:.8rem; color:var(--gray-500);"></span>
+      </div>
+      <div id="review-inbox" class="eval-table" style="display:block; padding:0;">
+        <span class="empty-state">Loading…</span>
+      </div>
+    </div>
+
   </div><!-- /eval-main -->
 </div><!-- /eval-shell -->
 
@@ -512,7 +577,7 @@ const COMP_DEFS = {
 };
 
 /* ── Tab Switching ───────────────────────────── */
-const ALL_TABS = ["overview", "comp-fraud", "comp-ambiguity", "comp-ocr", "comp-chat", "compare", "traces"];
+const ALL_TABS = ["overview", "comp-fraud", "comp-ambiguity", "comp-ocr", "comp-chat", "compare", "traces", "review"];
 
 function switchTab(tab, btn) {
   document.querySelectorAll(".sidebar-nav-item").forEach(function(b) { b.classList.remove("active"); });
@@ -527,6 +592,7 @@ function switchTab(tab, btn) {
   if (tab === "overview") loadOverview();
   if (tab === "traces") loadTraces();
   if (tab === "compare") loadCompareSelectors();
+  if (tab === "review") loadReviewTab();
   if (tab.startsWith("comp-")) {
     var compKey = tab.replace("comp-", "");
     loadComponentView(compKey);
@@ -1531,6 +1597,200 @@ function heval_stat(label, value, flavor) {
   return '<div class="' + cls + '">'
     + '<div class="heval-stat-label">' + label + "</div>"
     + '<div class="heval-stat-value">' + value + "</div></div>";
+}
+
+/* ── Review Quality (B3) ─────────────────────────
+   Loads three slices in parallel for the selected component:
+     1. Saturation snapshot   (B2 endpoint)
+     2. Judge-agreement (κ)   (B1 snapshot via new endpoint)
+     3. Inbox of unreviewed traces (B2 reviewed=false filter)
+*/
+
+function _ratio(n, d) { return d > 0 ? Math.round((n / d) * 100) : 0; }
+
+function _bandColor(band) {
+  // Landis & Koch verbal label → color
+  if (band === "almost_perfect") return "#16a34a";
+  if (band === "substantial")    return "#84cc16";
+  if (band === "moderate")       return "#eab308";
+  if (band === "fair")           return "#f97316";
+  if (band === "poor")           return "#dc2626";
+  return "#94a3b8";
+}
+
+async function loadReviewTab() {
+  var comp = document.getElementById("review-component").value;
+  // Fire all 3 in parallel — none should block the others
+  loadReviewSaturation(comp);
+  loadReviewKappa(comp);
+  loadReviewInbox(comp);
+}
+
+async function loadReviewSaturation(comp) {
+  var body = document.getElementById("review-saturation-body");
+  body.innerHTML = '<span class="empty-state">Loading…</span>';
+  try {
+    var r = await fetch(API + "/api/eval/saturation?component=" + encodeURIComponent(comp));
+    if (!r.ok) { body.innerHTML = '<span class="empty-state">err ' + r.status + '</span>'; return; }
+    var data = await r.json();
+    var pct = _ratio(data.reviewed, data.total);
+    var fmRows = "";
+    var fm = data.by_failure_mode || {};
+    var keys = Object.keys(fm);
+    if (keys.length) {
+      fmRows = '<div style="margin-top:.6rem; font-size:.78rem;">'
+        + '<div style="color:var(--gray-500); margin-bottom:.2rem;">Failure modes:</div>'
+        + keys.map(function(k) {
+            return '<div style="display:flex; justify-content:space-between; padding:.15rem 0;">'
+              + '<span style="color:var(--gray-700)"><code>' + esc(k) + '</code></span>'
+              + '<span><b>' + fm[k] + '</b></span></div>';
+          }).join("")
+        + '</div>';
+    }
+    body.innerHTML = ''
+      + '<div style="font-size:1.4rem; font-weight:700;">' + data.reviewed + ' / ' + data.total + '</div>'
+      + '<div style="font-size:.78rem; color:var(--gray-500);">'
+      + '  reviewed (' + pct + '%) · ' + (data.unreviewed || 0) + ' in inbox'
+      + '</div>'
+      + '<div style="display:flex; gap:1rem; margin-top:.4rem; font-size:.78rem;">'
+      + '  <span style="color:#16a34a">✓ correct: ' + (data.correct || 0) + '</span>'
+      + '  <span style="color:#dc2626">✗ flagged: ' + Object.values(fm).reduce(function(a,b){return a+b;},0) + '</span>'
+      + '</div>'
+      + fmRows;
+  } catch (e) {
+    body.innerHTML = '<span class="empty-state">' + esc(e.message || "load failed") + '</span>';
+  }
+}
+
+async function loadReviewKappa(comp) {
+  var body = document.getElementById("review-kappa-body");
+  body.innerHTML = '<span class="empty-state">Loading…</span>';
+  try {
+    var r = await fetch(API + "/api/eval/judge-agreement/" + encodeURIComponent(comp));
+    if (!r.ok) { body.innerHTML = '<span class="empty-state">err ' + r.status + '</span>'; return; }
+    var data = await r.json();
+    if (data.empty) {
+      body.innerHTML = '<span class="empty-state">' + esc(data.message || "no snapshot yet") + '</span>';
+      return;
+    }
+    var kappa = data.kappa != null ? data.kappa.toFixed(3) : "—";
+    var color = _bandColor(data.band);
+    var matrixRows = "";
+    var m = data.confusion_matrix || {};
+    var classes = data.classes || Object.keys(m);
+    if (classes.length) {
+      matrixRows = '<div style="margin-top:.6rem; font-size:.72rem;">'
+        + '<div style="color:var(--gray-500); margin-bottom:.2rem;">Confusion matrix (rows=human, cols=system):</div>'
+        + '<table style="border-collapse:collapse; font-size:.72rem;">'
+        + '<tr><th></th>' + classes.map(function(c) { return '<th style="padding:.1rem .4rem; color:var(--gray-500)">' + esc(c) + '</th>'; }).join("") + '</tr>'
+        + classes.map(function(h) {
+            return '<tr><th style="text-align:right; padding-right:.4rem; color:var(--gray-500)">' + esc(h) + '</th>'
+              + classes.map(function(s) {
+                  var v = (m[h] || {})[s] || 0;
+                  var bg = (h === s && v > 0) ? "rgba(22,163,74,0.15)" : (v > 0 ? "rgba(220,38,38,0.10)" : "transparent");
+                  return '<td style="padding:.15rem .5rem; text-align:center; background:' + bg + ';">' + v + '</td>';
+                }).join("")
+              + '</tr>';
+          }).join("")
+        + '</table></div>';
+    }
+    body.innerHTML = ''
+      + '<div style="display:flex; align-items:baseline; gap:.6rem;">'
+      + '  <span style="font-size:1.6rem; font-weight:700; color:' + color + ';">' + kappa + '</span>'
+      + '  <span style="font-size:.78rem; color:' + color + '; text-transform:uppercase; letter-spacing:.05em;">'
+      + '    ' + esc(data.band || "—") + '</span>'
+      + '</div>'
+      + '<div style="font-size:.78rem; color:var(--gray-500);">'
+      + '  threshold ' + (data.threshold != null ? data.threshold : "—")
+      + '  · n=' + (data.sample_size || 0)
+      + (data.skipped_placeholders ? '  · ' + data.skipped_placeholders + ' placeholder(s) skipped' : '')
+      + '</div>'
+      + matrixRows;
+  } catch (e) {
+    body.innerHTML = '<span class="empty-state">' + esc(e.message || "load failed") + '</span>';
+  }
+}
+
+async function loadReviewInbox(comp) {
+  var box = document.getElementById("review-inbox");
+  var counter = document.getElementById("review-inbox-count");
+  box.innerHTML = '<span class="empty-state" style="display:block; padding:1rem;">Loading…</span>';
+  counter.textContent = "";
+  try {
+    var url = API + "/api/eval/traces?reviewed=false&page_size=20&component=" + encodeURIComponent(comp);
+    var r = await fetch(url);
+    if (!r.ok) { box.innerHTML = '<span class="empty-state" style="display:block; padding:1rem;">err ' + r.status + '</span>'; return; }
+    var data = await r.json();
+    var items = data.items || [];
+    counter.textContent = data.total + " unreviewed · showing " + items.length;
+    if (!items.length) {
+      box.innerHTML = '<div class="empty-state" style="display:block; padding:1.5rem;">'
+        + '🎉 inbox is empty for this component (or no traces logged yet)'
+        + '</div>';
+      return;
+    }
+    box.innerHTML = items.map(_renderInboxRow).join("");
+  } catch (e) {
+    box.innerHTML = '<span class="empty-state" style="display:block; padding:1rem;">' + esc(e.message || "load failed") + '</span>';
+  }
+}
+
+function _renderInboxRow(t) {
+  var ts = t.created_at ? new Date(t.created_at).toLocaleString() : "—";
+  var preview = "";
+  if (t.parsed_output) {
+    var s = JSON.stringify(t.parsed_output);
+    preview = s.length > 120 ? s.slice(0, 120) + "…" : s;
+  } else if (t.error) {
+    preview = "ERROR: " + t.error;
+  }
+  return ''
+    + '<div style="border-bottom:1px solid var(--gray-200); padding:.7rem 1rem;">'
+    + '  <div style="display:flex; justify-content:space-between; gap:.5rem; align-items:baseline;">'
+    + '    <div>'
+    + '      <code style="font-size:.72rem; color:var(--gray-500)">' + esc((t.id || "").slice(0, 8)) + '</code>'
+    + '      &nbsp;<span style="font-size:.78rem; color:var(--gray-700)">' + esc(t.component || "") + '</span>'
+    + '      &nbsp;<span style="font-size:.7rem; color:var(--gray-400)">' + esc(ts) + '</span>'
+    + '      ' + (t.error ? '<span style="color:#dc2626; font-size:.7rem; margin-left:.4rem;">[error]</span>' : '')
+    + '    </div>'
+    + '  </div>'
+    + (preview ? '  <div style="font-size:.75rem; color:var(--gray-600); margin-top:.3rem; font-family:ui-monospace,monospace;">' + esc(preview) + '</div>' : '')
+    + '  <div style="margin-top:.5rem; display:flex; gap:.4rem; align-items:center; flex-wrap:wrap;">'
+    + '    <input id="rv-by-' + esc(t.id) + '" placeholder="reviewer (you)" value="' + esc(localStorage.getItem("eval_reviewer") || "") + '" style="font-size:.75rem; padding:.25rem .5rem; width:9rem;">'
+    + '    <select id="rv-tag-' + esc(t.id) + '" style="font-size:.75rem; padding:.25rem .5rem;">'
+    + '      <option value="">✓ correct (no tag)</option>'
+    + '      <option value="false_positive">false_positive</option>'
+    + '      <option value="false_negative">false_negative</option>'
+    + '      <option value="wrong_attribution">wrong_attribution</option>'
+    + '      <option value="missed_factor">missed_factor</option>'
+    + '      <option value="style_only">style_only</option>'
+    + '      <option value="hallucination">hallucination</option>'
+    + '      <option value="other">other</option>'
+    + '    </select>'
+    + '    <input id="rv-notes-' + esc(t.id) + '" placeholder="notes (optional)" style="font-size:.75rem; padding:.25rem .5rem; flex:1; min-width:10rem;">'
+    + '    <button class="btn btn-outline btn-sm" onclick="submitTraceReview(\'' + esc(t.id) + '\')" style="font-size:.75rem;">Mark reviewed</button>'
+    + '  </div>'
+    + '</div>';
+}
+
+async function submitTraceReview(traceId) {
+  var by = document.getElementById("rv-by-" + traceId).value.trim();
+  var tag = document.getElementById("rv-tag-" + traceId).value;
+  var notes = document.getElementById("rv-notes-" + traceId).value.trim();
+  if (!by) { alert("reviewer name required"); return; }
+  localStorage.setItem("eval_reviewer", by);
+  try {
+    var r = await fetch(API + "/api/eval/traces/" + encodeURIComponent(traceId) + "/review", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewed_by: by, failure_mode_tag: tag, notes: notes || null }),
+    });
+    if (!r.ok) { alert("review failed: " + r.status); return; }
+    // Refresh both saturation card and inbox so the count + breakdown update
+    loadReviewTab();
+  } catch (e) {
+    alert("review failed: " + (e.message || e));
+  }
 }
 
 /* ── Traces ──────────────────────────────────── */
