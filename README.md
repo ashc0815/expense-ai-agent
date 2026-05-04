@@ -93,7 +93,9 @@ After each expense submission, the backend asynchronously executes 5 Skills, all
 
 **Shield Mechanism:** When Skill-03's ambiguity score triggers human review (30-70) or suggests rejection (>70), the pipeline stops and marks `PENDING_REVIEW`, awaiting manual intervention.
 
-**Configuration-Driven:** Skip approval by setting `workflow.yaml: approval.enabled: false`; change expense limits by editing numbers in `policy.yaml` — zero code changes to adapt for different clients.
+**Configuration-Driven (within fixed schema):** Skip approval by setting `workflow.yaml: approval.enabled: false`; change expense limits by editing numbers in `policy.yaml`; tune ambiguity-detector sensitivity via `eval_config.json` — all without code changes.
+
+**Current scope: single-entity.** Per-entity GL chart, VAT, and approval chains are an architecture-level extension documented in [`docs/multi-entity-design.md`](docs/multi-entity-design.md). Schema-level customization (custom fields per expense type, per-entity overrides) is on the roadmap but not yet implemented. Honest limits, real extension points — see the design doc for the 4-layer decoupling that closes the gap.
 
 ### AmbiguityDetector — 5-Factor Scoring Model
 
