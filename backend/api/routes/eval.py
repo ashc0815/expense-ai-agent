@@ -58,6 +58,20 @@ _PROMPTS_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_prompts.js
 _HUMAN_FRAUD_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_human_fraud_latest.json"
 _HUMAN_AMBIG_PATH = Path(__file__).resolve().parents[2] / "tests" / "eval_human_ambiguity_latest.json"
 
+# B1 (judge agreement) snapshot paths — written by test_judge_agreement.py.
+# Map a logical "component" name (the same value the saturation endpoint
+# accepts) to the on-disk snapshot file. Components without a snapshot
+# fall through to an `empty: true` response so the dashboard can show a
+# "no judge eval yet" placeholder instead of breaking.
+_JUDGE_SNAPSHOTS: dict[str, Path] = {
+    "ambiguity_detector": (
+        Path(__file__).resolve().parents[2] / "tests" / "eval_judge_ambiguity_latest.json"
+    ),
+    "fraud_llm_analyzer": (
+        Path(__file__).resolve().parents[2] / "tests" / "eval_judge_fraud_overall_risk_latest.json"
+    ),
+}
+
 
 # ── Eval Runs ────────────────────────────────────────────────────────
 
@@ -581,6 +595,38 @@ async def get_human_fraud_eval() -> dict:
         return {"empty": True, "message": "No fraud human-eval run yet. Run: pytest backend/tests/test_human_eval.py"}
     try:
         return json.loads(_HUMAN_FRAUD_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"empty": True, "error": str(exc)}
+
+
+@router.get("/judge-agreement/{component}")
+async def get_judge_agreement(component: str) -> dict:
+    """Return the latest judge-agreement (Cohen's κ) snapshot for a component.
+
+    Snapshot file is written by pytest backend/tests/test_judge_agreement.py.
+    Returns {empty: true} when the component has no snapshot file or no
+    real labeled cases yet.
+
+    The dashboard's Review Quality tab consumes this to show the κ value,
+    band (poor/fair/moderate/substantial/almost_perfect), confusion matrix,
+    and per-case agreement rows.
+    """
+    snapshot_path = _JUDGE_SNAPSHOTS.get(component)
+    if snapshot_path is None:
+        return {
+            "empty": True,
+            "message": f"no judge-agreement snapshot configured for component '{component}'",
+        }
+    if not snapshot_path.exists():
+        return {
+            "empty": True,
+            "message": (
+                f"No judge-agreement run yet for {component}. "
+                "Run: pytest backend/tests/test_judge_agreement.py"
+            ),
+        }
+    try:
+        return json.loads(snapshot_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
         return {"empty": True, "error": str(exc)}
 
