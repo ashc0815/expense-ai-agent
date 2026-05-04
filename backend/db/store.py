@@ -279,6 +279,13 @@ class LLMTrace(EvalBase):
     """LLM 调用追踪 — 记录每次 LLM 调用的完整上下文，用于 eval 和 debug。
 
     物理存放在 Eval 专用库 concurshield_eval.db（通过 EVAL_DATABASE_URL 配置）。
+
+    Trace review fields (reviewed_at/by, failure_mode_tag, notes) support
+    Hamel's "always be looking at data" workflow + theoretical-saturation
+    tracking. A trace is "reviewed" once a human has looked at it AND
+    decided it's either correct or labeled with a failure_mode_tag like
+    "wrong_attribution" / "style_only" / "false_positive". Saturation is
+    reached when scrolling N more traces surfaces no new failure modes.
     """
     __tablename__ = "llm_traces"
 
@@ -293,6 +300,14 @@ class LLMTrace(EvalBase):
     token_usage     = Column(JSON,        nullable=True)                # {"input": N, "output": N}
     error           = Column(Text,        nullable=True)                # 错误信息（如有）
     created_at      = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    # ── Review state (Hamel: error analysis + saturation tracking) ──
+    reviewed_at      = Column(DateTime(timezone=True), nullable=True, index=True)
+    reviewed_by      = Column(String(64),  nullable=True)
+    failure_mode_tag = Column(String(64),  nullable=True, index=True)
+    # NULL = not reviewed yet. Empty string "" = reviewed and correct.
+    # Non-empty = reviewed and tagged with a failure mode the reviewer named.
+    review_notes     = Column(Text,        nullable=True)
 
 
 class EvalRun(EvalBase):
@@ -1739,6 +1754,121 @@ async def increment_rule_applied(db: AsyncSession, rule_id: str) -> None:
     rule.applied_count = (rule.applied_count or 0) + 1
     rule.last_applied_at = datetime.now(timezone.utc)
     await db.commit()
+
+
+# ── CRUD — llm_traces review state ──────────────────────────────
+#
+# Used by the eval-trace review workflow (Hamel: "always be looking
+# at data" + saturation tracking). Operations live in the eval DB.
+
+async def mark_trace_reviewed(
+    db: AsyncSession,
+    trace_id: str,
+    *,
+    reviewed_by: str,
+    failure_mode_tag: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Optional["LLMTrace"]:
+    """Mark a trace as reviewed.
+
+    failure_mode_tag semantics:
+      None or ""  → reviewed and judged correct
+      non-empty   → reviewed and labeled with a failure-mode tag
+                    (e.g. "wrong_attribution", "style_only",
+                    "false_positive", "missed_factor", ...)
+    """
+    result = await db.execute(select(LLMTrace).where(LLMTrace.id == trace_id))
+    trace = result.scalar_one_or_none()
+    if trace is None:
+        return None
+    trace.reviewed_at = datetime.now(timezone.utc)
+    trace.reviewed_by = reviewed_by
+    trace.failure_mode_tag = failure_mode_tag or ""
+    trace.review_notes = notes
+    await db.commit()
+    await db.refresh(trace)
+    return trace
+
+
+async def list_traces_filtered(
+    db: AsyncSession,
+    *,
+    component: Optional[str] = None,
+    reviewed: Optional[bool] = None,
+    failure_mode_tag: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list["LLMTrace"]:
+    """List traces with review-state filters. Uses the eval DB session."""
+    q = select(LLMTrace)
+    if component:
+        q = q.where(LLMTrace.component == component)
+    if reviewed is True:
+        q = q.where(LLMTrace.reviewed_at.is_not(None))
+    elif reviewed is False:
+        q = q.where(LLMTrace.reviewed_at.is_(None))
+    if failure_mode_tag is not None:
+        if failure_mode_tag == "":
+            q = q.where(LLMTrace.failure_mode_tag == "")
+        else:
+            q = q.where(LLMTrace.failure_mode_tag == failure_mode_tag)
+    q = q.order_by(LLMTrace.created_at.desc()).limit(limit).offset(offset)
+    rows = (await db.execute(q)).scalars().all()
+    return list(rows)
+
+
+async def saturation_summary(
+    db: AsyncSession, *, component: str,
+) -> dict:
+    """Hamel saturation snapshot for one component.
+
+    Returns counts of:
+      total          — all traces ever logged for this component
+      reviewed       — traces with non-NULL reviewed_at
+      unreviewed     — total - reviewed
+      correct        — reviewed and failure_mode_tag == ""
+      by_failure_mode — {tag: count} for non-empty tags
+
+    Saturation heuristic: when the last K reviewed traces (by created_at)
+    contain no NEW failure_mode_tag values not already seen in the
+    earlier reviewed set, the component has reached saturation. Caller
+    decides K (Hamel suggests 20 consecutive).
+    """
+    # Total per component
+    total_q = await db.execute(
+        select(func.count()).select_from(LLMTrace).where(LLMTrace.component == component)
+    )
+    total = int(total_q.scalar_one() or 0)
+
+    # Reviewed (non-NULL reviewed_at)
+    reviewed_q = await db.execute(
+        select(func.count()).select_from(LLMTrace).where(
+            LLMTrace.component == component,
+            LLMTrace.reviewed_at.is_not(None),
+        )
+    )
+    reviewed = int(reviewed_q.scalar_one() or 0)
+
+    # Failure-mode breakdown (only over reviewed rows with non-empty tag)
+    fm_q = await db.execute(
+        select(LLMTrace.failure_mode_tag, func.count()).where(
+            LLMTrace.component == component,
+            LLMTrace.reviewed_at.is_not(None),
+            LLMTrace.failure_mode_tag.is_not(None),
+            LLMTrace.failure_mode_tag != "",
+        ).group_by(LLMTrace.failure_mode_tag)
+    )
+    by_failure_mode: dict[str, int] = {tag: int(cnt) for tag, cnt in fm_q.all()}
+
+    correct = reviewed - sum(by_failure_mode.values())
+    return {
+        "component": component,
+        "total": total,
+        "reviewed": reviewed,
+        "unreviewed": total - reviewed,
+        "correct": correct,
+        "by_failure_mode": by_failure_mode,
+    }
 
 
 # ── Demo 数据种子 ─────────────────────────────────────────────────
