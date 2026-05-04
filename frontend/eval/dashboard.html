@@ -692,7 +692,7 @@ async function showRunDetail(id, targetPanelId) {
     var m = run.metadata || {};
     var pills = [
       ["Prompt", m.prompt_version], ["Model", m.model], ["Temp", m.temperature],
-      ["TopP", m.top_p], ["MaxTok", m.max_tokens], ["Parsing", m.parsing_version],
+      ["TopP", m.top_p], ["MaxTok", m.max_tokens],
       ["Dataset", m.dataset_hash], ["Cases", m.dataset_case_count],
       ["Git", m.git_commit], ["Config", m.config_hash],
     ].filter(function(kv) { return kv[1] != null && kv[1] !== ""; })
