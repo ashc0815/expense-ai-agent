@@ -1,16 +1,14 @@
 """提交报销单 API — 异步两步架构。
 
 Step A: POST /api/submissions  → 202 + BackgroundTasks 启动管道
-Step B: BackgroundTasks 跑 5-Skill 管道（concurshield-agent）
+Step B: BackgroundTasks 跑 5-Skill 管道（agent / skills / rules）
 Step C: GET  /api/submissions/{id} → 前端轮询
 """
 from __future__ import annotations
 
-import sys
 import traceback
 from datetime import date, datetime, timezone
 from decimal import Decimal as _Decimal
-from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile, File
@@ -27,11 +25,6 @@ from backend.db.store import (
 from backend.storage import get_storage
 
 router = APIRouter()
-
-# ── concurshield-agent 路径注入 ───────────────────────────────────
-_AGENT_DIR = Path(__file__).resolve().parents[3] / "concurshield-agent"
-if str(_AGENT_DIR) not in sys.path:
-    sys.path.insert(0, str(_AGENT_DIR))
 
 
 def _sub_dict(sub) -> dict[str, Any]:
@@ -87,7 +80,7 @@ def _sub_dict(sub) -> dict[str, Any]:
     }
 
 
-# 前端 category → concurshield-agent 标准 expense_type（subtype.id）
+# 前端 category → agent/skills 标准 expense_type（subtype.id）
 _CATEGORY_MAP = {
     "meal":          "meals",
     "transport":     "transport_local",
@@ -169,7 +162,7 @@ async def _run_pipeline(submission_id: str, form_data: dict) -> None:
         risk_score = {"T1": 20.0, "T2": 45.0, "T3": 70.0, "T4": 90.0}[tier]
 
         # ── Option B: 渐进式 timeline ──
-        # 5-skill engine 仍然跑全 5 步（不动 concurshield-agent），但提交阶段
+        # 5-skill engine 仍然跑全 5 步（agent + skills 包），但提交阶段
         # 只持久化前 3 步（提交时能验证的事：发票、额度、合规）。凭证生成 / 付款
         # 执行将由 approve_submission / finance_approve 在实际审批通过后追加。
         # 这样 audit_report.timeline 永远只反映"已经发生的事"。
