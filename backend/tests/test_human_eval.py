@@ -187,16 +187,45 @@ def _make_submission_row(inp: dict):
     )
 
 
+def _is_placeholder(case: dict) -> bool:
+    """Treat a case as a placeholder when its id starts with `*_placeholder_*`
+    or its description starts with `PLACEHOLDER`. Placeholders carry no human
+    judgment, so running them produces fake-pass numbers and erodes trust in
+    the eval. Hamel: don't ship false-confidence eval signals."""
+    return (
+        "_placeholder_" in str(case.get("id", ""))
+        or str(case.get("description", "")).startswith("PLACEHOLDER")
+    )
+
+
+def _strip_placeholders(cases: list[dict]) -> tuple[list[dict], int]:
+    """Return (real_cases, placeholder_count)."""
+    real = [c for c in cases if not _is_placeholder(c)]
+    return real, len(cases) - len(real)
+
+
 def test_fraud_human_eval() -> None:
     """Run fraud analyzer against all human-labeled cases.
 
     Pytest passes if at least one case runs (even if subfield accuracy is low).
     The actual quality signal is in eval_human_fraud_latest.json → Dashboard.
+
+    Placeholder cases (id starts `fh_placeholder_*`) are dropped before the
+    run — they carry no human judgment, and including them would produce
+    fake-pass numbers.
     """
-    cases = _load_yaml(_FRAUD_YAML)
+    raw_cases = _load_yaml(_FRAUD_YAML)
+    cases, placeholder_count = _strip_placeholders(raw_cases)
     if not cases:
-        _write_fraud_results([], 0, 0, "no cases in YAML")
-        pytest.skip("No fraud human-labeled cases yet")
+        _write_fraud_results(
+            [], 0, 0,
+            f"no real cases yet ({placeholder_count} placeholder(s); replace with real labels)"
+        )
+        pytest.skip(
+            f"fraud_human_labeled.yaml has {placeholder_count} placeholder(s) "
+            "and no real cases — replace placeholders with real human-labeled "
+            "examples before this eval is meaningful."
+        )
 
     results: list[dict] = []
     use_real = bool(os.getenv("OPENAI_API_KEY")) and os.getenv("AGENT_USE_REAL_LLM") == "1"
@@ -281,11 +310,23 @@ _AMBIG_CLASSES = ("auto_pass", "human_review", "suggest_reject")
 
 
 def test_ambiguity_human_eval() -> None:
-    """Run ambiguity detector against human gold recommendations."""
-    cases = _load_yaml(_AMBIG_YAML)
+    """Run ambiguity detector against human gold recommendations.
+
+    Placeholder cases (id starts `ah_placeholder_*`) are dropped before the
+    run — see _is_placeholder above.
+    """
+    raw_cases = _load_yaml(_AMBIG_YAML)
+    cases, placeholder_count = _strip_placeholders(raw_cases)
     if not cases:
-        _write_ambig_results([], Counter(), "no cases in YAML")
-        pytest.skip("No ambiguity human-labeled cases yet")
+        _write_ambig_results(
+            [], Counter(),
+            f"no real cases yet ({placeholder_count} placeholder(s); replace with real labels)"
+        )
+        pytest.skip(
+            f"ambiguity_human_labeled.yaml has {placeholder_count} placeholder(s) "
+            "and no real cases — replace placeholders with real human-labeled "
+            "examples before this eval is meaningful."
+        )
 
     from config import ConfigLoader
     from models.expense import Employee, EmployeeLevel, LineItem

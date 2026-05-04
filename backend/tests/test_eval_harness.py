@@ -108,14 +108,12 @@ def _collect_metadata() -> dict:
         # Factor 4: Config thresholds
         "config_thresholds": cfg.get("config_thresholds", {}),
         "config_hash": _compute_file_hash(_CONFIG_PATH),
-        # Factor 5: Parsing version
-        "parsing_version": cfg.get("parsing_version", "v1"),
-        "parsing_notes": cfg.get("parsing_notes", ""),
+        # Factor 5: Code version (replaces the never-changing parsing_version
+        # from earlier — git_commit is the true reproducibility anchor)
+        "git_commit": _get_git_commit(),
         # Factor 6: Dataset version
         "dataset_hash": _compute_dataset_hash(),
         "dataset_case_count": len(_ALL_CASES) if "_ALL_CASES" in dir() else 0,
-        # Extra: git commit for full reproducibility
-        "git_commit": _get_git_commit(),
     }
 
 
@@ -264,8 +262,10 @@ def teardown_module(_: Any) -> None:
         with urllib.request.urlopen(req, timeout=5) as resp:
             sys.stderr.write(f"  ✓ Eval run posted to Observatory ({resp.status})\n\n")
     except (urllib.error.URLError, OSError):
-        # Server not running — save to JSON file for later import
-        out_path = Path(__file__).parent / "eval_last_run.json"
+        # Observatory API not reachable — fall back to a tmp-dir snapshot the
+        # operator can curl in later. Avoid writing inside backend/tests/ so
+        # we don't accidentally pollute git with stale eval results.
+        out_path = Path(tempfile.gettempdir()) / "eval_last_run.json"
         out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         sys.stderr.write(
             f"  ⚠ Observatory API unreachable. Results saved to:\n"
