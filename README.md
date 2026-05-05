@@ -171,6 +171,7 @@ not just whether the eval suite passes.
 | Employee my-reports QA drawer | Keyword match → single tool → format | **Workflow** | Single tool call, no decision-making |
 | 5-Skill compliance pipeline | 5 sequential steps, policy_engine hard rules | **Workflow (intentional)** | Compliance requires determinism; LLM must not alter the flow |
 | Manager/Finance AI explanation card | Calls read-only tools, assembles risk assessment + recommendation | **Agent (lightweight)** | Must independently decide which tools to call for evidence gathering |
+| Fraud investigator (Layer 2, on high-risk submissions) | OODA loop, 4 rounds max, LLM picks tools from a 8-tool registry, emits verdict | **True Agent (multi-round)** | First multi-round LLM-driven decision making in the project. See [`docs/hybrid-fraud-architecture.md`](docs/hybrid-fraud-architecture.md). |
 
 ### 2. Unified Agent + Data-Level ACL (Concur Joule / Expensify Concierge Pattern)
 
