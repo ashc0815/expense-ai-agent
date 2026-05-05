@@ -1907,6 +1907,12 @@ async def compose_explanation(
     # the submit handler — see agent/violation_registry.py for the catalog).
     violations = audit.get("violations") or []
 
+    # ── Layer-2 investigator output (OODA agent — only present when
+    # combined_risk >= 80 fired the trigger in _run_pipeline). Pass
+    # through verbatim; the AI explanation card renders it as its own
+    # section with verdict badge + evidence chain + summary.
+    investigation = audit.get("investigation")
+
     return {
         "submission_id": sub["id"],
         "tier": tier,
@@ -1924,6 +1930,7 @@ async def compose_explanation(
         "yellow_flags": yellow[:5],
         "red_flags": red[:5],
         "violations": violations,
+        "investigation": investigation,
         "advisory": advisory,
         "context": context,
         "_agent_role": role,
