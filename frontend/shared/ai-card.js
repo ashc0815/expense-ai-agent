@@ -176,6 +176,90 @@
           ? `员工历史 ${data.context.history_count} 笔`
           : `员工尚无历史报销`);
 
+    // ── Investigation block (Layer-2 OODA agent output) ──
+    // Only present when combined_risk >= 80 triggered fraud_investigator
+    // in the submit pipeline. We render it as its own section so the
+    // manager sees the full agent reasoning trail above the advisory.
+    const investigationHtml = (() => {
+      const inv = data.investigation;
+      if (!inv) return "";
+
+      const verdictClass = `ai-inv-verdict-${inv.verdict || "suspicious"}`;
+      const verdictIcon = ({
+        clean: "✅",
+        suspicious: "⚠️",
+        fraud: "🛑",
+      })[inv.verdict] || "❓";
+      const verdictLabel = ({
+        clean: "通过",
+        suspicious: "可疑",
+        fraud: "欺诈",
+      })[inv.verdict] || inv.verdict;
+      const conf = typeof inv.confidence === "number"
+        ? `${(inv.confidence * 100).toFixed(0)}%` : "—";
+      const llmTag = inv.used_real_llm ? "Real LLM" : "Mock LLM";
+
+      const renderEvidenceRow = (e) => {
+        if (e.error) {
+          return `
+            <div class="ai-inv-step ai-inv-step-error">
+              <div class="ai-inv-step-head">
+                <span class="ai-inv-step-num">R${e.round}</span>
+                <span class="ai-inv-step-tool">${escape(e.tool || "—")}</span>
+                <span class="ai-inv-step-error-tag">error</span>
+              </div>
+              <div class="ai-inv-step-text">${escape(e.error)}</div>
+            </div>`;
+        }
+        if (e.final_verdict) {
+          return `
+            <div class="ai-inv-step ai-inv-step-final">
+              <div class="ai-inv-step-head">
+                <span class="ai-inv-step-num">R${e.round}</span>
+                <span class="ai-inv-step-tool">final verdict</span>
+              </div>
+              <div class="ai-inv-step-text">${escape(e.thought || "")}</div>
+            </div>`;
+        }
+        return `
+          <div class="ai-inv-step">
+            <div class="ai-inv-step-head">
+              <span class="ai-inv-step-num">R${e.round}</span>
+              <code class="ai-inv-step-tool">${escape(e.tool || "")}</code>
+            </div>
+            ${e.thought ? `<div class="ai-inv-step-thought">${escape(e.thought)}</div>` : ""}
+            <div class="ai-inv-step-text">${escape(e.result_summary || "")}</div>
+          </div>`;
+      };
+
+      const evidenceHtml = (inv.evidence_chain || []).map(renderEvidenceRow).join("");
+
+      return `
+        <div class="ai-investigation">
+          <div class="ai-inv-header">
+            <span class="ai-inv-title">🤖 AI 调查报告</span>
+            <span class="ai-inv-meta">
+              ${inv.rounds_used || 0} 轮 ·
+              ${(inv.tools_called || []).length} 工具 ·
+              ${escape(llmTag)}
+            </span>
+          </div>
+          <div class="ai-inv-verdict-row">
+            <span class="ai-inv-verdict ${verdictClass}">
+              ${verdictIcon} ${escape(verdictLabel)}
+            </span>
+            <span class="ai-inv-confidence">置信度 ${conf}</span>
+          </div>
+          ${inv.summary ? `
+            <div class="ai-inv-summary">${escape(inv.summary)}</div>` : ""}
+          ${evidenceHtml ? `
+            <details class="ai-inv-trace" open>
+              <summary>调查过程（${inv.rounds_used || 0} 轮）</summary>
+              <div class="ai-inv-steps">${evidenceHtml}</div>
+            </details>` : ""}
+        </div>`;
+    })();
+
     container.innerHTML = `
       <div class="ai-card">
         <div class="ai-card-header">
@@ -199,6 +283,7 @@
         ${flagsHtml("⚠ 注意", data.yellow_flags, "ai-yellow")}
         ${flagsHtml("✗ 风险", data.red_flags, "ai-red")}
         ${violationsHtml}
+        ${investigationHtml}
 
         ${data.advisory ? `
           <div class="ai-card-advisory">

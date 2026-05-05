@@ -245,3 +245,117 @@
   font-family: ui-monospace, monospace;
 }
 .ai-card-role { opacity: .7; }
+
+/* ── Investigation block (Layer-2 OODA agent output) ──────────────────
+   Only renders when audit_report.investigation is present. Distinct
+   visual style from cite-the-rule: this is the agent's reasoning
+   trail, not a list of fired rules. */
+.ai-investigation {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #1e293b;
+  color: #e2e8f0;
+  border-radius: 8px;
+  border: 1px solid #334155;
+}
+.ai-inv-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.ai-inv-title { font-weight: 700; color: #f8fafc; letter-spacing: .3px; }
+.ai-inv-meta  { font-size: 10.5px; color: #94a3b8; }
+
+.ai-inv-verdict-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 6px;
+}
+.ai-inv-verdict {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  letter-spacing: .3px;
+}
+.ai-inv-verdict-clean      { background: #14532d; color: #bbf7d0; }
+.ai-inv-verdict-suspicious { background: #713f12; color: #fde68a; }
+.ai-inv-verdict-fraud      { background: #7f1d1d; color: #fecaca; }
+.ai-inv-confidence { font-size: 11px; color: #94a3b8; }
+
+.ai-inv-summary {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #cbd5e1;
+  margin: 6px 0 8px;
+  padding: 6px 8px;
+  background: rgba(15, 23, 42, .6);
+  border-left: 3px solid #6366f1;
+  border-radius: 0 6px 6px 0;
+}
+
+.ai-inv-trace {
+  margin-top: 8px;
+  font-size: 11.5px;
+}
+.ai-inv-trace summary {
+  cursor: pointer;
+  color: #94a3b8;
+  font-weight: 600;
+  padding: 4px 0;
+  user-select: none;
+}
+.ai-inv-trace summary:hover { color: #e2e8f0; }
+
+.ai-inv-steps {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-inv-step {
+  background: rgba(15, 23, 42, .55);
+  border-left: 3px solid #475569;
+  border-radius: 0 6px 6px 0;
+  padding: 6px 9px;
+}
+.ai-inv-step-error { border-left-color: #f59e0b; }
+.ai-inv-step-final { border-left-color: #4338ca; background: rgba(67, 56, 202, .12); }
+.ai-inv-step-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 3px;
+}
+.ai-inv-step-num {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: #6366f1;
+  background: rgba(99, 102, 241, .15);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 700;
+}
+.ai-inv-step-tool {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: #c4b5fd;
+}
+.ai-inv-step-error-tag {
+  font-size: 9.5px;
+  color: #fbbf24;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  background: rgba(251, 191, 36, .15);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.ai-inv-step-thought {
+  font-size: 11px;
+  color: #94a3b8;
+  font-style: italic;
+  margin-bottom: 3px;
+}
+.ai-inv-step-text {
+  font-size: 11.5px;
+  color: #cbd5e1;
+  line-height: 1.5;
+  word-break: break-word;
+}
