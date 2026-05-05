@@ -207,6 +207,42 @@ async def _run_pipeline(submission_id: str, form_data: dict) -> None:
             except Exception:  # noqa: BLE001 — reasoner must never break pipeline
                 pass
 
+        # ── Layer 2 fraud investigator (OODA agent) ────────────────────
+        # Triggered only on high-risk cases — combine ambiguity-driven
+        # risk_score with the strongest Layer-1 fraud signal score, then
+        # gate on >= 80 (option B from chat plan).
+        # The OODA loop is in agent/fraud_investigator.py.
+        investigation: Optional[dict] = None
+        try:
+            fraud_signals = []
+            if result.shield_report and isinstance(result.shield_report, dict):
+                # Layer 1 fraud rule signals — each {rule, score, evidence}
+                fraud_signals = list(result.shield_report.get("fraud_signals") or [])
+            fraud_max_score = max(
+                (s.get("score", 0) for s in fraud_signals), default=0,
+            )
+            combined_risk = max(risk_score, float(fraud_max_score))
+            if combined_risk >= 80:
+                from agent.fraud_investigator import investigate_submission
+                async with Session() as db:
+                    investigation = await investigate_submission(
+                        db,
+                        submission={
+                            "employee_id": form_data["employee_id"],
+                            "date": form_data["date"],
+                            "category": form_data["category"],
+                            "amount": float(form_data["amount"]),
+                            "currency": form_data.get("currency", "CNY"),
+                            "merchant": form_data["merchant"],
+                            "city": form_data.get("city", "上海"),
+                            "description": form_data.get("description", ""),
+                        },
+                        fraud_signals=fraud_signals,
+                        risk_score=combined_risk,
+                    )
+        except Exception:  # noqa: BLE001 — investigator must never break pipeline
+            pass
+
         audit_report = {
             "final_status": final_status,
             "timeline": [
@@ -221,6 +257,8 @@ async def _run_pipeline(submission_id: str, form_data: dict) -> None:
             "shield_report": result.shield_report,
             "violations": violations,
         }
+        if investigation is not None:
+            audit_report["investigation"] = investigation
 
         async with Session() as db:
             await update_submission_analysis(
