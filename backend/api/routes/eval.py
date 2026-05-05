@@ -70,6 +70,9 @@ _JUDGE_SNAPSHOTS: dict[str, Path] = {
     "fraud_llm_analyzer": (
         Path(__file__).resolve().parents[2] / "tests" / "eval_judge_fraud_overall_risk_latest.json"
     ),
+    "fraud_investigator": (
+        Path(__file__).resolve().parents[2] / "tests" / "eval_judge_fraud_investigator_latest.json"
+    ),
 }
 
 

@@ -1,0 +1,408 @@
+# Fraud Investigator Agent — human-labeled evaluation dataset
+#
+# Purpose: Ground truth for the OODA fraud investigator (PR-B). The
+# investigator emits {verdict, confidence, evidence_chain, summary} on
+# high-risk submissions. Without labeled cases we have no way to ask
+# "did the agent's verdict agree with a human?" — and dashboard pass
+# rates would be uncalibrated noise (Hamel: same anti-pattern as B1).
+#
+# Three verdict classes:
+#   clean       — false positive in Layer 1; agent should clear
+#   suspicious  — multiple weak signals or one clear mismatch; needs
+#                  human follow-up
+#   fraud       — strong evidence of intentional misuse
+#
+# A case has FIVE sections:
+#
+#   id            stable identifier (`fri_NNN_short_hint`)
+#   description   one-line probe of what this case tests
+#   context       DB rows the investigator's tools query
+#                   employee:    {id, level, cost_center, city, dept}
+#                   history:     [{date, category, amount, merchant}]
+#                   peer_history:[{employee_id, ...}]
+#                   other_subs:  [{id, employee_id, ...}]
+#                   attendees:   [{submission_id, name, employee_id?, role}]
+#   submission    the submission under investigation (ALL fields the
+#                 investigator passes to tools — employee_id, date,
+#                 category, amount, currency, merchant, city, description)
+#   fraud_signals layer-1 signals supposedly fired
+#                 (rule, score, evidence)
+#   risk_score    the combined risk that triggered the agent (>= 80)
+#   human_label
+#     expected_verdict:  clean | suspicious | fraud
+#     must_call_tools:   [tool_names...] — tools the agent MUST have
+#                        called (subset; agent may call more)
+#   labeler_note  WHY this label
+#
+# Status: 5 fully-labeled cases + 15 PLACEHOLDERs. Replace placeholders
+# with real cases before treating κ on this dataset as a binding
+# accuracy number. Until then, the eval test SKIPs (matches the
+# project-wide placeholder convention from C1 / B1).
+
+# ─────────────────────────────────────────────────────────────────────
+# Section 1: SUSPICIOUS — single mid-score signal, normal pattern
+# ─────────────────────────────────────────────────────────────────────
+
+- id: fri_001_threshold_proximity_alone_suspicious
+  description: "One signal (threshold_proximity), no clear pattern of abuse"
+  context:
+    employee:
+      id: emp_eval_fri_001
+      level: L3
+      cost_center: ENG
+      city: 上海
+    history:
+      # Normal pattern — nothing weird here, just one expense at 97% of limit
+      - {date: 2026-03-10, category: meal, amount: 180, merchant: Cafe A}
+      - {date: 2026-03-15, category: meal, amount: 220, merchant: Cafe B}
+      - {date: 2026-03-22, category: meal, amount: 150, merchant: Cafe A}
+  submission:
+    employee_id: emp_eval_fri_001
+    date: 2026-04-15
+    category: meal
+    amount: 970
+    currency: CNY
+    merchant: Cafe Premium
+    city: 上海
+    description: 客户晚餐
+  fraud_signals:
+    - rule: threshold_proximity
+      score: 70
+      evidence: "amount 970 within 10% of 1000 limit"
+  risk_score: 82
+  human_label:
+    expected_verdict: suspicious
+    must_call_tools:
+      - get_employee_profile
+      - get_recent_expenses
+  labeler_note: |
+    A single signal fired (score 70 < 85) with no corroborating
+    evidence in employee's history (3 normal sub-200 meals). Could be
+    a real client dinner; could be limit-gaming. Not enough to call
+    fraud — escalate to human review. The agent should at minimum
+    pull employee profile + recent expenses to establish baseline
+    before deciding.
+
+# ─────────────────────────────────────────────────────────────────────
+# Section 2: FRAUD — multiple Layer-1 signals stacked
+# ─────────────────────────────────────────────────────────────────────
+
+- id: fri_002_three_signals_compound_fraud
+  description: "3 signals from different angles — compound fraud"
+  context:
+    employee:
+      id: emp_eval_fri_002
+      level: L3
+      cost_center: ENG
+      city: 上海
+    history:
+      # Pattern of weekend submissions with vague descriptions —
+      # the kind that 3 individual rules would each ding once
+      - {date: 2026-03-08, category: meal, amount: 850, merchant: A}
+      - {date: 2026-03-15, category: meal, amount: 920, merchant: B}
+      - {date: 2026-03-22, category: meal, amount: 880, merchant: C}
+  submission:
+    employee_id: emp_eval_fri_002
+    date: 2026-04-12     # Saturday
+    category: meal
+    amount: 950
+    currency: CNY
+    merchant: Mystery Restaurant
+    city: 上海
+    description: 周末加班餐
+  fraud_signals:
+    - rule: threshold_proximity
+      score: 70
+      evidence: "amount 950 within 10% of 1000"
+    - rule: vague_description
+      score: 60
+      evidence: "description very generic"
+    - rule: weekend_frequency
+      score: 60
+      evidence: "5+ weekend meals this quarter"
+  risk_score: 85
+  human_label:
+    expected_verdict: fraud
+    must_call_tools:
+      - get_employee_profile
+      - get_recent_expenses
+  labeler_note: |
+    Three independent rules fired — none individually decisive but
+    the pattern (weekend + threshold-hugging + vague descriptions
+    every weekend) is textbook salary-padding. The mock heuristic
+    correctly returns fraud because n_signals >= 3.
+
+# ─────────────────────────────────────────────────────────────────────
+# Section 3: FRAUD — single high-severity signal
+# ─────────────────────────────────────────────────────────────────────
+
+- id: fri_003_pre_resignation_rush_fraud
+  description: "One critical signal: rushed pre-resignation submission spike"
+  context:
+    employee:
+      id: emp_eval_fri_003
+      level: L3
+      cost_center: SALES
+      city: 上海
+    history:
+      # Quiet for months, then a flurry just before resignation —
+      # the canonical sign of trying to get reimbursed before leaving
+      - {date: 2026-01-10, category: meal, amount: 200, merchant: A}
+      - {date: 2026-02-20, category: meal, amount: 180, merchant: B}
+      - {date: 2026-04-08, category: meal, amount: 750, merchant: D}
+      - {date: 2026-04-09, category: transport, amount: 1200, merchant: E}
+      - {date: 2026-04-10, category: accommodation, amount: 1800, merchant: F}
+  submission:
+    employee_id: emp_eval_fri_003
+    date: 2026-04-12
+    category: meal
+    amount: 950
+    currency: CNY
+    merchant: Steakhouse
+    city: 上海
+    description: 客户感谢晚餐
+  fraud_signals:
+    - rule: pre_resignation_rush
+      score: 85
+      evidence: "5 expenses in last 7 days, vs avg 1.2/week historically; resignation in 2 weeks"
+  risk_score: 85
+  human_label:
+    expected_verdict: fraud
+    must_call_tools:
+      - get_employee_profile
+      - get_recent_expenses
+  labeler_note: |
+    pre_resignation_rush at score 85 is one of the highest-confidence
+    rules — it requires multiple corroborating data points already
+    (rate spike + resignation date proximity). When it fires, treat
+    as fraud unless there's overwhelming counter-evidence. Mock
+    heuristic correctly returns fraud (max_score >= 85).
+
+# ─────────────────────────────────────────────────────────────────────
+# Section 4: SUSPICIOUS — ambiguity-only trigger (no fraud signal)
+# ─────────────────────────────────────────────────────────────────────
+
+- id: fri_004_ambiguity_only_no_fraud_rule
+  description: "AmbiguityDetector pushed risk_score to 85, no Layer-1 fraud rule fired"
+  context:
+    employee:
+      id: emp_eval_fri_004
+      level: L4
+      cost_center: ENG
+      city: 上海
+    history:
+      - {date: 2026-03-15, category: meal, amount: 220, merchant: Hilton}
+      - {date: 2026-03-25, category: meal, amount: 180, merchant: Hyatt}
+  submission:
+    employee_id: emp_eval_fri_004
+    date: 2026-04-15
+    category: meal
+    amount: 600
+    currency: CNY
+    merchant: Acme
+    city: Atlantis      # unrecognized — Ambiguity flags city_mismatch
+    description: 杂费
+  fraud_signals: []
+  risk_score: 85
+  human_label:
+    expected_verdict: suspicious
+    must_call_tools:
+      - get_employee_profile
+      - get_recent_expenses
+  labeler_note: |
+    No Layer-1 fraud rule fired; AmbiguityDetector escalated this
+    based on vague description + unrecognized city + amount-jump
+    from history (¥220 baseline → ¥600). Could be a real trip
+    somewhere unusual; could be evasion via unfamiliar city. Mock
+    heuristic correctly returns suspicious (n_signals=0 but
+    risk_score >= 80).
+
+# ─────────────────────────────────────────────────────────────────────
+# Section 5: FRAUD — ghost employee
+# ─────────────────────────────────────────────────────────────────────
+
+- id: fri_005_ghost_employee_fraud
+  description: "Submitter not in employees table — ghost employee fraud"
+  context:
+    # Note: NO employee record seeded; this triggers ghost_employee rule
+    employee: null
+    history: []
+  submission:
+    employee_id: ghost_zzz_999
+    date: 2026-04-15
+    category: meal
+    amount: 1500
+    currency: CNY
+    merchant: Phantom Inc
+    city: 上海
+    description: 团队午餐
+  fraud_signals:
+    - rule: ghost_employee
+      score: 90
+      evidence: "submitter ghost_zzz_999 not in employees table"
+  risk_score: 90
+  human_label:
+    expected_verdict: fraud
+    must_call_tools:
+      - get_employee_profile      # which will return found=false
+  labeler_note: |
+    ghost_employee at score 90 is the highest-confidence individual
+    fraud rule — there's no legitimate reason for a non-employee to
+    have a submission go through. The agent should call
+    get_employee_profile first; the "found: false" response confirms
+    the rule. Even mock heuristic agrees (max_score 90 >= 85 → fraud).
+
+# ─────────────────────────────────────────────────────────────────────
+# PLACEHOLDERS — replace with real cases before this dataset is meaningful
+# ─────────────────────────────────────────────────────────────────────
+# Pattern hints for the next 15 cases (target ≥30 total per Hamel saturation):
+#
+#   2 more clean (Layer-1 false positives):
+#     - threshold_proximity but recurring legitimate client dinner pattern
+#     - weekend_frequency but employee in retail/sales (weekends normal)
+#   3 more suspicious (mid-confidence):
+#     - geo_conflict — city tag disputed but no flight record either way
+#     - vendor_frequency — 7th visit to same merchant, unusual but not damning
+#     - description_template — generic words but legit small purchases
+#   3 more fraud (high-confidence):
+#     - duplicate_attendee — same dinner expensed by two employees
+#     - merchant_category_mismatch — "office supplies" at a hotel bar
+#     - approver_collusion — same approver always greenlighting suspect cases
+#   3 multi-finding (≥4 signals fire at once)
+#   2 boundary (just below threshold; just above)
+#   2 unusual (e.g. high-level executive — different baseline expectations)
+
+- id: fri_006_placeholder_clean_legitimate_client_pattern
+  description: "PLACEHOLDER — threshold_proximity but recurring legit client dinner"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: clean, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_007_placeholder_clean_sales_weekend
+  description: "PLACEHOLDER — weekend_frequency but employee in retail/sales"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: clean, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_008_placeholder_suspicious_geo_disputed
+  description: "PLACEHOLDER — geo_conflict, no travel record either way"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: suspicious, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_009_placeholder_suspicious_vendor_freq
+  description: "PLACEHOLDER — 7th visit to same merchant"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: suspicious, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_010_placeholder_suspicious_description_template
+  description: "PLACEHOLDER — generic descriptions for small legit purchases"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: suspicious, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_011_placeholder_fraud_duplicate_attendee
+  description: "PLACEHOLDER — same dinner expensed by two employees"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: fraud, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_012_placeholder_fraud_merchant_category_mismatch
+  description: "PLACEHOLDER — 'office supplies' at a hotel bar"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: fraud, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_013_placeholder_fraud_approver_collusion
+  description: "PLACEHOLDER — approver always greenlights suspect cases"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: fraud, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_014_placeholder_multi_finding_4_signals
+  description: "PLACEHOLDER — 4 Layer-1 rules fire simultaneously"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: fraud, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_015_placeholder_multi_finding_5_signals_diverse
+  description: "PLACEHOLDER — 5 rules from 3+ categories"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: fraud, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_016_placeholder_multi_finding_with_high_score
+  description: "PLACEHOLDER — pre_resignation_rush AND duplicate_attendee"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: fraud, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_017_placeholder_boundary_79_combined_risk
+  description: "PLACEHOLDER — combined_risk just below threshold (should NOT trigger)"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 79
+  human_label: { expected_verdict: clean, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER — also: this case shouldn't reach the agent in pipeline; eval here is for direct call testing"
+
+- id: fri_018_placeholder_boundary_80_combined_risk
+  description: "PLACEHOLDER — combined_risk exactly at threshold"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: suspicious, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
+
+- id: fri_019_placeholder_executive_high_baseline
+  description: "PLACEHOLDER — VP-level submission (different baseline expectations)"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: clean, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER — VP routinely expenses dinners that would be suspect for L3"
+
+- id: fri_020_placeholder_new_hire_no_baseline
+  description: "PLACEHOLDER — new hire, < 3 months, no peer baseline yet"
+  context: {}
+  submission: {}
+  fraud_signals: []
+  risk_score: 80
+  human_label: { expected_verdict: suspicious, must_call_tools: [] }
+  labeler_note: "PLACEHOLDER"
