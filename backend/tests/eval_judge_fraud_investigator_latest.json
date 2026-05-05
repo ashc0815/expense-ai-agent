@@ -1,0 +1,100 @@
+{
+  "component": "fraud_investigator",
+  "metric": "cohens_kappa",
+  "kappa": 1.0,
+  "band": "almost_perfect",
+  "threshold": 0.4,
+  "sample_size": 5,
+  "classes": [
+    "clean",
+    "suspicious",
+    "fraud"
+  ],
+  "confusion_matrix": {
+    "clean": {
+      "clean": 0,
+      "suspicious": 0,
+      "fraud": 0
+    },
+    "suspicious": {
+      "clean": 0,
+      "suspicious": 2,
+      "fraud": 0
+    },
+    "fraud": {
+      "clean": 0,
+      "suspicious": 0,
+      "fraud": 3
+    }
+  },
+  "per_case": [
+    {
+      "id": "fri_001_threshold_proximity_alone_suspicious",
+      "human": "suspicious",
+      "agent": "suspicious",
+      "agree": true,
+      "agent_confidence": 0.55,
+      "tools_called": [
+        "get_employee_profile",
+        "get_recent_expenses",
+        "get_amount_distribution"
+      ],
+      "rounds_used": 3
+    },
+    {
+      "id": "fri_002_three_signals_compound_fraud",
+      "human": "fraud",
+      "agent": "fraud",
+      "agree": true,
+      "agent_confidence": 0.7,
+      "tools_called": [
+        "get_employee_profile",
+        "get_recent_expenses",
+        "get_amount_distribution"
+      ],
+      "rounds_used": 3
+    },
+    {
+      "id": "fri_003_pre_resignation_rush_fraud",
+      "human": "fraud",
+      "agent": "fraud",
+      "agree": true,
+      "agent_confidence": 0.65,
+      "tools_called": [
+        "get_employee_profile",
+        "get_recent_expenses",
+        "get_amount_distribution"
+      ],
+      "rounds_used": 3
+    },
+    {
+      "id": "fri_004_ambiguity_only_no_fraud_rule",
+      "human": "suspicious",
+      "agent": "suspicious",
+      "agree": true,
+      "agent_confidence": 0.55,
+      "tools_called": [
+        "get_employee_profile",
+        "get_recent_expenses",
+        "get_amount_distribution"
+      ],
+      "rounds_used": 3
+    },
+    {
+      "id": "fri_005_ghost_employee_fraud",
+      "human": "fraud",
+      "agent": "fraud",
+      "agree": true,
+      "agent_confidence": 0.65,
+      "tools_called": [
+        "get_employee_profile",
+        "get_recent_expenses",
+        "get_amount_distribution"
+      ],
+      "rounds_used": 3
+    }
+  ],
+  "skipped_placeholders": 15,
+  "must_call_failures": [],
+  "computed_at": "2026-05-05T06:19:33.465301+00:00"
+}
