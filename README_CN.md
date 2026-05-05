@@ -13,6 +13,7 @@ AI 驱动的企业报销管理平台 — 从发票提交到付款入账的全流
 
 - [这个项目做了什么](#这个项目做了什么)
 - [架构总览](#架构总览)
+- [架构亮点 — 跟一般「AI 报销项目」差在哪](#架构亮点--跟一般ai-报销项目差在哪)
 - [5-Skill 合规审核管道](#5-skill-合规审核管道)
 - [对话式 Agent](#对话式-agent)
 - [核心设计决策](#核心设计决策)
@@ -75,6 +76,83 @@ ExpenseFlow 模拟了一套完整的企业报销系统：员工上传发票 -> A
   | 财务端     |                      | 验证            |
   +-----------+                      +-----------------+
 ```
+
+---
+
+## 架构亮点 — 跟一般「AI 报销项目」差在哪
+
+大部分 portfolio 上的「AI for X」项目就是包一层 GPT-4o。这个项目是**按生产级欺诈检测系统真实面对的工程取舍来设计的**。六处差异：
+
+### 1. 混合架构：确定性规则 + OODA agent
+
+- **Layer 1** — 20 条确定性 fraud 规则 + 5 因子 `AmbiguityDetector`。每笔报销都跑，毫秒级。每个 flag 引用一个具体的 `rule_id`，完全可审计。
+- **Layer 2** — OODA agent，**只在** Layer 1 判定「这单可疑」时才触发（约 10% 的报销）。多轮（最多 4 轮）、LLM 自主选 tool、构建 evidence chain、输出 verdict（`clean` / `suspicious` / `fraud`）+ 置信度。
+
+纯规则抓不到未知 pattern；纯 agent 每笔 ~$0.02、不确定性高。混合架构同时拿到两边的好处 —— 跟 Airwallex Spend AI / Stripe Radar / Concur Detect 是同一种形态。
+
+[完整设计：`docs/hybrid-fraud-architecture.md`](docs/hybrid-fraud-architecture.md)
+
+### 2. Cohen's κ 评估框架 — 不是简单 accuracy
+
+大部分 AI 产品 portfolio 拍胸脯说「准确率 95%」却没说怎么测的。这个项目：
+
+- 有 **人工标注 ground-truth 数据集**（`backend/tests/eval_datasets/*_human_labeled.yaml`）—— 每个 case 都带 `human_label` + `labeler_note` 解释**为什么人会这么标**（Hamel 的 specification gulf 落实）
+- 测 **Cohen's κ**（评分者间一致性）—— 减掉「凭运气也能对」的部分。类别不均衡时，accuracy 会骗人
+- CI 里 assert **κ ≥ 0.40**；漂移会让测试失败
+- Dashboard 上展示 **κ + confusion matrix**（Review Quality tab），人能直接看
+- Placeholder 数据 SKIP 而不是 fake-PASS —— **不要假绿信号**
+
+[完整框架：`docs/evals-reference.md`](docs/evals-reference.md)
+
+### 3. 工具白名单作为安全边界（Concur Joule 模式）
+
+Agent 的写工具集 = 空集。**构造性安全**，不靠提示词约束。Dispatcher 就一行：
+
+```python
+fn = INVESTIGATION_TOOLS.get(tool_name)
+if fn is None:
+    raise ValueError(f"unknown tool: {tool_name}")
+```
+
+Prompt injection 能让 LLM 输出任何字符串。但**没有任何字符串**能映射到一个改业务状态的函数 —— 因为字典里**根本没有这种函数**。Tool registry 里就 8 个 read-only 函数。安全在边界强制，不在 prompt。
+
+跟 Concur Joule、Expensify Concierge 一个套路：**LLM 允许不可靠；边界不允许**。
+
+### 4. 诚实的 Workflow vs Agent 标签
+
+「Agentic AI」这个词被滥用。[Design Decisions §1](#1-workflow-vs-agent诚实申报) 表格把代码里每个「看起来像 agent」的组件都映射到两类：
+
+- **Workflow**（确定性、步骤预定）—— 系统大部分都是这个，是故意的
+- **Agent**（LLM 真的做决策）—— 只在确实需要的地方
+
+6 行总计，**只有 1 个**是真正的 multi-round agent（fraud investigator）。其他都老实标成 workflow 或单轮 dispatcher。避开了 portfolio 常见的「啥都叫 agentic 因为听着唬人」的坑。
+
+### 5. Cite-the-rule 可解释性
+
+系统给的每个 flag 都指向一个具体 `rule_id`，附结构化元数据：rule 文本、severity（`info` / `warn` / `error`）、修复建议、证据。AI 说「这单有问题」，经理看到的是**哪条规则** + **为什么** —— 不只是一个风险分数。
+
+结构化的 `violations[]` 数组存在 `audit_report` 里，AI 解释卡上以「📋 触发规则」区块呈现。审计师能把每个红 flag 追溯到具体可引用的规则。
+
+[实现：`agent/violation_registry.py`](agent/violation_registry.py)
+
+### 6. 诚实划范围 — 多实体「写了设计但不实装」
+
+大部分 portfolio 项目过度承诺。这个项目：
+
+- **单实体生产代码** —— 真能跑通整条流程
+- **多实体架构设计** —— [`docs/multi-entity-design.md`](docs/multi-entity-design.md) —— 4 层解耦（Entity / Category / Mapping / Policy） —— **故意不实装**，因为没有真客户在等
+- **README 里写明范围** —— "Configuration-driven within fixed schema"（不是「零代码适配任何客户」）
+
+把**没做什么**也标出来本身就是 portfolio 信号。大部分候选人吹牛；写好契约延后做的，反而比堆半成品更可信。
+
+---
+
+**Portfolio 评审建议阅读顺序：**
+
+1. 本 README [Design Decisions](#核心设计决策) 部分 — 分类法和原则
+2. [`docs/hybrid-fraud-architecture.md`](docs/hybrid-fraud-architecture.md) — Layer 1 + Layer 2 设计故事（10 分钟）
+3. [`docs/evals-reference.md`](docs/evals-reference.md) — Eval 方法论（Hamel 框架适配）
+4. [`docs/multi-entity-design.md`](docs/multi-entity-design.md) — 故意延后了什么、为什么
 
 ---
 

@@ -13,6 +13,7 @@ AI-powered enterprise expense management platform — end-to-end automation from
 
 - [What This Project Does](#what-this-project-does)
 - [System Architecture](#system-architecture)
+- [Architecture Highlights — What Makes This Different](#architecture-highlights--what-makes-this-different)
 - [5-Skill Compliance Pipeline](#5-skill-compliance-pipeline)
 - [Conversational Agent](#conversational-agent)
 - [Design Decisions](#design-decisions)
@@ -76,6 +77,83 @@ Employee submits receipt
   | Finance   |                      | verification    |
   +-----------+                      +-----------------+
 ```
+
+---
+
+## Architecture Highlights — What Makes This Different
+
+Most "AI for expense management" portfolio projects ship a wrapper around GPT-4o. This one was designed around the trade-offs that production fraud-detection systems actually face. Six choices distinguish it.
+
+### 1. Hybrid fraud architecture: deterministic rules + OODA agent
+
+- **Layer 1** — 20 deterministic fraud rules + 5-factor `AmbiguityDetector`. Runs on every submission in milliseconds. Each flag cites a specific `rule_id`, fully auditable.
+- **Layer 2** — an OODA agent that triggers only on the ~10% of submissions where Layer 1 says something is up. Multi-round (max 4 rounds), LLM-driven tool selection, builds an evidence chain, emits a verdict (`clean` / `suspicious` / `fraud`) with confidence.
+
+Pure rules can't catch unknown patterns. Pure agent costs ~$0.02 per submission and breaks determinism. Hybrid keeps both strengths — same shape Airwallex Spend AI / Stripe Radar / Concur Detect use.
+
+[Full design: `docs/hybrid-fraud-architecture.md`](docs/hybrid-fraud-architecture.md)
+
+### 2. Cohen's κ eval framework — not raw accuracy
+
+Most AI-product portfolios claim "95% accurate" with no methodology. This one:
+
+- Has **human-labeled ground-truth datasets** (`backend/tests/eval_datasets/*_human_labeled.yaml`) — every case ships with an explicit `human_label` + `labeler_note` explaining *why* it's labeled that way (Hamel's "specification gulf" made concrete)
+- Measures **Cohen's κ** (inter-rater agreement) — accounts for chance agreement; raw accuracy is misleading when classes are imbalanced
+- Asserts **κ ≥ 0.40** in CI; the test fails if drift is detected
+- Surfaces **κ + confusion matrix on the dashboard** for human review (Review Quality tab)
+- Placeholder cases SKIP, not fake-PASS — no false-confidence numbers
+
+[Full framework: `docs/evals-reference.md`](docs/evals-reference.md)
+
+### 3. Tool whitelist as security boundary (Concur Joule pattern)
+
+The agent's write-tool set is the empty set — by construction. The dispatcher is one line:
+
+```python
+fn = INVESTIGATION_TOOLS.get(tool_name)
+if fn is None:
+    raise ValueError(f"unknown tool: {tool_name}")
+```
+
+Prompt injection can produce any string the LLM wants. None of those strings will ever map to a function that mutates submission state — because no such function exists in the registry to begin with. The tool registry holds 8 read-only functions. Security at the boundary, not at the prompt.
+
+This is the same pattern Concur Joule and Expensify Concierge use: the LLM is allowed to be unreliable; the **edges** are not.
+
+### 4. Honest workflow-vs-agent labeling
+
+"Agentic AI" is overused. The [Design Decisions §1](#1-workflow-vs-agent-honest-labeling) table lists every "agent-like" component in the codebase and maps it to one of two real categories:
+
+- **Workflow** (deterministic, predetermined steps) — most of the system, by design
+- **Agent** (LLM makes a decision) — only where it's genuinely needed
+
+Six rows total. Only one is a true multi-round agent (the fraud investigator). The rest are honestly labeled as workflows or single-round dispatchers. This avoids the common portfolio failure mode of calling everything "agentic" because it sounds impressive.
+
+### 5. Cite-the-rule explainability
+
+Every flag the system raises points to a specific `rule_id` with structured violation metadata: rule text, severity (`info` / `warn` / `error`), suggested fix, and evidence. When the AI says "this looks wrong", the manager sees **which rule** and **why** — not just a risk score.
+
+The structured `violations[]` array lives in `audit_report` and renders on the AI explanation card as the "📋 触发规则" block. Auditors can trace every red flag back to a specific, citable rule.
+
+[Implementation: `agent/violation_registry.py`](agent/violation_registry.py)
+
+### 6. Honest scope — multi-entity is documented, not built
+
+Most portfolio projects oversell. This one ships:
+
+- **Single-entity production code** that works end-to-end
+- **An architecture spec** for multi-entity ([`docs/multi-entity-design.md`](docs/multi-entity-design.md)) — 4-layer decoupling (Entity / Category / Mapping / Policy) — that's deliberately **not implemented** because no real customer needs it yet
+- **Clear scope statement** in this README: "Configuration-driven within fixed schema" (not "zero code changes for any client")
+
+The discipline of marking what's **NOT** done is a portfolio signal too. Most candidates over-claim; deferring with a written contract is more credible than half-built abstractions.
+
+---
+
+**Reading order for portfolio reviewers:**
+
+1. This README's [Design Decisions](#design-decisions) section — taxonomy and principles
+2. [`docs/hybrid-fraud-architecture.md`](docs/hybrid-fraud-architecture.md) — the Layer 1 + Layer 2 design story (10-min read)
+3. [`docs/evals-reference.md`](docs/evals-reference.md) — eval discipline (Hamel framework adaptation)
+4. [`docs/multi-entity-design.md`](docs/multi-entity-design.md) — what's deliberately deferred and why
 
 ---
 
