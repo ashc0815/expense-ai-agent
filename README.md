@@ -146,6 +146,14 @@ Most portfolio projects oversell. This one ships:
 
 The discipline of marking what's **NOT** done is a portfolio signal too. Most candidates over-claim; deferring with a written contract is more credible than half-built abstractions.
 
+### 7. Industrial-readiness gaps documented before being closed
+
+The 8 things that separate a portfolio demo from a production-grade SaaS — multi-tenancy, real ERP integration, real payment execution, SOC 2, operational maturity — are all **documented as a roadmap** rather than half-built. Each gap has effort estimate, decision points, who-to-talk-to, and dependency graph.
+
+Plus a **customer segmentation** doc that picks which segment to target first (50-person SaaS / 5,000-person manufacturer / 500-person cross-border e-commerce) and an **integration design** doc with concrete API contracts for NetSuite + Stripe Issuing + the "Excel-as-bridge" alternative for ERPs without good APIs.
+
+[Roadmap: `docs/industrial-readiness-roadmap.md`](docs/industrial-readiness-roadmap.md) · [Segmentation: `docs/customer-segmentation.md`](docs/customer-segmentation.md) · [Integration: `docs/integration-design.md`](docs/integration-design.md)
+
 ---
 
 **Reading order for portfolio reviewers:**
@@ -154,6 +162,9 @@ The discipline of marking what's **NOT** done is a portfolio signal too. Most ca
 2. [`docs/hybrid-fraud-architecture.md`](docs/hybrid-fraud-architecture.md) — the Layer 1 + Layer 2 design story (10-min read)
 3. [`docs/evals-reference.md`](docs/evals-reference.md) — eval discipline (Hamel framework adaptation)
 4. [`docs/multi-entity-design.md`](docs/multi-entity-design.md) — what's deliberately deferred and why
+5. [`docs/industrial-readiness-roadmap.md`](docs/industrial-readiness-roadmap.md) — what production-grade requires (8 gaps)
+6. [`docs/customer-segmentation.md`](docs/customer-segmentation.md) — which segment to target first
+7. [`docs/integration-design.md`](docs/integration-design.md) — concrete NetSuite + Stripe + Excel-bridge designs
 
 ---
 

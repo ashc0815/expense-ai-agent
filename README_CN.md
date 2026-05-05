@@ -145,6 +145,14 @@ Prompt injection 能让 LLM 输出任何字符串。但**没有任何字符串**
 
 把**没做什么**也标出来本身就是 portfolio 信号。大部分候选人吹牛；写好契约延后做的，反而比堆半成品更可信。
 
+### 7. 工业级落差先文档化、再实装
+
+从「portfolio demo」到「production-grade SaaS」之间还差 8 件事 —— 多租户、真 ERP 集成、真支付、SOC 2 认证、运营成熟度等等 —— **全部以 roadmap 文档形式记录**，而不是堆半成品代码。每个 gap 都有工作量估算、决策点、需要找谁谈、依赖关系。
+
+加上一份 **客户分群** 文档（50 人 SaaS / 5,000 人制造业 / 500 人跨境电商哪个先做）和一份 **集成设计** 文档（NetSuite + Stripe Issuing + 给没好 API 的 ERP 用的 Excel-as-bridge 替代方案）。
+
+[Roadmap：`docs/industrial-readiness-roadmap.md`](docs/industrial-readiness-roadmap.md) · [客户分群：`docs/customer-segmentation.md`](docs/customer-segmentation.md) · [集成设计：`docs/integration-design.md`](docs/integration-design.md)
+
 ---
 
 **Portfolio 评审建议阅读顺序：**
@@ -153,6 +161,9 @@ Prompt injection 能让 LLM 输出任何字符串。但**没有任何字符串**
 2. [`docs/hybrid-fraud-architecture.md`](docs/hybrid-fraud-architecture.md) — Layer 1 + Layer 2 设计故事（10 分钟）
 3. [`docs/evals-reference.md`](docs/evals-reference.md) — Eval 方法论（Hamel 框架适配）
 4. [`docs/multi-entity-design.md`](docs/multi-entity-design.md) — 故意延后了什么、为什么
+5. [`docs/industrial-readiness-roadmap.md`](docs/industrial-readiness-roadmap.md) — 工业级要求（8 个 gap）
+6. [`docs/customer-segmentation.md`](docs/customer-segmentation.md) — 应该先卖给谁
+7. [`docs/integration-design.md`](docs/integration-design.md) — NetSuite + Stripe + Excel-bridge 真 API 设计
 
 ---
 
